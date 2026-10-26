@@ -20,7 +20,6 @@ import argparse
 import base64
 import http.server
 import itertools
-import json
 import re
 import socket
 import os

@@ -133,6 +133,35 @@ def session_day(end_ms, fallback_date):
     return fallback_date
 
 
+def _room_of(src: Path, files: list) -> str:
+    """解析房间号。三种来源:
+       v2/v3 会话目录名里带房间号  -> 从目录名取
+       v1 平铺(目录名是日期)       -> 从文件名取 {room}_sHHMM / test_HHMMSS_{room}
+    """
+    for pat in (V2_RE, V3T_RE):
+        m = pat.fullmatch(src.name)
+        if m:
+            return m.group(3)
+    # 目录名是纯房间号(v3 正式)
+    if src.name.isdigit():
+        return src.name
+    # 从文件名推断
+    for p in files:
+        n = p.name
+        for suf in (".jsonl.gz", ".jsonl"):
+            if n.endswith(suf):
+                n = n[: -len(suf)]
+                break
+        m = re.match(r"^test_\d{6}_(\d+)(?:_s\d{4}|_run\d+)?$", n)
+        if m:
+            return m.group(1)
+        m = re.match(r"^(\d+)(?:_s\d{4}|_run\d+)?$", n)
+        if m:
+            return m.group(1)
+    mm = re.search(r"(\d+)$", src.name)
+    return mm.group(1) if mm else "0"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="真的移动文件(默认预演)")
@@ -156,6 +185,16 @@ def main():
             continue
         if not DATE_RE.fullmatch(top.name):
             continue
+        # v1 平铺层: 日目录下直接是数据文件(没有会话子目录)。
+        # 也要能直接迁到 v3 —— 否则得先跑 migrate_sessions.py 再跑本脚本, 两步容易出错。
+        subdirs = [p for p in top.iterdir() if p.is_dir()]
+        flat_files = [p for p in top.iterdir()
+                      if p.is_file() and not p.name.endswith(".meta.json")
+                      and ".jsonl" in p.name]
+        if flat_files and not subdirs:
+            is_test = "test_" in flat_files[0].name
+            plan.append((top, None, is_test, "v1 平铺层"))
+            continue
         for d in sorted(top.iterdir()):
             if not d.is_dir():
                 continue
@@ -165,8 +204,6 @@ def main():
             m3t = V3T_RE.fullmatch(d.name)
             if not (m2 or m2t or m3t):
                 continue
-            # v3 正式目录已经是 data/{日期}/{room}/ : 若父目录名 == 赛事日 则无需移动
-            is_v3_formal = (m3t is None and m2 is None and m2t is None)
             plan.append((d, None, is_test, "待计算"))
 
     # ---- 计算目标 ----
@@ -198,17 +235,10 @@ def main():
             else:
                 m = V2T_RE.fullmatch(src.name)
                 ts = ("%sT%s" % (m.group(1), m.group(2)[:4])) if m else src.name
-            room = None
-            m = V2T_RE.fullmatch(src.name)
-            if m:
-                room = m.group(3)
-            else:
-                mm = re.search(r"(\d+)$", src.name)
-                room = mm.group(1) if mm else "0"
+            room = _room_of(src, files)
             dst = DATA_DIR / "_test" / ("%s_%s" % (ts, room))
         else:
-            m = V2_RE.fullmatch(src.name)
-            room = m.group(3) if m else src.name
+            room = _room_of(src, files)
             dst = DATA_DIR / day / room
         final.append((src, dst, is_test, note, None, n_dm if files else 0))
 

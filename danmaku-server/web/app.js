@@ -100,14 +100,30 @@
         // 用户认知与 Riot 赛程都按比赛日组织, 所以下拉框必须显示 10-26,
         // 否则会出现"播放台日期对不上"的困惑(看到 10-25 却放了 26 号的比赛)。
         o.value = d.date;
+        if (d.is_test_group) {
+          // 测试会话单独成组: 明确标注, 免得被当成正赛数据
+          var cnt = (d.rooms || []).reduce(function (a, r) {
+            return a + (r.files || []).length; }, 0);
+          o.textContent = '测试数据（' + cnt + ' 个会话）';
+          o.title = 'data/_test/ 下的试录会话，不参与正赛统计';
+          selDate.appendChild(o);
+          return;
+        }
         var md = d.match_date && d.match_date !== d.date ? d.match_date : '';
         o.textContent = md ? (md + '（数据 ' + d.date + '）') : d.date;
         o.title = md ? ('比赛日 ' + md + '；弹幕/指纹数据目录 ' + d.date) : d.date;
         selDate.appendChild(o);
       });
+      // 默认选第一个**非测试组**的日期(测试数据排在最后, 不该被默认选中)
+      var firstReal = -1;
+      for (var di = 0; di < daysCache.length; di++) {
+        if (!daysCache[di].is_test_group) { firstReal = di; break; }
+      }
       if (daysCache.length) {
-        loadFiles(daysCache[0].date);
-        loadOverview(daysCache[0].date);
+        var pick = firstReal >= 0 ? daysCache[firstReal].date : daysCache[0].date;
+        selDate.value = pick;
+        loadFiles(pick);
+        loadOverview(pick);
         showMask('选好场次后点击「开始播放」');
         mask.classList.add('plain');
       } else {
@@ -1028,59 +1044,33 @@
         startMs: tr.startMs + ((p.offset_sec || 0) - baseOff) * 1000,
         durMs: (p.duration || 0) * 1000,
         conf: p.confidence,
+        // 赛前评论/赛后采访这类配件只占几分钟且不在对局中, 默认不画块
+        // (保留数据, 只在图上跳过), 避免把"比赛节奏"切碎。
+        accessory: OV_SKIP_PART_RE.test(String(p.part || '')),
       };
     }).filter(function (b) { return b.durMs > 0; });
   }
 
   function fillOverviewBlocks(seq) {
-    var i = 0;
-    (function next() {
-      if (seq !== undefined && seq !== ovSeq) { return; }   // 日期已切换, 停止旧加载
-      if (i >= ov.tracks.length) { layoutOverviewLanes(); drawOverview(); return; }
-      var tr = ov.tracks[i++];
-      // 未对齐的场次(既没有 parts, offset 也是 0)不画块:
-      // offset=0 会被解释成"回放 0 秒对应时间轴起点", 画出来是一堆挤在 23:33 的
-      // 无效色块, 既重叠又误导, 还会干扰总览的点击命中。
-      if (!(tr.parts || []).length && !tr.offsetSec) {
-        tr.blocks = [];
-        next();
-        return;
-      }
-      // 已有逐分P 对齐结果: 直接用, 不需要网络
-      var fromParts = blocksFromParts(tr);
-      if (fromParts.length) {
-        tr.blocks = fromParts;
-        drawOverview();
-        next();
-        return;
-      }
-      if (!tr.bv) { next(); return; }
-      getJson('/api/playurl?bv=' + enc(tr.bv)).then(function (j) {
-        if (seq !== undefined && seq !== ovSeq) { return; }
-        if (j && j.ok) {
-          tr.blocks = (j.page_marks || [])
-            .filter(function (pm) { return !OV_SKIP_PART_RE.test(String(pm.part || '')); })
-            .map(function (pm) {
-              return {
-                p: pm.page, part: pm.part,
-                startMs: tr.startMs + (pm.start_sec || 0) * 1000,
-                durMs: (pm.duration || 0) * 1000,
-              };
-            });
-        }
-        drawOverview();
-        next();
-      }).catch(function () {
-        if (seq !== undefined && seq !== ovSeq) { return; }
-        drawOverview(); next();
-      });
-    })();
+    // 块的位置**只能**来自逐分P 对齐结果(tr.parts), 没有就别画。
+    // 旧实现还有一条"按 P 序号从 tr.startMs 累加 page_marks"的兜底路径, 那条路径在
+    // offset=0(未对齐)时会把所有分P 堆到时间轴起点, 画出一排从 00:00 开始的长条,
+    // 既不是真实位置也点不对 —— 已经删掉, 宁可什么都不画。
+    ov.tracks.forEach(function (tr) {
+      tr.blocks = blocksFromParts(tr);
+    });
+    layoutOverviewLanes();
+    drawOverview();
   }
 
   // 轨道打包(按时间排布, 不重叠的块共用同一条轨道)。
   // 为什么需要: 一晚上的比赛在时间上**是顺序的**(G1 打完才打 G2), 所以正常情况下
   // 所有分P块能全部落在同一条轨道上 —— 这才是"把分段放进弹幕主轴"该有的样子。
   // 只有校准异常导致时间重叠时, 才会自动多开一条轨道错开显示。
+  // 所有分P 块共享**同一条**时间轴(它们本来就是同一条直播时间线上的不同切片)。
+  // 旧实现为了"不重叠"会自动开多条轨道, 但实测相邻分P 之间常有约 1 秒的重叠
+  // (对齐误差), 于是 4 个块被拆成 4 条轴 —— 视觉上像 4 条独立的时间线, 很乱。
+  // 现在统一放一条轴, 用**颜色区分场次**、用**深浅区分分P**, 重叠时后者压前者即可。
   function layoutOverviewLanes() {
     var all = [];
     ov.tracks.forEach(function (tr, ti) {
@@ -1089,18 +1079,22 @@
       });
     });
     all.sort(function (a, b) { return a.start - b.start; });
-    var laneEnds = [];      // 每条轨道已占用到的结束时刻
+    // 同一条轴的"已占用结束点"; 只有真正冲突(重叠超过容忍值)时才会走到第二条。
+    // 容忍值给 5 秒: 实测分P 间重叠约 1 秒, 属对齐误差不是真冲突。
+    var OVERLAP_TOL = 5000;
+    var laneEnds = [];
     all.forEach(function (it) {
-      // 找第一条"已经空出来"的轨道: 块的起点 >= 该轨上一个块的终点
       var placed = -1;
       for (var i = 0; i < laneEnds.length; i++) {
-        if (it.start >= laneEnds[i]) { placed = i; break; }
+        if (it.start >= laneEnds[i] - OVERLAP_TOL) { placed = i; break; }
       }
       if (placed < 0) { laneEnds.push(0); placed = laneEnds.length - 1; }
       laneEnds[placed] = Math.max(laneEnds[placed], it.end);
       it.lane = placed;
     });
     ov.layout = all;
+    // 正常情况下只有 1 条; 极端重叠(如两个不同场次被误对齐到同一位置)才可能多出来,
+    // 那时保留多轨是为了让用户看见"这里有两个东西压在一起", 而不是互相盖住。
     ov.laneCount = Math.max(1, laneEnds.length);
   }
 
@@ -1248,10 +1242,20 @@
       var y = laneTop + it.lane * (laneH + 3);
       var x0 = ovX(it.start), x1 = ovX(it.end);
       var bwid = Math.max(2, x1 - x0);
+      // 颜色: 同一场的所有分P 用**同一个色相**, 靠**透明度**区分第几个分P。
+      // 这样"一场比赛是连续的一段"在视觉上立刻成立, 而不是几个不相干的色块。
+      var idxInTrack = (tr.blocks || []).indexOf(b);
+      var nInTrack = (tr.blocks || []).length;
+      var shade = nInTrack <= 1 ? 0.82 : (0.9 - 0.28 * (idxInTrack / Math.max(1, nInTrack - 1)));
       g.fillStyle = tr.color;
-      g.globalAlpha = 0.78;
+      g.globalAlpha = shade;
       g.fillRect(x0, y, bwid, laneH);
       g.globalAlpha = 1;
+      // 分P 之间画一条竖线分隔(同色相邻块容易糊成一片, 看不出分界)
+      if (idxInTrack > 0) {
+        g.strokeStyle = 'rgba(6,18,31,.55)'; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(x0 + 0.5, y); g.lineTo(x0 + 0.5, y + laneH); g.stroke();
+      }
       ov.order.push({ it: it, x0: x0, x1: x0 + bwid, y: y, h: laneH });
       if (bwid > 30) {
         g.fillStyle = '#06121f'; g.font = 'bold 9px sans-serif';

@@ -86,14 +86,11 @@ AUTO_MAX_OFFSET_SPREAD_SEC = 0.5  # 多个时间窗对齐出的 offset 允许的
 AUTO_SEQUENCE_WINDOW_SEC = 1800   # 同一场次相邻分P 的最大合理间隔(30 分钟)
 #   赛后采访/赛前评论这类配件紧贴正赛, 不会隔几小时。用它把"紧邻候选"和其他时段的
 #   伪峰分开(实测 P2 赛后采访: 正确候选在 P1 结束后 0 分钟, 伪峰在 5~6 小时后)。
-AUTO_MIN_DENSITY_PER_MIN = 500.0  # 对齐落点的弹幕密度下限(条/分), 防止匹配到"没在比赛"的时段
-#   实测(2026-10-26 那晚)分得很开:
-#     真比赛     1000~1120 条/分  (IG vs HLE、TES vs G2 全部落在这个区间)
-#     赛前评论    270~380 条/分   (比赛还没开始, 观众在等)
-#     赛后闲聊/重播 140~260 条/分
-#   阈值 500 能挡住"没在转播这场"的伪匹配, 又不会误杀真比赛。
-#   注意: 赛前评论这类配件天然低密度, 会被这道闸门拒绝 —— 这是有意的,
-#   宁可少一个配件分P, 也不要把弹幕错配到无关时段。
+AUTO_VOTE_SEGMENTS = 8            # 对齐时把回放切成几段去做投票
+#   切成短段比整段对齐可靠: 长篇里混进一段直播没播的内容, 整窗得分就被拉平。
+#   实测同一局比赛, 全长对齐 conf=1.01(判为不匹配), 3 分钟短段逐段对齐 conf 高到 5~9。
+AUTO_VOTE_TOLERANCE_SEC = 30      # 投票时"指向同一处"的容差(秒)
+#   30 秒足够吸收不同片段算出的亚秒级偏差, 又远小于相邻两场比赛的间隔(几十~上百分钟)。
 # 参与对齐的音频时长下限: 测过纯随机噪声在"片段长度接近回放长度"时可达 conf 2.5~5.5,
 # 光靠置信度挡不住。真实比赛对齐通常能匹配几十秒以上, 故再要求匹配时长足够。
 AUTO_MIN_MATCH_SEC = 20.0
@@ -388,13 +385,18 @@ def _scope_dirs(date: str) -> list:
 
 
 def resolve_session_dir(date: str, file: str):
-    """把 (date, file) 解析成会话目录。找不到返回 None。
+    """把 (date, file) 解析成会话目录。找不到返回 None(绝不做模糊兜底)。
 
     file 的取值可能是:
       * v3 纯房间号          "7734200"                 -> {date}/7734200 或 _test/ 下
       * v3 测试会话名        "2026-10-26T2023_7734200" -> data/_test/{file}
       * v2 会话目录名        "2026-10-25_2332_7734200" -> {date}/{file}
       * v1 旧平铺主名        "7734200"(散文件在日目录根) -> 不是目录, 返回 None
+
+    为什么只在指定日期下找, 不做"任意日期兜底":
+    当一个房间多天都有数据时(2026-10-25/7734200 与 2026-10-26/7734200 同时存在),
+    遍历所有日期会**静默返回错误那天**的数据 —— 用户以为在看 24 日的比赛, 实际放的是
+    25 日的。这种错误不报错、只是内容不对, 比直接找不到更难发现。
     """
     # v2: 名字里带日期 + 时分
     if SESSION_DIR_RE.fullmatch(file):
@@ -403,17 +405,11 @@ def resolve_session_dir(date: str, file: str):
     # v3: 纯房间号(正式) / {日期}T{HHMM}_{room}(测试)
     m = V3_SESSION_RE.fullmatch(file)
     if m:
-        # 测试会话放在 _test/ 下
-        if m.group(1):
+        if m.group(1):        # 测试会话: 固定在 _test/ 下
             p = DATA_DIR / TEST_ROOT / file
             return p if p.is_dir() else None
-        # 正式会话: 先当日目录, 再按赛事日兜底找(跨零点时 date 可能是数据日而非赛事日)
         p = DATA_DIR / date / file
-        if p.is_dir():
-            return p
-        for d in DATA_DIR.iterdir() if DATA_DIR.is_dir() else []:
-            if d.is_dir() and (d / file).is_dir() and _looks_like_session_dir(d / file):
-                return d / file
+        return p if p.is_dir() else None
     return None
 
 
@@ -851,10 +847,43 @@ def scan_days() -> list:
                              if f["is_test"] or f.get("layout") == "session"]
         d["rooms"] = [r for r in d["rooms"] if r["files"]]
     days = [d for d in days if d["rooms"]]
+    # ---- 测试会话(data/_test/) ----
+    # 单独归到 date="_test" 的一组里。默认不混进正式日期列表(避免误选测数据当正赛),
+    # 但必须**可见** —— 否则测试期间录的东西永远找不到, 也没法回放验证。
+    test_entries = []
+    for td in _test_dirs():
+        mf = read_manifest(td)
+        if mf is not None:
+            room_id = int(mf.get("room") or 0) or _room_from_dirname(td.name) or 0
+            dm_count = int(mf.get("dm_count") or 0)
+        else:
+            room_id = _room_from_dirname(td.name) or 0
+            dm_count = sum(count_dm_lines(p) for p in _collect_all_in_session(td))
+        if not room_id:
+            continue
+        t0, t1 = _session_time_range("", td.name, td)
+        test_entries.append({
+            "name": td.name, "room": room_id, "is_test": True,
+            "dm_count": dm_count, "layout": "session",
+            "schema_version": (mf or {}).get("schema_version"),
+            "start_ms": t0, "end_ms": t1,
+        })
+    if test_entries:
+        rooms = {}
+        for e in test_entries:
+            rooms.setdefault(e["room"], {"room": e["room"], "files": []})["files"].append({
+                "name": e["name"], "is_test": True, "dm_count": e["dm_count"],
+                "layout": "session", "schema_version": e["schema_version"],
+                "start_ms": e["start_ms"], "end_ms": e["end_ms"],
+            })
+        days.append({"date": TEST_ROOT, "match_date": "", "data_date": TEST_ROOT,
+                     "is_test_group": True,
+                     "rooms": [r for _, r in sorted(rooms.items())]})
     # 给每个会话目录补上"比赛日/赛事日"。v3 布局下目录名本身就是赛事日(采集器按
     # "会话结束时刻"命名), 直接采用; 老布局才需要用数据推断。
     for d in days:
-        # 若该日所有会话目录名就是赛事日(v3: 父目录名 == manifest.match_date), 直接用
+        if d.get("is_test_group"):
+            continue          # 测试组没有"比赛日"概念
         d["match_date"] = _session_match_date(d["date"])
         d["data_date"] = d["date"]      # 显式给出"数据日", 供前端显示「比赛日 + 数据日」
         # 每个会话补真实起止时间(毫秒墙钟): 前端据此显示时段并排序。
@@ -2253,162 +2282,147 @@ class DanmakuDensity:
 def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
                     density=None, anchor_ms=None, later_than_ms=None,
                     min_density=None):
-    """把一个分P 的回放指纹对齐到直播 afp 的各个连接段上。
+    """把一个分P 的回放指纹对齐到直播 afp 上, 返回它在直播时间轴中的起始位置。
 
-    返回 {"offset_ms", "confidence", "matched_seconds", "conn", "t0_ms",
-          "windows_ok", "windows_spread", "candidates", "picked_by"}。
+    返回 dict:
+      offset_ms        回放 t=0 对应的直播墙钟(毫秒)
+      confidence       支持该位置的各段置信度中位数
+      matched_seconds  参与投票的片段总时长
+      votes            一致票数 / 总段落数
+      candidates       找到的自洽位置个数(>1 表示该内容在直播里出现多次)
+      all_candidates   全部自洽位置(毫秒, 升序), 便于排查
 
-    四道判据(从弱到强):
-      1. 单窗置信度 conf >= min_conf (挡掉随机水平 ~1.0)
-      2. inf 置信度视为不可判定(只有单一峰, 实测随机噪声也能拿到)
-      3. 多窗一致性: 各窗推算的 offset 必须几乎相同(实测正常对齐离散 0.0s)
-      4. **弹幕密度 + 时序约束**: 比赛时弹幕远多于赛后闲聊。当出现多个
-         "分别自洽"但位置相隔很远的候选时:
-           - later_than_ms 给出前一集的对齐位置时, 优先取它之后的候选
-             (同一场次的分P 在直播时间轴上必然按时间先后排列)
-           - 再用密度区分
-         实测案例: P1 在 01:07(conf 10.19) 与 07:26(conf 10.07) 都有高分,
-         密度 39145 vs 6670 -> 前者是真场次, 后者是伪峰。
+    **为什么是「多段投票」而不是「一个长窗互相关」**
+
+    旧实现把整段回放(或它的 75% 长窗)一次性拿去和直播滑动互相关。问题是长窗里只要
+    混进一段直播没播的内容, 整窗得分就被拉平, 主峰/次峰比失去意义 —— 实测同一局
+    比赛, 全长对齐 conf=1.01(判为不匹配), 而换成 3 分钟短片段逐段对齐, 落在同一位置
+    的各段 conf 高达 5~9。**短片段比长片段更能定位**, 因为局部特征不会被全局噪声稀释。
+
+    做法: 把回放均匀切成 N 段(默认 8 段, 每段约 3 分钟), 每段单独去直播里找最像的位置,
+    得到 N 个候选起点。若某位置被 >=ceil(N/3) 段同时指向(容差 AUTO_VOTE_TOLERANCE_SEC),
+    就算「自洽」并采信。
+
+    **多候选时取最早的那个**
+
+    同一段音频在直播里可能出现多次(首播 + 之后的回顾/重播)。实测 IG vs HLE 第一局
+    在前 17 分钟匹配到 01:00(conf 5.5~8.3), 后半段在全晚各处只能拿到 conf≈1.1(随机水平),
+    而在 07:15 有一个假的一致位置。我们要的是**当时正在直播的那次**, 即最早的真实位置。
+    因此候选按时间升序, 取第一个通过的。
     """
     ref_frames = int(fp_replay.shape[0])
-    hits = []
-    rejected = []
-    for seg in conns:
-        n = seg["n"]
-        if n <= ref_frames:
-            windows = [(0, n)]
-        else:
-            # 窗 = 回放的 75%, 步进 = 半窗: 保证任一实际起点都能被某个窗完整覆盖
-            wlen = max(int(ref_frames * 0.75), AUTO_MIN_CONN_FRAMES)
-            step = max(wlen // 2, 1)
-            windows = [(s, min(s + wlen, n)) for s in range(0, n - wlen + 1, step)]
-        for (a, b) in windows:
-            sub = seg["frames"][a:b]
-            try:
-                r = audiofp.align(fp_replay, sub, hop)
-            except ValueError as e:           # 窗比回放长等
-                rejected.append(f"段{seg['c']}窗[{a}:{b}] {e}")
-                continue
-            if not (math.isfinite(r["offset_sec"]) and r["best_score"] > 0):
-                continue
-            # inf 置信度 = 只有单一峰, 不可判定(实测随机噪声等长时也能拿到 inf)
-            if not math.isfinite(r["confidence"]) or r["confidence"] < min_conf:
-                continue
-            matched = (b - a) * hop
-            if matched < min_match_sec:
-                continue
-            hits.append({
-                "conn": seg["c"],
-                "t0_ms": seg["t0_ms"] + int(a * hop * 1000),
-                "n": b - a,
-                "replay_pos": float(r["offset_sec"]),
-                "confidence": float(r["confidence"]),
-                "offset_ms": seg["t0_ms"] + int(a * hop * 1000)
-                              - int(float(r["offset_sec"]) * 1000),
-            })
+    if ref_frames < AUTO_MIN_CONN_FRAMES:
+        raise ApiError("该分P 指纹过短, 无法对齐")
 
-    if not hits:
-        detail = ("; ".join(rejected[:3]) if rejected else "无任何有效互相关结果")
-        raise ApiError(f"该分P 无法与直播音频对齐({detail})")
-
-    # ---- 把高置信度窗按"推算出的起点"聚类: 同一位置上的窗才是一致票 ----
-    hits.sort(key=lambda h: h["confidence"], reverse=True)
-    clusters = []      # [{members, offset_ms, conf, spread}]
-    for h in hits:
-        placed = False
-        for c in clusters:
-            if abs(h["offset_ms"] - c["offset_ms"]) <= AUTO_MAX_OFFSET_SPREAD_SEC * 1000:
-                c["members"].append(h)
-                # 用置信度加权平均更新中心
-                tot = sum(m["confidence"] for m in c["members"])
-                c["offset_ms"] = sum(m["offset_ms"] * m["confidence"] for m in c["members"]) / tot
-                c["conf"] = max(c["conf"], h["confidence"])
-                placed = True
-                break
-        if not placed:
-            clusters.append({"members": [h], "offset_ms": h["offset_ms"],
-                             "conf": h["confidence"]})
-
-    for c in clusters:
-        offs = [m["offset_ms"] for m in c["members"]]
-        c["spread"] = (max(offs) - min(offs)) / 1000.0
-        c["matched_seconds"] = max(m["n"] for m in c["members"]) * hop
-        c["best"] = max(c["members"], key=lambda m: m["confidence"])
-
-    if len(clusters) == 1:
-        pick, picked_by = clusters[0], "唯一候选"
+    # 片长: 目标 3 分钟, 但不短于 min_match_sec, 也不超过回放的 1/3
+    seg_secs = min(180.0, fp_replay.shape[0] * hop / 3.0)
+    seg_frames = max(int(seg_secs / hop), AUTO_MIN_CONN_FRAMES)
+    if seg_frames >= ref_frames:
+        # 回放太短(本身不到 3 分钟): 整段当一个样本
+        starts = [0]
+        seg_frames = ref_frames
     else:
-        # 先用"同一场次内分P 在直播时间轴上按先后排列"约束。
-        # later_than_ms = 已对齐分P 的最早结束点。同一场次的分P 不会隔几个小时,
-        # 因此优先取"紧跟在它附近"的候选(窗口 = AUTO_SEQUENCE_WINDOW_SEC)。
-        cands = clusters
-        prefix = ""
-        if later_than_ms:
-            after = [c for c in cands if c["offset_ms"] >= later_than_ms - 60_000]
-            if after:
-                # 先看"紧邻"的(间隔 < 序列窗口), 这是同一场次分P 的典型情形
-                near = [c for c in after
-                        if c["offset_ms"] <= later_than_ms + AUTO_SEQUENCE_WINDOW_SEC * 1000]
-                if near:
-                    prefix = (f"时序紧邻约束({len(clusters)}→{len(near)} 个候选); ")
-                    cands = near
-                else:
-                    prefix = (f"时序约束(落在上一集之后, {len(clusters)}→{len(after)} 个候选); ")
-                    cands = after
-            else:
-                prefix = "时序约束无匹配, 退回全部候选; "
+        k = AUTO_VOTE_SEGMENTS
+        spans = ref_frames - seg_frames
+        starts = [int(round(spans * i / (k - 1))) for i in range(k)]
+        # 去重(回放很短时可能算出重复起点)
+        seen = set()
+        starts = [s for s in starts if not (s in seen or seen.add(s))]
 
-        if density is not None and anchor_ms and len(cands) >= 1:
-            def dens_of(c):
-                return density.density_for(c["offset_ms"], c["matched_seconds"])
-            ranked = sorted(cands, key=lambda c: (dens_of(c), c["conf"]), reverse=True)
-            pick = ranked[0]
-            picked_by = (prefix +
-                         f"弹幕密度({dens_of(pick):.0f} 条" +
-                         (f" vs 次选 {dens_of(ranked[1]):.0f} 条" if len(ranked) > 1 else "") +
-                         f", {len(ranked)} 个候选)")
-            # 密度几乎打平时再看置信度差异是否足够大, 否则拒绝(不赌)
-            if len(ranked) > 1:
-                top_d, sec_d = dens_of(ranked[0]), dens_of(ranked[1])
-                if top_d <= sec_d * 1.05:
-                    # 密度分不开, 改用置信度: 只有当首选明显更高时才采信
-                    if ranked[0]["conf"] <= ranked[1]["conf"] * 1.2:
-                        raise ApiError(
-                            f"该分P 有 {len(ranked)} 个自洽候选, 弹幕密度与置信度都无法区分, "
-                            f"已拒绝写入(建议人工校准)")
-                    picked_by = prefix + f"置信度(密度接近, conf {ranked[0]['conf']:.2f} vs {ranked[1]['conf']:.2f})"
-        elif len(cands) == 1:
-            pick = cands[0]
-            picked_by = prefix + "时序约束唯一候选"
+    n_seg = len(starts)
+    need = max(2, (n_seg + 2) // 3)      # ceil(n/3), 至少 2 票
+    votes = []                            # [(主播内起点秒, 段序号, 置信度)]
+    detail = []
+    for i, st in enumerate(starts):
+        piece = fp_replay[st:st + seg_frames]
+        best = None
+        for seg in conns:
+            if seg["n"] < seg_frames:
+                continue
+            try:
+                # 注意方向: **直播整段是 ref, 回放片段是 query**。
+                # align() 要求 query 不长于 ref, 且返回 query 在 ref 里的起始位置。
+                r = audiofp.align(seg["frames"], piece, hop)
+            except ValueError:
+                continue
+            if not math.isfinite(r["offset_sec"]):
+                continue                     # inf = 只有单峰, 不可判定
+            if r["confidence"] < min_conf:
+                continue
+            if best is None or r["confidence"] > best[1]:
+                best = (seg["t0_ms"] / 1000.0 + r["offset_sec"], r["confidence"], seg["c"])
+        if best is None:
+            detail.append(f"段{i}无可信位置")
+            continue
+        pos_wall, conf, cidx = best
+        # 该片段在回放内的偏移是 st*hop, 故回放 t=0 对应的墙钟:
+        base = pos_wall - st * hop
+        votes.append((base, i, conf))
+        detail.append(f"段{i}(回放{st*hop/60:.0f}分)->{base/3600:.2f}h conf={conf:.2f}")
+
+    if not votes:
+        raise ApiError("该分P 的音频在直播里找不到可信位置"
+                       "(各片段置信度都低于 %.1f, 可能这场没有直播画面或直播缺段)"
+                       % min_conf)
+
+    # ---- 按容差聚类投票, 得到「自洽位置」 ----
+    votes.sort()
+    clusters = []           # [[中心秒, [置信度...], [段序号...], [各票位置...]]]
+    for base, i, conf in votes:
+        if clusters and base - clusters[-1][0] <= AUTO_VOTE_TOLERANCE_SEC:
+            c = clusters[-1]
+            c[1].append(conf)
+            c[2].append(i)
+            c[3].append(base)
+            # 中心取簇内各票的中位数(避免被单个离群票拉走)
+            c[0] = c[3][len(c[3]) // 2]
         else:
-            raise ApiError(
-                f"该分P 有 {len(cands)} 个自洽但位置不同的对齐候选(可能是该局被重播), "
-                f"已拒绝写入(建议人工校准)")
+            clusters.append([base, [conf], [i], [base]])
 
-    best = pick["best"]
-    # 最后一道闸门: **弹幕密度合理性**。
-    # 音频指纹在长直播里做滑窗互相关, 偶尔会在"没在比赛"的时段撞出高分(实测
-    # GEN vs LYON 被对齐到 04:46, 那段只有 205 条/分, 而真比赛时段是 5000+ 条/分)。
-    # 比赛时段观众的弹幕密度远高于赛后闲聊/重播, 所以低密度区的结果一律不可信。
-    final_density = None
-    if density is not None and min_density:
-        final_density = density.density_per_min(pick["offset_ms"], pick["matched_seconds"])
-        if final_density < min_density:
-            raise ApiError(
-                f"该分P 对齐落点的弹幕密度过低({final_density:.0f} 条/分 < "
-                f"{min_density:.0f} 条/分), 判为伪匹配并拒绝。"
-                f"该时段直播可能并没有转播这场比赛(或被重播覆盖)")
+    # 自洽位置的判定: **票数够 或 票的质量够高**。
+    # 单纯数票会误杀"直播只播了一部分"的情况: 实测 HLE vs IG 第一局只有 2/8 段能匹配,
+    # 但这 2 段的置信度是 7.00 / 7.16(随机水平只有 1.1), 且指向完全相同的位置 ——
+    # 这是可靠的定位, 只是直播确实缺了后半小时。
+    # 反之, 一堆 conf 刚过 2.0 的散票(如 8 段各自指向 8 个地方)不该被采信。
+    def cluster_score(c):
+        """票数与票质的综合分: 各票置信度之和(低分票几乎不加分)。"""
+        return sum(c[1])
+
+    solid = []
+    for c in clusters:
+        strong = [x for x in c[1] if x >= min_conf * 3]     # 强票: conf >= 6
+        if len(c[1]) >= need or len(strong) >= 2:
+            solid.append(c)
+    if not solid:
+        best_c = max(clusters, key=cluster_score)
+        raise ApiError(
+            "该分P 的音频位置不稳定(最多只有 %d/%d 段指向同一处且置信度不足), "
+            "判为不可靠, 已拒绝" % (len(best_c[1]), n_seg))
+
+    solid.sort(key=lambda c: c[0])          # 按时间升序 -> 取最早
+    chosen = solid[0]
+    confs = sorted(chosen[1])
+    median_conf = confs[len(confs) // 2]
+
+    # ---- 一致性: 选中的位置内部各票离散不能太大 ----
+    same = [v for v in votes if abs(v[0] - chosen[0]) <= AUTO_VOTE_TOLERANCE_SEC]
+    spread = max(v[0] for v in same) - min(v[0] for v in same)
+
+    offset_ms = int(round(chosen[0] * 1000))
     return {
-        "offset_ms": int(round(pick["offset_ms"])),
-        "confidence": min(pick["conf"], 999.0),
-        "matched_seconds": pick["matched_seconds"],
-        "conn": best["conn"],
-        "t0_ms": best["t0_ms"],
-        "windows_ok": len(hits),
-        "windows_spread": round(pick["spread"], 3),
-        "candidates": len(clusters),
-        "picked_by": picked_by,
-        "density_per_min": round(final_density, 1) if final_density is not None else None,
+        "offset_ms": offset_ms,
+        "confidence": min(float(median_conf), 999.0),
+        "matched_seconds": len(chosen[1]) * seg_frames * hop,
+        "conn": 0,
+        "t0_ms": int(round(chosen[0] * 1000)),
+        "votes": len(chosen[1]),
+        "total_segments": n_seg,
+        "candidates": len(solid),
+        "all_candidates": [int(round(c[0] * 1000)) for c in solid],
+        "spread_sec": round(spread, 2),
+        "picked_by": ("多段投票 %d/%d 段一致" % (len(chosen[1]), n_seg) +
+                      ("(取最早, 共 %d 处候选)" % len(solid) if len(solid) > 1 else "")),
+        "debug": detail,
     }
 
 
@@ -2470,37 +2484,28 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     if not targets:
         raise ApiError(f"{bv} 没有可用的分P 信息")
 
-    # c) 逐分P 独立对齐; 单个分P 失败不影响其它分P(记为失败原因)
-    #    对齐顺序: 先按**时长降序**(最长的一般是正赛, 特征最强、最可靠),
-    #    再用已对齐的分P 给后续分P 提供时序约束(同一场次内分P 在直播轴上按时间先后排列)。
-    order = sorted(targets, key=lambda t: -(t.get("duration") or 0))
+    # c) 逐分P 独立对齐。每个分P 各自投票定位, 互不影响。
+    #    新算法(多段投票 + 取最早自洽位置)不需要密度/时序辅助判断:
+    #      - 它自己会用 8 段投票过滤掉不稳定位置;
+    #      - 多个自洽位置时取**最早**的(那是"当时正在直播"的那次, 后面的多半是回顾)。
+    #    因此这里按分P 顺序直接对齐即可, 失败的分P 单独记录原因。
     page_results, page_errors = {}, {}
-    aligned_bounds = []      # [(offset_ms, duration_sec)] 已对齐分P 的 [起点, 终点]
-    for tp in order:
+    for tp in targets:
         pg = tp["page"]
         try:
             fp_replay, src_desc = await get_replay_fingerprint(
                 session, bv, pg, hop, win, local_audio=local_audio)
-            # 时序约束: 取已对齐分P 里"最早结束点"作为本集的下限参考,
-            # 只对时长明显短于最长分P 的"配件"(如赛后采访)启用, 避免误伤正赛。
-            later_than = None
-            if aligned_bounds:
-                last_end = max(o + int(d * 1000) for o, d in aligned_bounds)
-                later_than = last_end
             r = await asyncio.to_thread(_align_one_page, fp_replay, conns, hop,
-                                        AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC,
-                                        density, anchor_ms, later_than,
-                                        AUTO_MIN_DENSITY_PER_MIN)
+                                        AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC)
             r["offset_sec"] = round((r["offset_ms"] - anchor_ms) / 1000.0, 3)
             r["part"] = tp["part"]
             r["duration"] = tp["duration"]
             r["src"] = src_desc
             page_results[pg] = r
-            aligned_bounds.append((r["offset_ms"], float(tp.get("duration") or 0)))
             print(f"[autocalign] {date}/{file} P{pg}({tp['part']}): "
                   f"offset={r['offset_sec']} conf={r['confidence']:.2f} "
-                  f"匹配{r['matched_seconds']:.0f}s 窗户{r['windows_ok']}个 "
-                  f"候选{r['candidates']}个 依据={r['picked_by']}", flush=True)
+                  f"投票{r['votes']}/{r['total_segments']} 候选{r['candidates']}个 "
+                  f"依据={r['picked_by']}", flush=True)
         except (ApiError, Exception) as e:     # noqa: B014 - 单页失败要隔离
             page_errors[pg] = str(e)
             print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 失败: {e}", flush=True)
@@ -2544,11 +2549,10 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 "offset_sec": r["offset_sec"],
                 "confidence": round(r["confidence"], 3),
                 "matched_seconds": round(r["matched_seconds"], 1),
-                "windows_ok": r["windows_ok"],
-                "windows_spread": r["windows_spread"],
+                "votes": r.get("votes"),
+                "total_segments": r.get("total_segments"),
                 "candidates": r["candidates"],
                 "picked_by": r["picked_by"],
-                "density_per_min": r.get("density_per_min"),
                 "method": "audiofp",
                 "ts": now_iso,
             }
@@ -2602,11 +2606,10 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             "pages": {str(p): {"part": r["part"], "offset_sec": r["offset_sec"],
                                "confidence": round(r["confidence"], 3),
                                "matched_seconds": round(r["matched_seconds"], 1),
-                               "windows_ok": r["windows_ok"],
-                               "windows_spread": r["windows_spread"],
+                               "votes": r.get("votes"),
+                               "total_segments": r.get("total_segments"),
                                "candidates": r["candidates"],
-                               "picked_by": r["picked_by"],
-                               "density_per_min": r.get("density_per_min")}
+                               "picked_by": r["picked_by"]}
                       for p, r in sorted(page_results.items())},
             "errors": page_errors,
             "elapsed_sec": round(elapsed, 1), "message": message}

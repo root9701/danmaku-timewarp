@@ -1089,18 +1089,33 @@ class Recorder:
         return mp.parent / "manifest.json" if mp is not None else None
 
     def _write_manifest_atomic(self, meta_path, afp_gz, meta):
-        """写 manifest.json(schema_version 契约)。失败只告警, 不影响 other 产物。"""
+        """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。"""
         manifest_path = self._manifest_target_path()
         if manifest_path is None:
             return
         try:
             day = self._session_dirname(self.record_end or self.record_start)
-            files = [p for p in self._parts]
-            # start_ms/end_ms 优先用真实弹幕首末条(最可靠), 缺失时退回 record_start/end
+            # files 必须是**磁盘上真实存在的文件名**。
+            # self._parts 记的是未压缩名(供 meta.parts 用), 而 finalize 会把切片压成 .gz,
+            # 直接把 _parts 写进 manifest 会让它指向不存在的文件(下游按 manifest 读会读空)。
+            sess_dir = manifest_path.parent
+            files = []
+            for name in self._parts:
+                for cand in (name, name + ".gz"):
+                    if (sess_dir / cand).is_file():
+                        files.append(cand)
+                        break
             start_ms = self.first_ts or (
                 int(self.record_start.timestamp() * 1000) if self.record_start else None)
             end_ms = self.last_ts or (
                 int(self.record_end.timestamp() * 1000) if self.record_end else None)
+            # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
+            # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
+            # 导入失败时退回 0.2/0.4(与 live_audiofp 当前值一致)。
+            try:
+                from live_audiofp import HOP_SEC as _HOP, WIN_SEC as _WIN
+            except Exception:
+                _HOP, _WIN = 0.2, 0.4
             mf = {
                 "schema_version": 1,
                 "room": self.room_id,
@@ -1112,7 +1127,7 @@ class Recorder:
                 "sc_count": self.sc_count,
                 "files": files,
                 "afp": ({"file": afp_gz.name if afp_gz else None,
-                         "hop": 0.2, "win": 0.4} if self._afp_path is not None else None),
+                         "hop": _HOP, "win": _WIN} if self._afp_path is not None else None),
                 "meta": meta_path.name if meta_path else None,
                 "collector_version": VERSION,
                 "ended_by": meta.get("ended_by"),

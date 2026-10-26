@@ -321,6 +321,8 @@ class Recorder:
         self.file = self.file_path = self.record_start = None
         # 会话结束时刻: 录制中为 None, finalize 时置值。赛事日目录名与 manifest 都依赖它
         self.record_end = None
+        # 赛事日目录名缓存: 首次确定后锁定(跨零点时录制中/收尾会算出不同日期)
+        self._dir_day = None
         # None 才回落默认 60; 显式 0 = 禁用滚动切片
         _sm = cfg.get("slice_minutes")
         self.slice_minutes = max(0, int(_sm if _sm is not None else 60))
@@ -403,12 +405,21 @@ class Recorder:
         return midnight + timedelta(seconds=k * step)
 
     def _session_dirname(self, now=None):
-        """会话归属目录(比赛日): 凌晨(NIGHT_CUTOFF_START..END)的录制属前一晚, 目录用昨天日期;
-        其余时刻用当天日期。跨零点滚动切片后, 后续片也落在同一会话目录(跟随会话日)。"""
-        # 赛事日 = 会话**结束时刻**所在日期。旧规则"凌晨减一天"会把 25 号 23:33 开录、
-        # 26 号 08:59 结束的正赛标成 25 号(用户反馈"明明是今天的却成了昨天")。
-        # 以结束时刻为准: 跨零点大夜场归到"打完那天", 无魔法阈值, 符合直觉。
-        # record_end 未知(录制中)时按当前时刻估算, finalize 会用真实结束时刻重算。
+        """会话归属目录(赛事日)。
+
+        规则: 赛事日 = **会话结束时刻**所在日期。旧规则"凌晨 00:00-11:00 归前一天"
+        会把 25 号 23:33 开录、26 号 08:59 结束的正赛标成 25 号, 用户看着
+        "明明是今天的却成了昨天"。以结束时刻为准, 跨零点大夜场自然归到"打完那天"。
+
+        **目录名一旦定下就不再变**(`self._dir_day` 缓存):
+        录制开始时 record_end 还未知, 只能用当前时刻估算; 若到了 finalize 再按真实
+        结束时刻重算, 就会出现"文件在 2026-10-27/7734200/, 而 manifest.match_date
+        写成 2026-10-28" 的矛盾 —— 服务端按 manifest 找文件就会找不到。
+        因此第一次算出的目录名即锁定, manifest 也复用它, 保证两者永远一致。
+        """
+        cached = getattr(self, "_dir_day", None)
+        if cached:
+            return cached
         when = now or self.record_end or datetime.now()
         return when.strftime("%Y-%m-%d")
 
@@ -424,7 +435,11 @@ class Recorder:
         会话ID = {比赛日}_{HHMM}_{room} (正式) / {比赛日}_test_{HHMMSS}_{room} (测试)。
         服务端 _is_session_dir/SESSION_DIR_RE 与本方法必须保持一致。"""
         start = when or self.record_start or datetime.now()
-        day = self._session_dirname(self.record_end or start)
+        # 第一次算目录时把日期锁进 _dir_day, 之后的调用(包括 finalize 写 manifest)都复用它,
+        # 避免跨零点时"文件落在 27 号目录、manifest 却写 28 号"的分裂。
+        if not getattr(self, "_dir_day", None):
+            self._dir_day = self._session_dirname(self.record_end or start)
+        day = self._dir_day
         if self.is_test:
             return self.data_dir / "_test" / ("%s_%d" % (
                 start.strftime("%Y-%m-%dT%H%M"), self.room_id))

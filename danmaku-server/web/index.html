@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>弹幕回放台</title>
+  <!-- 内联空 favicon: 避免浏览器自动请求 /favicon.ico 产生 404 噪声(本地服务无该路由) -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234c8dff'/%3E%3Ctext x='16' y='23' font-size='17' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='%23fff'%3E弹%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="topbar-left">
+      <span class="brand" aria-hidden="true">弹幕回放台</span>
+      <h1 id="match-title">待加载</h1>
+    </div>
+    <div class="topbar-right">
+      <span id="live-badge">回放</span>
+      <span id="clock-now">--:--:--</span>
+    </div>
+  </header>
+
+  <!-- 主区：播放器 + 右侧弹幕栏 -->
+  <main class="main">
+    <section class="player-col">
+
+      <div class="player-wrap">
+        <video id="video" playsinline preload="auto"></video>
+        <canvas id="danmaku-canvas"></canvas>
+        <span id="speed-badge" hidden>2×</span>
+        <div id="ctrl-bar">
+          <button id="btn-play" type="button" class="cbtn" title="播放/暂停（空格）">播放</button>
+          <div id="prog" title="进度条（←/→ 快退快进，长按 ←/→ 2倍速）">
+            <div id="prog-inner"></div><div id="prog-thumb"></div>
+          </div>
+          <span id="time-label">--:--</span>
+          <button id="btn-mute" type="button" class="cbtn" title="静音">音量</button>
+          <input id="rng-vol" type="range" min="0" max="100" value="100" title="音量">
+          <button id="btn-rate" type="button" class="cbtn" title="播放速度（Shift+, / Shift+.）">1.0×</button>
+          <button id="btn-skip" type="button" class="cbtn" title="跳到下一局" hidden>下一局</button>
+          <button id="btn-auto-advance" type="button" class="cbtn off" title="当前：播完停住（点击开启自动连播）">连播: 关</button>
+          <button id="btn-dm-quick" type="button" class="cbtn" title="显示/隐藏弹幕">弹</button>
+          <button id="btn-fs" type="button" class="cbtn" title="全屏（含弹幕层）">全屏</button>
+        </div>
+        <div id="player-mask"><span class="mask-text">正在加载…</span></div>
+      </div>
+
+      <!-- ============ 区块一：当晚总览（剪辑软件式多轨时间轴） ============ -->
+      <section class="panel" id="panel-overview">
+        <div class="panel-head"><span class="panel-ico">⯀</span>当晚总览
+          <span id="ov-summary" class="align-cur">--</span>
+          <label class="ov-kw-toggle" title="防剧透：隐藏事件关键词（一血/大龙/水晶/GG 等）">
+            <input type="checkbox" id="chk-kw-spoiler" checked>显示事件关键词
+          </label>
+          <button type="button" class="nbtn" id="btn-ov-refresh" title="重新读取当晚数据与各场分段">刷新</button>
+        </div>
+        <div class="panel-body">
+          <p class="hint-line">弹幕是<b>一条连续时间轴</b>（整晚录制），官方回放是<b>切分的分段</b>（每局一个分P）。
+            下方把每场比赛的各分P按音频校准结果摆到同一时间轴上：<b>点任意色块</b>跳到该场该局，<b>点空白</b>跳时间。</p>
+          <div id="ov-wrap">
+            <canvas id="ov-canvas"></canvas>
+          </div>
+          <div id="ov-legend" class="ov-legend"></div>
+        </div>
+      </section>
+
+      <!-- ============ 区块二：选择场次 ============ -->
+      <section class="panel">
+        <div class="panel-head"><span class="panel-ico">⯁</span>选择场次
+          <button type="button" class="nbtn" id="btn-discover" title="从 Riot 官方赛程自动发现当天场次，并在B站搜索官方回放 BV">刷新赛程</button>
+        </div>
+        <div class="panel-body row">
+          <label class="fld"><span>日期</span>
+            <select id="sel-date"></select>
+          </label>
+          <label class="fld"><span>比赛场次</span>
+            <select id="sel-match"></select>
+          </label>
+          <label class="fld"><span>弹幕文件</span>
+            <select id="sel-file"></select>
+          </label>
+          <button id="btn-apply" type="button" class="btn btn-primary">开始播放</button>
+        </div>
+        <details class="adv">
+          <summary>自定义回放源（可选，优先于场次）</summary>
+          <div class="row">
+            <label class="fld"><span>BV 号</span>
+              <input id="inp-bv" type="text" placeholder="手动填 BV 号" spellcheck="false" autocomplete="off">
+            </label>
+            <label class="fld"><span>初始 offset(秒)</span>
+              <input id="inp-offset" type="number" step="1" value="0">
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <!-- ============ 区块三：校准（自动为主，手动兜底） ============ -->
+      <section class="panel">
+        <div class="panel-head"><span class="panel-ico">⯂</span>校准
+          <span id="align-cur" class="align-cur">offset: --</span>
+        </div>
+        <div class="panel-body">
+          <div id="align-status" class="align-status" hidden></div>
+          <!-- 主路径: 自动校准。密度曲线已统一到上方"当晚总览", 这里不再重复画。 -->
+          <div class="row calib-main">
+            <button type="button" class="btn btn-accent" id="btn-auto-align"
+                    title="用直播音频指纹与官方回放互相关，自动算出 offset（推荐）">自动校准</button>
+            <span class="hint-line">用整晚音频指纹与官方回放互相关，自动对齐。这是首选方式。</span>
+          </div>
+
+          <!-- 兜底: 手动校准。默认折叠, 只在自动校准失败/需要微调时展开。 -->
+          <details class="adv" id="manual-calib">
+            <summary>手动校准（兜底 · 自动校准不可用时使用）</summary>
+            <div class="panel-body">
+              <p class="hint-line">
+                在上方<b>当晚总览</b>里点彩色事件标记跳到该时刻 → 等画面上该事件真实发生时点「对齐到此刻」；
+                或用下方微调按钮逐档校正。
+              </p>
+              <div class="row calib-row">
+                <button type="button" class="btn" id="btn-align-now" disabled>对齐到此刻（先在总览点选事件）</button>
+                <span class="nudge" title="即时微调弹幕对齐">
+                  <button type="button" class="nbtn" data-d="-30">-30</button><button type="button" class="nbtn" data-d="-10">-10</button><button type="button" class="nbtn" data-d="-5">-5</button><button type="button" class="nbtn" data-d="5">+5</button><button type="button" class="nbtn" data-d="10">+10</button><button type="button" class="nbtn" data-d="30">+30</button>
+                </span>
+              </div>
+              <p class="hint-line">弹幕比画面<b>早</b> → 点 <b>+</b>；比画面<b>晚</b> → 点 <b>−</b></p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============ 区块四：弹幕与显示 ============ -->
+      <section class="panel">
+        <div class="panel-head"><span class="panel-ico">⯃</span>弹幕与显示</div>
+        <div class="panel-body row">
+          <label class="fld"><span>弹幕区域</span>
+            <select id="sel-dm-area">
+              <option value="1" selected>满屏</option>
+              <option value="0.75">3/4 屏</option>
+              <option value="0.5">半屏</option>
+            </select>
+          </label>
+          <label class="fld"><span>弹幕数量</span>
+            <select id="sel-dm-density">
+              <option value="1" selected>全部</option>
+              <option value="0.5">一半</option>
+              <option value="0.25">较少</option>
+              <option value="0.1">更少</option>
+            </select>
+          </label>
+          <label class="fld"><span>透明度</span>
+            <input id="rng-dm-opacity" type="range" min="20" max="100" step="5" value="90">
+          </label>
+          <label class="fld"><span>字号</span>
+            <select id="sel-dm-size">
+              <option value="20">小</option>
+              <option value="26" selected>中</option>
+              <option value="34">大</option>
+            </select>
+          </label>
+          <button id="btn-dm-toggle" type="button" class="btn">弹幕: 开</button>
+        </div>
+      </section>
+
+    </section>
+
+    <!-- 右侧栏 -->
+    <aside id="side">
+      <div id="sc-banner" hidden></div>
+      <div id="dm-list"></div>
+      <div id="chat-box">
+        <input type="text" placeholder="装饰性输入，发送不可用" disabled>
+        <button type="button" class="btn" disabled>发送</button>
+      </div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

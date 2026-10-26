@@ -1,0 +1,9 @@
+# 采集端本地忽略（根目录 .gitignore 已覆盖大部分，这里保留采集端特有项）
+.venv/
+__pycache__/
+*.pyc
+logs/
+logs_schedule_test/
+data_phone/
+data_schedule_test/
+*.lock

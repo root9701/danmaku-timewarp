@@ -223,7 +223,26 @@
         j.matches.forEach(function (m) {
           var o = document.createElement('option');
           o.value = m.title;
-          o.textContent = m.title + (m.bv ? '' : '（缺 BV）');
+          // 标出对齐状态, 避免用户以为"选了就能直接播":
+          //   缺 BV    -> 连回放地址都没有
+          //   未对齐   -> 有 BV 但没算出 offset(多半是那场直播没转播, 音频匹配不上)
+          //   已对齐   -> 显示分P 数
+          var nPages = (m.pages && typeof m.pages === 'object')
+            ? Object.keys(m.pages).length : 0;
+          var tag = '';
+          if (!m.bv) {
+            tag = '（缺 BV）';
+          } else if (m.align_failed) {
+            tag = '（未对齐 · 直播可能未转播）';
+          } else if (nPages > 1) {
+            tag = '（已对齐 ' + nPages + ' 个分P）';
+          } else if (nPages === 1) {
+            tag = '（已对齐）';
+          } else if (!m.offset_sec) {
+            tag = '（未对齐）';
+          }
+          o.textContent = m.title + tag;
+          o.title = m.align_error || '';
           selMatch.appendChild(o);
         });
         selMatch.selectedIndex = 1;
@@ -971,6 +990,15 @@
     var html = '<span><i class="ov-dot" style="background:rgba(76,141,255,.75)"></i>弹幕密度</span>';
     tracks.forEach(function (t, i) {
       var c = OV_COLORS[i % OV_COLORS.length];
+      // 未对齐的场次不分配色块(offset=0 会被误画到时间轴起点, 还会和别的块重叠),
+      // 在图例里明确标出来, 让用户知道"这场没算出来"而不是"画丢了"。
+      var nParts = (t.parts || []).length;
+      var unaligned = !nParts && !t.offset_sec;
+      if (unaligned) {
+        html += '<span style="opacity:.5"><i style="background:#4b5563"></i>' +
+                t.title + '<b style="color:#ff7a59"> 未对齐</b></span>';
+        return;
+      }
       html += '<span><i style="background:' + c + '"></i>' + t.title +
               (t.bv ? '' : '<b style="color:#ff7a59"> 缺BV</b>') + '</span>';
     });
@@ -988,12 +1016,16 @@
   // 而直播侧两局之间明明有休息, 累加会把这部分时间吃掉, 越往后偏得越多。
   // 没有 parts 数据时(未对齐过)才退回旧串联方式。
   function blocksFromParts(tr) {
+    // 注意字段名是驼峰 offsetSec(前端 state 用驼峰), 不是接口里的 offset_sec。
+    // 写错会得到 undefined, 参与乘法后整块变 NaN, 表现为"块算出来了但画不出来"。
+    var baseOff = (typeof tr.offsetSec === 'number') ? tr.offsetSec : 0;
     return (tr.parts || []).map(function (p) {
       return {
         p: p.page,
         part: p.part,
-        // offset_sec = (该分P 在回放内的 0 秒) 对应的真实墙钟相对主轴起点的秒数
-        startMs: tr.startMs + (p.offset_sec - tr.offset_sec) * 1000,
+        // offset_sec = 该分P 在回放内的 0 秒所对应的真实墙钟; 相对本场第一分P 的偏移
+        // 就是它在主轴上的实际位置(各分P 独立对齐, 不按 P 序号串联)。
+        startMs: tr.startMs + ((p.offset_sec || 0) - baseOff) * 1000,
         durMs: (p.duration || 0) * 1000,
         conf: p.confidence,
       };
@@ -1006,6 +1038,14 @@
       if (seq !== undefined && seq !== ovSeq) { return; }   // 日期已切换, 停止旧加载
       if (i >= ov.tracks.length) { layoutOverviewLanes(); drawOverview(); return; }
       var tr = ov.tracks[i++];
+      // 未对齐的场次(既没有 parts, offset 也是 0)不画块:
+      // offset=0 会被解释成"回放 0 秒对应时间轴起点", 画出来是一堆挤在 23:33 的
+      // 无效色块, 既重叠又误导, 还会干扰总览的点击命中。
+      if (!(tr.parts || []).length && !tr.offsetSec) {
+        tr.blocks = [];
+        next();
+        return;
+      }
       // 已有逐分P 对齐结果: 直接用, 不需要网络
       var fromParts = blocksFromParts(tr);
       if (fromParts.length) {
@@ -1067,6 +1107,18 @@
   function drawOverview() {
     var w = ovCanvas.clientWidth, h = ovCanvas.clientHeight;
     if (w <= 0 || h <= 0) { return; }
+    // 有轨道块时把容器加高, 给分P 色块留出空间(否则密度图吃满 118px, 块高度为负画不出)
+    var wrapEl = document.getElementById('ov-wrap');
+    if (wrapEl) {
+      var wantLanes = (ov.layout || []).length > 0;
+      if (wantLanes && !wrapEl.classList.contains('has-lanes')) {
+        wrapEl.classList.add('has-lanes');
+        h = ovCanvas.clientHeight;      // 加高后重新取高度
+      } else if (!wantLanes && wrapEl.classList.contains('has-lanes')) {
+        wrapEl.classList.remove('has-lanes');
+        h = ovCanvas.clientHeight;
+      }
+    }
     var d = Math.min(window.devicePixelRatio || 1, 2);
     if (ovCanvas.width !== Math.round(w * d) || ovCanvas.height !== Math.round(h * d)) {
       ovCanvas.width = Math.round(w * d); ovCanvas.height = Math.round(h * d);
@@ -1740,6 +1792,7 @@
     init();
   }
 })();
+
 
 
 

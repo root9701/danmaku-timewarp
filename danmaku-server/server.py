@@ -86,6 +86,14 @@ AUTO_MAX_OFFSET_SPREAD_SEC = 0.5  # 多个时间窗对齐出的 offset 允许的
 AUTO_SEQUENCE_WINDOW_SEC = 1800   # 同一场次相邻分P 的最大合理间隔(30 分钟)
 #   赛后采访/赛前评论这类配件紧贴正赛, 不会隔几小时。用它把"紧邻候选"和其他时段的
 #   伪峰分开(实测 P2 赛后采访: 正确候选在 P1 结束后 0 分钟, 伪峰在 5~6 小时后)。
+AUTO_MIN_DENSITY_PER_MIN = 500.0  # 对齐落点的弹幕密度下限(条/分), 防止匹配到"没在比赛"的时段
+#   实测(2026-10-26 那晚)分得很开:
+#     真比赛     1000~1120 条/分  (IG vs HLE、TES vs G2 全部落在这个区间)
+#     赛前评论    270~380 条/分   (比赛还没开始, 观众在等)
+#     赛后闲聊/重播 140~260 条/分
+#   阈值 500 能挡住"没在转播这场"的伪匹配, 又不会误杀真比赛。
+#   注意: 赛前评论这类配件天然低密度, 会被这道闸门拒绝 —— 这是有意的,
+#   宁可少一个配件分P, 也不要把弹幕错配到无关时段。
 # 参与对齐的音频时长下限: 测过纯随机噪声在"片段长度接近回放长度"时可达 conf 2.5~5.5,
 # 光靠置信度挡不住。真实比赛对齐通常能匹配几十秒以上, 故再要求匹配时长足够。
 AUTO_MIN_MATCH_SEC = 20.0
@@ -1051,14 +1059,36 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
     if not DATE_RE.fullmatch(date):
         raise ApiError("参数 date 非法(应为 YYYY-MM-DD)")
     lists = load_matches()["lists"]
+    align = load_matches()["align"]
     match_date = _session_match_date(date)
     matches = _matchlist_for_session(date, lists)
     # 旧数据的标题带 "G1 " 前缀, 展示前统一剥掉(不改存储, 保留原始数据)
     fixed = []
     for it in (matches or []):
-        if isinstance(it, dict):
-            it = dict(it)
-            it["title"] = _strip_game_prefix(it.get("title"))
+        if not isinstance(it, dict):
+            fixed.append(it)
+            continue
+        it = dict(it)
+        it["title"] = _strip_game_prefix(it.get("title"))
+        # 合并该场自己的对齐状态: 前端据此显示「已对齐 N 个分P / 未对齐」。
+        # key 优先用 (date|file|bv) 精确记录; 老数据退回到按 bv 扫。
+        bv = str(it.get("bv") or "")
+        rec = None
+        if bv:
+            for k, v in align.items():
+                if isinstance(v, dict) and str(v.get("bv") or "") == bv:
+                    # 优先带 bv 维度的精确 key
+                    if k.count("|") >= 2:
+                        rec = v
+                        break
+                    if rec is None:
+                        rec = v
+        if rec:
+            if rec.get("pages"):
+                it["pages"] = rec["pages"]
+            if rec.get("align_failed"):
+                it["align_failed"] = True
+                it["align_error"] = rec.get("align_error") or ""
         fixed.append(it)
     # match_date 一并返回: 前端据此显示"比赛日", 并作为 /api/discover 的日期
     return api_ok(matches=fixed, match_date=match_date)
@@ -1740,19 +1770,27 @@ async def handle_overview(request: web.Request) -> web.Response:
             if isinstance(offset, bool) or not isinstance(offset, (int, float)):
                 offset = 0
             pages = {}
-            for akey, aentry in align.items():
-                if not isinstance(aentry, dict):
-                    continue
-                if not bv or str(aentry.get("bv") or "") != bv:
-                    continue
-                pg = aentry.get("pages")
-                if isinstance(pg, dict) and pg:
-                    pages = pg
-                    # 兼容字段 offset_sec 取第一分P, 用于没有 pages 的旧记录
-                    ao = aentry.get("offset_sec")
-                    if isinstance(ao, (int, float)) and not isinstance(ao, bool):
-                        offset = float(ao)
-                break
+            # 按 (date|file|bv) 精确找该场自己的对齐记录(多场共用一个会话, key 必须带 bv)
+            precise = align.get(f"{raw_date}|{file}|{bv}") if bv else None
+            if isinstance(precise, dict) and isinstance(precise.get("pages"), dict):
+                pages = precise["pages"]
+                ao = precise.get("offset_sec")
+                if isinstance(ao, (int, float)) and not isinstance(ao, bool):
+                    offset = float(ao)
+            else:
+                # 兼容旧记录: 会话级 key 里只存过一场, 或老格式没有 bv 维度
+                for akey, aentry in align.items():
+                    if not isinstance(aentry, dict):
+                        continue
+                    if not bv or str(aentry.get("bv") or "") != bv:
+                        continue
+                    pg = aentry.get("pages")
+                    if isinstance(pg, dict) and pg:
+                        pages = pg
+                        ao = aentry.get("offset_sec")
+                        if isinstance(ao, (int, float)) and not isinstance(ao, bool):
+                            offset = float(ao)
+                    break
             # 分P 段: 每个分P 一个独立 offset(同一场次内各分P 落点不同)
             segs = []
             for pg_no, pv in sorted(pages.items(), key=lambda kv: int(kv[0])):
@@ -2201,9 +2239,20 @@ class DanmakuDensity:
         n_bins = max(1, int(duration_sec // self.bin_sec))
         return float(sum(self.bins.get(start_bin + i, 0) for i in range(n_bins)))
 
+    def density_per_min(self, offset_ms: int, duration_sec: float) -> float:
+        """区间内的**每分钟平均弹幕数**, 用于判断"这段像不像真比赛"。
+
+        实测参考值(2026-10-26 那晚):
+          真实比赛时段  5000~11000 条/10分钟 = 500~1100 条/分
+          赛后闲聊/重播  200~250 条/分
+        """
+        dur_min = max(1.0, duration_sec / 60.0)
+        return self.density_for(offset_ms, duration_sec) / dur_min
+
 
 def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
-                    density=None, anchor_ms=None, later_than_ms=None):
+                    density=None, anchor_ms=None, later_than_ms=None,
+                    min_density=None):
     """把一个分P 的回放指纹对齐到直播 afp 的各个连接段上。
 
     返回 {"offset_ms", "confidence", "matched_seconds", "conn", "t0_ms",
@@ -2337,6 +2386,18 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
                 f"已拒绝写入(建议人工校准)")
 
     best = pick["best"]
+    # 最后一道闸门: **弹幕密度合理性**。
+    # 音频指纹在长直播里做滑窗互相关, 偶尔会在"没在比赛"的时段撞出高分(实测
+    # GEN vs LYON 被对齐到 04:46, 那段只有 205 条/分, 而真比赛时段是 5000+ 条/分)。
+    # 比赛时段观众的弹幕密度远高于赛后闲聊/重播, 所以低密度区的结果一律不可信。
+    final_density = None
+    if density is not None and min_density:
+        final_density = density.density_per_min(pick["offset_ms"], pick["matched_seconds"])
+        if final_density < min_density:
+            raise ApiError(
+                f"该分P 对齐落点的弹幕密度过低({final_density:.0f} 条/分 < "
+                f"{min_density:.0f} 条/分), 判为伪匹配并拒绝。"
+                f"该时段直播可能并没有转播这场比赛(或被重播覆盖)")
     return {
         "offset_ms": int(round(pick["offset_ms"])),
         "confidence": min(pick["conf"], 999.0),
@@ -2347,6 +2408,7 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         "windows_spread": round(pick["spread"], 3),
         "candidates": len(clusters),
         "picked_by": picked_by,
+        "density_per_min": round(final_density, 1) if final_density is not None else None,
     }
 
 
@@ -2427,7 +2489,8 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 later_than = last_end
             r = await asyncio.to_thread(_align_one_page, fp_replay, conns, hop,
                                         AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC,
-                                        density, anchor_ms, later_than)
+                                        density, anchor_ms, later_than,
+                                        AUTO_MIN_DENSITY_PER_MIN)
             r["offset_sec"] = round((r["offset_ms"] - anchor_ms) / 1000.0, 3)
             r["part"] = tp["part"]
             r["duration"] = tp["duration"]
@@ -2443,15 +2506,34 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 失败: {e}", flush=True)
 
     if not page_results:
-        raise ApiError("所有分P 都无法对齐: " +
-                       "; ".join(f"P{k}: {v}" for k, v in page_errors.items()))
+        # 全部失败: 记录失败原因(供前端显示"为什么这场没对齐"), 但**不动**已有的
+        # offset —— 不能因为一次失败就把用户之前手工校准的结果清掉。
+        fail_key = f"{date}|{file}|{bv}"
+        err_text = "; ".join(f"P{k}: {v}" for k, v in page_errors.items())
 
-    # d) 写回 matches.json: 每场一条记录, pages 里存各分P 的 offset
-    key = f"{date}|{file}"
+        def _mark_fail(matches):
+            e = dict(matches["align"].get(fail_key) or {})
+            e.update({"date": date, "file": file, "bv": bv,
+                      "title": e.get("title") or info.get("title") or "",
+                      "align_failed": True,
+                      "align_error": err_text[:300],
+                      "align_failed_at": datetime.now().isoformat(timespec="seconds")})
+            matches["align"][fail_key] = e
+
+        await asyncio.to_thread(update_matches, _mark_fail)
+        raise ApiError("所有分P 都无法对齐: " + err_text)
+
+    # d) 写回 matches.json。
+    # key 必须**按比赛(BV)区分**, 不能只用 {date}|{file}:
+    # 一个会话里有多场比赛(一晚 4 场), 若共用 key 会互相覆盖 —— 实测对齐完第 4 场后,
+    # 前 3 场的记录全没了。现在: 会话级汇总放在 {date}|{file}, 每场比赛的详细对齐
+    # 按 {date}|{file}|{bv} 各存一条。
+    sess_key = f"{date}|{file}"
+    match_key = f"{date}|{file}|{bv}"
     now_iso = datetime.now().isoformat(timespec="seconds")
 
     def _mut(matches):
-        entry = dict(matches["align"].get(key) or {})
+        entry = dict(matches["align"].get(match_key) or {})
         entry.update({"date": date, "file": file, "bv": bv,
                       "title": info.get("title") or entry.get("title") or ""})
         pages_map = dict(entry.get("pages") or {})
@@ -2466,6 +2548,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 "windows_spread": r["windows_spread"],
                 "candidates": r["candidates"],
                 "picked_by": r["picked_by"],
+                "density_per_min": r.get("density_per_min"),
                 "method": "audiofp",
                 "ts": now_iso,
             }
@@ -2475,9 +2558,19 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         entry["offset_sec"] = page_results[int(first_pg)]["offset_sec"]
         entry["auto"] = {"confidence": round(page_results[int(first_pg)]["confidence"], 3),
                          "method": "audiofp", "ts": now_iso}
-        matches["align"][key] = entry
-        # 同步场次列表: **按 bv + page 精确匹配**, 不再按 bv 全局扫
-        # (旧实现按 bv 扫会把同一 BV 的所有场次写成同一个 offset, 已实测造成错误)
+        matches["align"][match_key] = entry
+        # 会话级汇总: 记录该会话对齐过哪些 bv(总览按 bv 查详情)
+        sess = dict(matches["align"].get(sess_key) or {})
+        sess.update({"date": date, "file": file})
+        bvs = list(sess.get("bvs") or [])
+        if bv not in bvs:
+            bvs.append(bv)
+        sess["bvs"] = bvs
+        # 兼容: 会话级 offset_sec 取第一场的第一分P(仅当还没设过)
+        if not isinstance(sess.get("offset_sec"), (int, float)):
+            sess["offset_sec"] = entry["offset_sec"]
+        matches["align"][sess_key] = sess
+        # 同步场次列表: **按 bv + page 精确匹配**
         for day_list in matches.get("lists", {}).values():
             if not isinstance(day_list, list):
                 continue
@@ -2512,7 +2605,8 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                                "windows_ok": r["windows_ok"],
                                "windows_spread": r["windows_spread"],
                                "candidates": r["candidates"],
-                               "picked_by": r["picked_by"]}
+                               "picked_by": r["picked_by"],
+                               "density_per_min": r.get("density_per_min")}
                       for p, r in sorted(page_results.items())},
             "errors": page_errors,
             "elapsed_sec": round(elapsed, 1), "message": message}
@@ -2669,3 +2763,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

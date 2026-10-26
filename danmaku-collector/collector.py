@@ -319,6 +319,8 @@ class Recorder:
         self.stop_event, self.reason = stop_event, reason
         self.is_test, self.meta_name = is_test, meta_name  # meta_name 为 None 时按数据文件名派生
         self.file = self.file_path = self.record_start = None
+        # 会话结束时刻: 录制中为 None, finalize 时置值。赛事日目录名与 manifest 都依赖它
+        self.record_end = None
         # None 才回落默认 60; 显式 0 = 禁用滚动切片
         _sm = cfg.get("slice_minutes")
         self.slice_minutes = max(0, int(_sm if _sm is not None else 60))
@@ -403,10 +405,12 @@ class Recorder:
     def _session_dirname(self, now=None):
         """会话归属目录(比赛日): 凌晨(NIGHT_CUTOFF_START..END)的录制属前一晚, 目录用昨天日期;
         其余时刻用当天日期。跨零点滚动切片后, 后续片也落在同一会话目录(跟随会话日)。"""
-        now = now or datetime.now()
-        if NIGHT_CUTOFF_START <= now.hour < NIGHT_CUTOFF_END:
-            return (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        return now.strftime("%Y-%m-%d")
+        # 赛事日 = 会话**结束时刻**所在日期。旧规则"凌晨减一天"会把 25 号 23:33 开录、
+        # 26 号 08:59 结束的正赛标成 25 号(用户反馈"明明是今天的却成了昨天")。
+        # 以结束时刻为准: 跨零点大夜场归到"打完那天", 无魔法阈值, 符合直觉。
+        # record_end 未知(录制中)时按当前时刻估算, finalize 会用真实结束时刻重算。
+        when = now or self.record_end or datetime.now()
+        return when.strftime("%Y-%m-%d")
 
     def _session_dir_path(self, when=None):
         """本次会话的数据目录: data/{比赛日}/{会话ID}/
@@ -420,12 +424,11 @@ class Recorder:
         会话ID = {比赛日}_{HHMM}_{room} (正式) / {比赛日}_test_{HHMMSS}_{room} (测试)。
         服务端 _is_session_dir/SESSION_DIR_RE 与本方法必须保持一致。"""
         start = when or self.record_start or datetime.now()
-        day = self._session_dirname(start)
+        day = self._session_dirname(self.record_end or start)
         if self.is_test:
-            sid = "%s_test_%s_%d" % (day, start.strftime("%H%M%S"), self.room_id)
-        else:
-            sid = "%s_%s_%d" % (day, start.strftime("%H%M"), self.room_id)
-        return self.data_dir / day / sid
+            return self.data_dir / "_test" / ("%s_%d" % (
+                start.strftime("%Y-%m-%dT%H%M"), self.room_id))
+        return self.data_dir / day / str(self.room_id)
 
     def _open_slice(self):
         """打开(append)一个新数据片并计算下次滚动时刻; _open_file 与滚动切片共用。"""
@@ -1010,6 +1013,7 @@ class Recorder:
 
     async def finalize(self, ended_hint=None):
         record_end = datetime.now()
+        self.record_end = record_end          # 赛事日/manifest 依赖它
         await self._close_ws()
         # 音频指纹 sidecar 先停(内部自吞异常), 再与其余产物一并归档/gzip
         afp_task, self._afp_task = self._afp_task, None
@@ -1074,6 +1078,52 @@ class Recorder:
             log.info("gzip 副本: %s", gz_path)
         if meta_path:
             log.info("meta 已写入: %s", meta_path)
+        # manifest.json: 本会话的**权威索引**, 服务端优先读它(见 SCHEMA.md)。
+        # 与 meta 的分工: meta 是给人和旧工具看的统计摘要(字段会演进);
+        # manifest 是给程序读的稳定契约(带 schema_version, 路径/时间/计数都在里面)。
+        self._write_manifest_atomic(meta_path, afp_gz, meta)
+
+    def _manifest_target_path(self):
+        """manifest 总是写在会话目录根(与 meta 同目录)。"""
+        mp = self._meta_target_path()
+        return mp.parent / "manifest.json" if mp is not None else None
+
+    def _write_manifest_atomic(self, meta_path, afp_gz, meta):
+        """写 manifest.json(schema_version 契约)。失败只告警, 不影响 other 产物。"""
+        manifest_path = self._manifest_target_path()
+        if manifest_path is None:
+            return
+        try:
+            day = self._session_dirname(self.record_end or self.record_start)
+            files = [p for p in self._parts]
+            # start_ms/end_ms 优先用真实弹幕首末条(最可靠), 缺失时退回 record_start/end
+            start_ms = self.first_ts or (
+                int(self.record_start.timestamp() * 1000) if self.record_start else None)
+            end_ms = self.last_ts or (
+                int(self.record_end.timestamp() * 1000) if self.record_end else None)
+            mf = {
+                "schema_version": 1,
+                "room": self.room_id,
+                "match_date": day,
+                "is_test": bool(self.is_test),
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "dm_count": self.dm_count,
+                "sc_count": self.sc_count,
+                "files": files,
+                "afp": ({"file": afp_gz.name if afp_gz else None,
+                         "hop": 0.2, "win": 0.4} if self._afp_path is not None else None),
+                "meta": meta_path.name if meta_path else None,
+                "collector_version": VERSION,
+                "ended_by": meta.get("ended_by"),
+            }
+            tmp = manifest_path.with_name(manifest_path.name + ".tmp")
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(mf, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(manifest_path)
+            log.info("manifest 已写入: %s", manifest_path)
+        except Exception as e:
+            log.error("写 manifest.json 失败(不影响弹幕数据): %s", e)
 
     def _write_meta_atomic(self, meta_path, meta):
         """归档已存在的 meta(无论来源) -> tmp 原子写入 -> Path.replace 顶上。

@@ -79,16 +79,21 @@ body {
   width: 100vw; height: 100vh; border-radius: 0;
 }
 
-/* 控制条(悬停浮现) */
+/* 控制条(悬停浮现; 全屏时 3 秒无操作自动隐藏) */
 #ctrl-bar {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 8;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;
   background: linear-gradient(transparent, rgba(0,0,0,.8));
-  opacity: 0; transition: opacity .2s;
+  opacity: 0; transition: opacity .25s;
 }
-.player-wrap:hover #ctrl-bar,
-.player-wrap:fullscreen #ctrl-bar { opacity: 1; }
+.player-wrap:hover #ctrl-bar { opacity: 1; }
+/* 全屏: 只有 .ctrl-visible 时显示(由 JS 在鼠标移动/触摸时加, 3 秒后移除)。
+   旧规则 `.player-wrap:fullscreen #ctrl-bar{opacity:1}` 让控制条常显, 挡住画面。 */
+.player-wrap:fullscreen #ctrl-bar { opacity: 0; }
+.player-wrap:fullscreen.ctrl-visible #ctrl-bar { opacity: 1; }
+/* 全屏时鼠标指针也一起隐藏, 避免静止时箭头压在画面上 */
+.player-wrap:fullscreen.ctrl-hidden, .player-wrap:fullscreen.ctrl-hidden * { cursor: none; }
 #ctrl-bar .cbtn {
   background: rgba(255,255,255,.14); border: none; color: #fff;
   border-radius: 6px; padding: 5px 12px; cursor: pointer;

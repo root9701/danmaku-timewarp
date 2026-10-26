@@ -939,6 +939,7 @@
         return {
           idx: t.idx, title: t.title, bv: t.bv,
           offsetSec: t.offset_sec, auto: t.auto,
+          parts: t.parts || [],          // 逐分P 对齐结果(优先于按序号串联)
           color: OV_COLORS[i % OV_COLORS.length],
           startMs: ov.t0 + t.offset_sec * 1000,
           blocks: [],
@@ -980,13 +981,39 @@
   // 它们会把色块拉长, 挤压真正的对局块, 还会制造假重叠。默认只画对局块。
   var OV_SKIP_PART_RE = /(赛前|赛后|评论|采访|花絮|预告|广告|开幕式|颁奖)/;
 
-  // 逐场取分P结构(失败就留空块, 位置仍按 offset 显示)
+  // 逐场生成"分P 块"。
+  // 优先用服务端给出的**每分P 独立 offset**(tr.parts)——这是音频指纹逐分P 对齐的结果,
+  // 每段都锚在自己的真实时刻上, 因此段与段之间的留白就是真实的局间休息。
+  // 旧做法是按 P 序号把 page_marks 累加串联, 那只在"各分P 首尾无缝相接"时才对,
+  // 而直播侧两局之间明明有休息, 累加会把这部分时间吃掉, 越往后偏得越多。
+  // 没有 parts 数据时(未对齐过)才退回旧串联方式。
+  function blocksFromParts(tr) {
+    return (tr.parts || []).map(function (p) {
+      return {
+        p: p.page,
+        part: p.part,
+        // offset_sec = (该分P 在回放内的 0 秒) 对应的真实墙钟相对主轴起点的秒数
+        startMs: tr.startMs + (p.offset_sec - tr.offset_sec) * 1000,
+        durMs: (p.duration || 0) * 1000,
+        conf: p.confidence,
+      };
+    }).filter(function (b) { return b.durMs > 0; });
+  }
+
   function fillOverviewBlocks(seq) {
     var i = 0;
     (function next() {
       if (seq !== undefined && seq !== ovSeq) { return; }   // 日期已切换, 停止旧加载
       if (i >= ov.tracks.length) { layoutOverviewLanes(); drawOverview(); return; }
       var tr = ov.tracks[i++];
+      // 已有逐分P 对齐结果: 直接用, 不需要网络
+      var fromParts = blocksFromParts(tr);
+      if (fromParts.length) {
+        tr.blocks = fromParts;
+        drawOverview();
+        next();
+        return;
+      }
       if (!tr.bv) { next(); return; }
       getJson('/api/playurl?bv=' + enc(tr.bv)).then(function (j) {
         if (seq !== undefined && seq !== ovSeq) { return; }
@@ -1176,10 +1203,10 @@
       ov.order.push({ it: it, x0: x0, x1: x0 + bwid, y: y, h: laneH });
       if (bwid > 30) {
         g.fillStyle = '#06121f'; g.font = 'bold 9px sans-serif';
-        // 块内写"场次缩写 + 局名", 例如 "G1·第一局"
-        var short = (tr.title.match(/^G\d+/) || ['']);
-        var label = (short[0] ? short[0] + '·' : '') + (b.part || ('P' + b.p));
-        g.fillText(label.slice(0, Math.floor(bwid / 8)), x0 + 3, y + laneH - 4);
+        // 块内直接写**分P 名称**(如 "第一局"/"赛前评论"), 不再加 "G1·" 序号前缀 ——
+        // 序号对用户没信息量, 而且上传顺序与真实时间顺序常常不一致, 容易误导。
+        var label = String(b.part || ('P' + b.p));
+        g.fillText(label.slice(0, Math.max(2, Math.floor(bwid / 8))), x0 + 3, y + laneH - 4);
       }
     });
 
@@ -1571,6 +1598,44 @@
     } else if (wrap && wrap.requestFullscreen) {
       wrap.requestFullscreen().catch(noop);
     }
+  });
+
+  // 全屏下控制条自动隐藏: 鼠标移动/触摸时浮现, 静止 3 秒后连同鼠标指针一起隐藏。
+  // 旧实现是 CSS 里 `:fullscreen #ctrl-bar{opacity:1}` 常显, 全屏时一直挡着画面底部。
+  var fsHideTimer = null;
+  var FS_IDLE_MS = 3000;
+  function fsWrap() { return videoEl.closest('.player-wrap'); }
+  function fsReveal() {
+    var w = fsWrap();
+    if (!w || !document.fullscreenElement) { return; }
+    w.classList.add('ctrl-visible');
+    w.classList.remove('ctrl-hidden');
+    if (fsHideTimer) { clearTimeout(fsHideTimer); }
+    fsHideTimer = setTimeout(function () {
+      var w2 = fsWrap();
+      if (!w2 || !document.fullscreenElement) { return; }
+      // 鼠标停在控制条上时不要藏(否则想点按钮它会消失)
+      if (w2.matches(':hover') && document.getElementById('ctrl-bar').matches(':hover')) { return; }
+      w2.classList.remove('ctrl-visible');
+      w2.classList.add('ctrl-hidden');
+    }, FS_IDLE_MS);
+  }
+  function fsReset() {
+    var w = fsWrap();
+    if (w) { w.classList.remove('ctrl-visible', 'ctrl-hidden'); }
+    if (fsHideTimer) { clearTimeout(fsHideTimer); fsHideTimer = null; }
+  }
+  document.addEventListener('fullscreenchange', function () {
+    if (document.fullscreenElement) {
+      fsReveal();               // 刚进全屏先显示一下, 让用户知道控制条在哪
+    } else {
+      fsReset();
+    }
+  });
+  ['mousemove', 'mousedown', 'touchstart', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, function () {
+      if (document.fullscreenElement) { fsReveal(); }
+    }, { passive: true });
   });
 
   videoEl.addEventListener('seeked', function () {

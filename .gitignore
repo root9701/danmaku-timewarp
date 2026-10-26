@@ -9,28 +9,35 @@ venv/
 env/
 .nox/
 
-# ---------- 采集产物：默认全部忽略，只放行指定会话 ----------
-# 弹幕数据体积大且每晚增长，不整体入库。需要保留某次会话时用 "!" 规则显式放行。
+# ---------- 采集产物 ----------
+# 目录结构见 SCHEMA.md:
+#   data/{赛事日}/{room}/manifest.json + 切片 + afp + meta
+#   data/_test/{日期}T{HHMM}_{room}/  测试会话
+#
+# 默认忽略 data 下全部内容，再逐条放行需要入库的会话。
+# 目前只保留 2026-10-26 的正赛(20 万条, 用来验证回放链路)。
+danmaku-collector/data/**
+!danmaku-collector/data/.gitkeep
+!danmaku-collector/data/2026-10-26/
+!danmaku-collector/data/2026-10-26/7734200/
+
+# ★ 音频指纹**必须入库**: 直播流已消失, 无法重新生成; 丢了就永远无法自动校准。
+#   体积约 0.59MB/小时(一晚约 7MB), 换来的是一整晚的自动对齐能力。
+!danmaku-collector/data/2026-10-26/7734200/*.afp.jsonl
+!danmaku-collector/data/2026-10-26/7734200/*.afp.jsonl.gz
+# 弹幕切片与索引
+!danmaku-collector/data/2026-10-26/7734200/*.jsonl.gz
+!danmaku-collector/data/2026-10-26/7734200/*.jsonl
+!danmaku-collector/data/2026-10-26/7734200/*.meta.json
+!danmaku-collector/data/2026-10-26/7734200/manifest.json
+
+# 日志/锁/临时数据
 danmaku-collector/logs/
 danmaku-collector/logs_schedule_test/
 danmaku-collector/data_phone/
 danmaku-collector/data_schedule_test/
 *.log
 *.lock
-
-# 先忽略 data 下全部内容，再逐条放行需要保留的会话
-danmaku-collector/data/**
-!danmaku-collector/data/.gitkeep
-# 保留 2026-10-25 主会话（10-26 凌晨那场正赛）的弹幕记录，供 clone 后直接验证回放
-!danmaku-collector/data/2026-10-25/
-!danmaku-collector/data/2026-10-25/2026-10-25_2332_7734200/
-!danmaku-collector/data/2026-10-25/2026-10-25_2332_7734200/*.jsonl.gz
-!danmaku-collector/data/2026-10-25/2026-10-25_2332_7734200/*.jsonl
-!danmaku-collector/data/2026-10-25/2026-10-25_2332_7734200/*.meta.json
-
-# 音频指纹体积大(单会话约 7MB)且可由原始音频重新计算，不入库
-*.afp.jsonl
-*.afp.jsonl.gz
 
 # ---------- 运行时临时文件 ----------
 tmp/
@@ -40,9 +47,9 @@ tmp/
 *.rej
 *.npz
 
-# ---------- 运行状态（依赖本机数据，不入库）----------
-# matches.json 记录具体回放的 BV 与 offset，属于运行状态而非代码；
-# 首次运行会自动重建。
+# ---------- 运行状态 ----------
+# matches.json 记录具体回放的 BV 与 offset(含逐分P 对齐结果), 属于本机运行状态;
+# 首次运行/重新对齐会自动重建。需要复现某次对齐结果时再单独备份。
 danmaku-server/matches.json
 
 # ---------- 编辑器 / 系统 ----------
@@ -54,6 +61,6 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
-# ---------- 本地配置（含个人房间号/时间）----------
-# config.json 是部署配置，不同机器不同值。若确认无隐私可删掉这行纳入版本控制。
+# ---------- 本地配置 ----------
+# config.json 含本机房间号/录制时间, 不同机器不同值。
 danmaku-collector/config.json

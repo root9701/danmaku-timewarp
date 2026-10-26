@@ -80,6 +80,12 @@ AFP_CACHE_DIR = Path(os.environ.get("AFP_CACHE", "").strip()
                      or (Path(tempfile.gettempdir()) / "danmaku_afp_cache"))
 AUTO_MIN_CONFIDENCE = 2.0   # 原型实测真对齐置信度 2.2-10.8, 低于 2 视为未验证
 AUTO_MIN_CONN_FRAMES = 50   # 连接段指纹至少 50 帧(约 10s @hop0.2)才参与对齐
+AUTO_MAX_OFFSET_SPREAD_SEC = 0.5  # 多个时间窗对齐出的 offset 允许的最大离散(秒)
+#   实测正常对齐时各窗离散为 0.0s(G3 三窗全 0.0), 因此 0.5s 已经非常宽松;
+#   超过它说明各窗匹配到了不同位置(伪峰/该时段根本不是这一局), 必须拒绝。
+AUTO_SEQUENCE_WINDOW_SEC = 1800   # 同一场次相邻分P 的最大合理间隔(30 分钟)
+#   赛后采访/赛前评论这类配件紧贴正赛, 不会隔几小时。用它把"紧邻候选"和其他时段的
+#   伪峰分开(实测 P2 赛后采访: 正确候选在 P1 结束后 0 分钟, 伪峰在 5~6 小时后)。
 # 参与对齐的音频时长下限: 测过纯随机噪声在"片段长度接近回放长度"时可达 conf 2.5~5.5,
 # 光靠置信度挡不住。真实比赛对齐通常能匹配几十秒以上, 故再要求匹配时长足够。
 AUTO_MIN_MATCH_SEC = 20.0
@@ -226,14 +232,16 @@ def load_meta(date: str, file: str) -> dict:
 
 def _meta_path_for(date: str, file: str):
     """定位 meta 文件: 会话目录布局优先, 其次旧平铺布局。找不到返回 None。"""
-    m = SESSION_DIR_RE.fullmatch(file)
-    if m:
-        d = DATA_DIR / date / file
-        if not d.is_dir():
-            return None
-        # 同 danmaku_paths: 会话目录里的 meta 名不一定等于目录推导名
-        # (测试会话是 test_HHMMSS_{room}.meta.json), 直接找目录内唯一的 meta。
-        cands = sorted(d.glob("*.meta.json"))
+    sess = resolve_session_dir(date, file)
+    if sess is not None:
+        # 会话目录里的 meta 名不一定等于目录推导名(测试会话是 test_HHMMSS_{room}.meta.json),
+        # 直接找目录内唯一的 meta; 优先用 manifest 里登记的 meta 名。
+        mf = read_manifest(sess)
+        if mf and mf.get("meta"):
+            cand = sess / mf["meta"]
+            if cand.is_file():
+                return cand
+        cands = sorted(sess.glob("*.meta.json"))
         return cands[0] if cands else None
     for d in _scope_dirs(date):
         cand = d / f"{file}.meta.json"
@@ -281,26 +289,70 @@ def open_text(path: Path):
 RUN_RE = re.compile(r"_run\d+$")
 SLICE_RE = re.compile(r"_s\d{4}$")   # 滚动切片后缀 _sHHMM(如 7734200_s0030.jsonl)
 
-# ---- 会话目录(新布局) ----
-# 旧布局: data/{比赛日}/{room}_sHHMM.jsonl.gz 平铺, 一个目录里混着多个会话
-#         (晚间场 + 白天场 + 孤儿 afp), 靠文件名猜归属, 已多次踩坑。
-# 新布局: data/{比赛日}/{session_id}/ 每个会话一个子目录, 内含它自己的切片/afp/meta。
-#   session_id = "{比赛日}_{HHMM}_{room}"  (HHMM = 该会话 record_start 的时分)
-# 读取层必须**同时**支持两种布局(旧数据不迁移也能读), 见 _session_dirs/_resolve_day_scope。
+# ---- 目录布局(三代共存, 读取层全部兼容) ----
+# v1 平铺:   data/{日期}/{room}_sHHMM.jsonl.gz           一个目录混多个会话(最早)
+# v2 会话目录: data/{日期}/{日期}_{HHMM}_{room}/         一个目录一个会话(过渡)
+# v3 现行:   data/{赛事日}/{room}/ + manifest.json        时间由 manifest 表达, 目录最简
+#            测试数据: data/_test/{ts}_{room}/
+# 服务端一律"优先读 manifest", 读不到再退化为目录扫描, 保证按 v1/v2 写的老数据仍可播。
 SESSION_DIR_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4})_(\d+)(?:$|_test_(\d{6}))$")
+# v3 会话目录名: 纯房间号(正式) 或 {日期}T{HHMM}_{room}(测试)
+V3_SESSION_RE = re.compile(r"^(?:(\d{4}-\d{2}-\d{2})T(\d{4})_)?(\d+)$")
+TEST_ROOT = "_test"
+MANIFEST_NAME = "manifest.json"
+SCHEMA_VERSION = 1
 
 
-def _is_session_dir(p: Path) -> bool:
-    return p.is_dir() and bool(SESSION_DIR_RE.fullmatch(p.name))
+def _looks_like_session_dir(p: Path) -> bool:
+    """是否为"会话目录"(v2 或 v3)。目录里必须有 manifest 或弹幕/afp 文件。"""
+    if not p.is_dir() or p.name.startswith("."):
+        return False
+    if not (SESSION_DIR_RE.fullmatch(p.name) or V3_SESSION_RE.fullmatch(p.name)):
+        return False
+    try:
+        return (p / MANIFEST_NAME).is_file() or any(
+            q.is_file() and (".jsonl" in q.name) for q in p.iterdir())
+    except OSError:
+        return False
+
+
+def read_manifest(sess_dir: Path):
+    """读会话目录里的 manifest.json。不存在或损坏返回 None(调用方退化为目录扫描)。"""
+    p = sess_dir / MANIFEST_NAME
+    if not p.is_file():
+        return None
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(m, dict):
+        return None
+    ver = m.get("schema_version")
+    if not isinstance(ver, int) or ver < 1:
+        return None
+    return m
 
 
 def _day_dirs(date: str) -> list:
-    """该日期下所有"会话目录"(新布局)。无则返回空列表。"""
+    """该日期下所有会话目录。兼容 v2(名字带日期)/v3(纯房间号)两种命名。"""
     day_dir = DATA_DIR / date
     if not day_dir.is_dir():
         return []
     try:
-        return sorted([p for p in day_dir.iterdir() if _is_session_dir(p)], key=lambda p: p.name)
+        return sorted([p for p in day_dir.iterdir() if _looks_like_session_dir(p)],
+                      key=lambda p: p.name)
+    except OSError:
+        return []
+
+
+def _test_dirs() -> list:
+    """测试会话目录(data/_test/ 下)。"""
+    root = DATA_DIR / TEST_ROOT
+    if not root.is_dir():
+        return []
+    try:
+        return sorted([p for p in root.iterdir() if _looks_like_session_dir(p)],
+                      key=lambda p: p.name)
     except OSError:
         return []
 
@@ -327,6 +379,36 @@ def _scope_dirs(date: str) -> list:
 
 
 
+def resolve_session_dir(date: str, file: str):
+    """把 (date, file) 解析成会话目录。找不到返回 None。
+
+    file 的取值可能是:
+      * v3 纯房间号          "7734200"                 -> {date}/7734200 或 _test/ 下
+      * v3 测试会话名        "2026-10-26T2023_7734200" -> data/_test/{file}
+      * v2 会话目录名        "2026-10-25_2332_7734200" -> {date}/{file}
+      * v1 旧平铺主名        "7734200"(散文件在日目录根) -> 不是目录, 返回 None
+    """
+    # v2: 名字里带日期 + 时分
+    if SESSION_DIR_RE.fullmatch(file):
+        p = DATA_DIR / date / file
+        return p if p.is_dir() else None
+    # v3: 纯房间号(正式) / {日期}T{HHMM}_{room}(测试)
+    m = V3_SESSION_RE.fullmatch(file)
+    if m:
+        # 测试会话放在 _test/ 下
+        if m.group(1):
+            p = DATA_DIR / TEST_ROOT / file
+            return p if p.is_dir() else None
+        # 正式会话: 先当日目录, 再按赛事日兜底找(跨零点时 date 可能是数据日而非赛事日)
+        p = DATA_DIR / date / file
+        if p.is_dir():
+            return p
+        for d in DATA_DIR.iterdir() if DATA_DIR.is_dir() else []:
+            if d.is_dir() and (d / file).is_dir() and _looks_like_session_dir(d / file):
+                return d / file
+    return None
+
+
 def danmaku_paths(date: str, file: str) -> list[Path]:
     """主名 file(纯房间号或 test_HHMMSS_{room}, 或会话目录名) 归并全部同前缀产物:
       {file}.jsonl.gz(旧格式) + {file}_runN.jsonl.gz + {file}_s????.jsonl.gz(滚动切片)
@@ -337,16 +419,12 @@ def danmaku_paths(date: str, file: str) -> list[Path]:
     **两种布局都支持**:
       * 新: file 形如 "2026-10-25_2332_7734200"(会话目录名) -> 只读该子目录;
       * 旧: file 是纯房间号 -> 在日目录平铺层(旧数据) + 各会话子目录里按主名找。"""
-    # 新布局: file 就是会话目录名。目录里放什么文件名取决于采集那次会话的命名
-    # (正式会话是 {room}_sHHMM, 测试会话是 test_HHMMSS_{room}_sHHMM, 历史迁移的还可能是
-    #  {room}_day0719 之类), 所以**不能**用目录名推导基础名去匹配 —— 那样绝大多数会话
-    # 都会匹配到 0 个文件(实测 4 个会话里 3 个读不出数据)。正确做法: 收集目录内所有
-    # 弹幕数据片(排除 afp/meta), 按名字排序, 活动 raw 排在最后。
-    m = SESSION_DIR_RE.fullmatch(file)
-    if m:
-        sess = DATA_DIR / date / file
-        if not sess.is_dir():
-            return []
+    # 会话目录布局(v2/v3): file 直接指向一个会话目录。目录里放什么文件名取决于采集那次
+    # 会话的命名(正式 {room}_sHHMM / 测试 test_HHMMSS_{room} / 历史迁移的 {room}_day0719),
+    # 所以**不能**用目录名推导基础名去匹配 —— 那样多数会话会匹配到 0 个文件(实测 3/4 读不出)。
+    # 正确做法: 收集目录内所有弹幕数据片(排除 afp/meta)。
+    sess = resolve_session_dir(date, file)
+    if sess is not None:
         return _collect_all_in_session(sess)
 
     if RUN_RE.search(file) or SLICE_RE.search(file):  # 用户明确指定某个归档段/切片
@@ -371,12 +449,22 @@ def danmaku_paths(date: str, file: str) -> list[Path]:
 
 
 def _base_of_session_dir(name: str) -> str:
-    """会话目录名 -> 里面文件的基础名(正式会话=房间号; 测试会话=test_HHMMSS_房间号)。"""
+    """会话目录名 -> 里面文件的基础名。
+
+    v2 正式: {日期}_{HHMM}_{room}         -> room
+    v2 测试: {日期}_test_{HHMMSS}_{room}  -> test_{HHMMSS}_{room}
+    v3 正式: {room}                       -> room
+    v3 测试: {日期}T{HHMM}_{room}         -> test_{HHMM}_{room}(仅作展示, 读文件不依赖它)
+    """
     m = SESSION_DIR_RE.fullmatch(name)
-    if not m:
-        return name
-    room, tstamp = m.group(3), m.group(4)
-    return f"test_{tstamp}_{room}" if tstamp else room
+    if m:
+        room, tstamp = m.group(3), m.group(4)
+        return f"test_{tstamp}_{room}" if tstamp else room
+    m = V3_SESSION_RE.fullmatch(name)
+    if m:
+        stamp, room = m.group(2), m.group(3)
+        return f"test_{stamp}_{room}" if stamp else room
+    return name
 
 
 def _collect_paths_in_dir(dirp: Path, base_name: str, file: str) -> list[Path]:
@@ -498,13 +586,16 @@ def count_dm_lines(path: Path) -> int:
 
 
 def _session_dir_match_date(sess_dir: Path) -> str:
-    """会话目录 -> 比赛日。
+    """会话目录 -> 比赛日(赛事日)。
 
-    目录名前缀是"数据日"(record_start 的日历日, 凌晨归前一天), 不是比赛日。
-    判定比赛日的依据是**数据本身**: 会话里首条 ts 落在 00:00~11:00 就说明这是
-    "昨晚开打、凌晨结束"的比赛, 比赛日 = 那天(即 ts 的日期); 否则就是当天比赛。
-    读不到数据时退回用目录前缀 + 时刻推断。"""
-    base = _base_of_session_dir(sess_dir.name)
+    v3 布局: manifest 里直接写了 match_date(采集器用"结束时刻所在日期"算的), 优先用它。
+    v2 布局: 目录名前缀是"数据日", 不是比赛日; 用**数据本身**判定 —— 首条 ts 落在
+    00:00~11:00 说明这是"昨晚开打、凌晨结束"的比赛, 比赛日 = ts 的日期。
+    都读不到时退回目录名推断。
+    """
+    mf = read_manifest(sess_dir)
+    if mf and mf.get("match_date"):
+        return str(mf["match_date"])
     for p in danmaku_paths(sess_dir.parent.name, sess_dir.name)[:1]:
         try:
             with open_text(p) as f:
@@ -522,7 +613,8 @@ def _session_dir_match_date(sess_dir: Path) -> str:
                         return datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
         except (OSError, EOFError, gzip.BadGzipFile, zlib.error):
             continue
-    # 无数据可读: 用目录名里的数据日 + 时刻推断(凌晨开录 -> 比赛日是数据日次日)
+    # 无数据可读: 退化为目录名推断。v3 目录名里没有日期, 用父目录名(赛事日);
+    # v2 目录名带 {日期}_{HHMM}, 凌晨开录的会话比赛日是次日。
     m = SESSION_DIR_RE.fullmatch(sess_dir.name)
     if m:
         d = datetime.strptime(m.group(1), "%Y-%m-%d")
@@ -534,14 +626,21 @@ def _session_dir_match_date(sess_dir: Path) -> str:
 def _session_time_range(date: str, file: str, sess_dir=None):
     """会话真实起止时间(毫秒墙钟), 返回 (t0, t1); 无数据返回 (None, None)。
 
-    为什么不用 meta.record_start/record_end: 采集端的 meta 只覆盖**最后一次**收尾的片段
-    (实测主会话 meta 记的是 08:45~09:00 的 281 条, 而实际数据是 23:33~08:59 的 20 万条),
-    用它当会话时间会严重错位。这里直接取弹幕数据里最早/最晚的 ts。
+    优先用 manifest 里采集器写好的 start_ms/end_ms(权威, 不需要扫盘);
+    没有 manifest 时才扫数据片。**不要**用 meta.record_start/record_end:
+    实测主会话的 meta 只覆盖最后一次收尾的 15 分钟(281 条), 而目录里有 20 万条、
+    9.4 小时的数据 —— 拿 meta 当会话时间会严重错位。
 
-    精度做法: **每个数据片**都读头部若干行取最小 ts、读尾部若干行取最大 ts, 再取全片集合的
-    最小/最大。不能只看第一个/最后一个片 —— 文件名 `_sHHMM` 跨零点后字典序并不等于时间序
-    (_s2332 会排在 _s0845 之后), 只看首尾片会漏掉真实边界。
+    扫盘时的精度做法: **每个数据片**都读头部若干行取最小 ts、尾部若干行取最大 ts,
+    再取全片集合的最小/最大。不能只看首尾片 —— 文件名 `_sHHMM` 跨零点后字典序
+    不等于时间序(_s2332 排在 _s0845 之后), 只看首尾会漏掉真实边界。
     """
+    if sess_dir is not None:
+        mf = read_manifest(sess_dir)
+        if mf:
+            s, e = mf.get("start_ms"), mf.get("end_ms")
+            if isinstance(s, int) and isinstance(e, int) and s and e:
+                return s, e
     paths = (_collect_all_in_session(sess_dir) if sess_dir is not None
              else danmaku_paths(date, file))
     if not paths:
@@ -575,7 +674,41 @@ def _session_time_range(date: str, file: str, sess_dir=None):
     return lo, hi
 
 
+def _room_from_dirname(name: str):
+    """从会话目录名里解析房间号。兼容 v2({日期}_{HHMM}_{room}) 与 v3({room} / {ts}_{room})。"""
+    m = SESSION_DIR_RE.fullmatch(name)
+    if m:
+        return int(m.group(3))
+    m = V3_SESSION_RE.fullmatch(name)
+    if m:
+        return int(m.group(3))
+    return None
+
+
+def _entry_from_manifest(sess: Path, mf: dict, is_test: bool) -> dict:
+    """用 manifest 构造一个会话条目(权威信息, 不必再扫文件)。"""
+    dm_count = int(mf.get("dm_count") or 0)
+    return {
+        "name": sess.name,
+        "room": int(mf.get("room") or 0),
+        "is_test": bool(is_test),
+        "dm_count": dm_count,
+        "layout": "session",
+        "schema_version": mf.get("schema_version"),
+        "start_ms": mf.get("start_ms"),
+        "end_ms": mf.get("end_ms"),
+        "part_names": [f for f in (mf.get("files") or [])],
+        "has_manifest": True,
+    }
+
+
 def scan_days() -> list:
+    """列出数据目录下的会话。**优先读 manifest**, 读不到退化为目录扫描(兼容老数据)。
+
+    返回结构(前端只依赖这里, 不解析路径):
+      {days: [{date, match_date, data_date, rooms: [{room, files: [条目]}]}]}
+    条目: {name, room, is_test, dm_count, start_ms, end_ms, layout, ...}
+    """
     days = []
     if not DATA_DIR.is_dir():
         return days
@@ -583,21 +716,36 @@ def scan_days() -> list:
         if not (day_dir.is_dir() and DATE_RE.fullmatch(day_dir.name)):
             continue
         rooms = {}   # room_id -> {"entries": [条目], "agg": {主名: 切片dm估算和}}
-        # 待扫描的"数据容器": 旧平铺层(日目录自身) + 各会话子目录。
-        # 每个容器内的命名规则相同, 只是用 (容器, 条目名) 唯一标识一个可选会话。
+        # 待扫描容器: 旧平铺层(日目录自身) + 各会话子目录(v2/v3)
         containers = []
         if _day_flat_has_files(day_dir.name):
             containers.append(day_dir)
         containers.extend(_day_dirs(day_dir.name))
         for cont in containers:
-            is_session_dir = _is_session_dir(cont)
+            is_session_dir = cont is not day_dir
+            mf = read_manifest(cont) if is_session_dir else None
+            if mf is not None:
+                # ---- manifest 路径: 直接用权威数据, 不再扫描 ----
+                e = _entry_from_manifest(cont, mf, bool(mf.get("is_test")))
+                rid = e["room"]
+                if not rid:
+                    continue
+                rooms.setdefault(rid, {"entries": [], "agg": {}})["entries"].append({
+                    "name": e["name"], "is_test": e["is_test"],
+                    "dm_count": e["dm_count"], "_base": e["name"],
+                    "_dir": cont.name, "_session": True,
+                    "_start_ms": e["start_ms"], "_end_ms": e["end_ms"],
+                    "_schema": e["schema_version"],
+                })
+                continue
+            # ---- 无 manifest: 目录扫描(老数据) ----
             paths = list(cont.glob("*.jsonl.gz")) + list(cont.glob("*.jsonl"))
             for p in sorted(paths, key=lambda x: x.name):
                 if p.name.endswith(".jsonl.gz"):
                     name = p.name[: -len(".jsonl.gz")]
                 else:
                     name = p.name[: -len(".jsonl")]   # 活动切片 raw
-                if name.endswith(".afp"):             # 音频指纹文件, 不是弹幕数据
+                if name.endswith(".afp"):             # 音频指纹, 不是弹幕
                     continue
                 m = TEST_FILE_RE.fullmatch(name)
                 if m:                            # test_HHMMSS_{room}
@@ -608,19 +756,16 @@ def scan_days() -> list:
                         room_id = int(base)
                     elif is_session_dir:
                         # 会话目录里的文件名不一定以房间号结尾(如迁移遗留的 {room}_day0719)。
-                        # 房间号以**目录名**为准(目录名是 {比赛日}_{HHMM}_{room}, 权威来源)。
-                        sm = SESSION_DIR_RE.fullmatch(cont.name)
-                        if not sm:
+                        # 房间号以**目录名**为准。
+                        room_id = _room_from_dirname(cont.name)
+                        if not room_id:
                             continue
-                        room_id = int(sm.group(3))
                     else:
                         continue
                 room = rooms.setdefault(room_id, {"entries": [], "agg": {}})
-                # 会话目录布局下, 可选"文件"用目录名标识(一个目录 == 一个会话);
-                # 旧平铺布局仍用基础名(同一目录里其实只有一个房间的主会话)。
                 entry_name = cont.name if is_session_dir else name
                 if SLICE_RE.search(RUN_RE.sub("", name)):
-                    # _s???? 滚动切片(含活动 raw / 被 _runN 归档的切片): 聚合进主条目, 不单列
+                    # _s???? 滚动切片: 聚合进主条目, 不单列
                     key = cont.name if is_session_dir else base
                     room["agg"][key] = room["agg"].get(key, 0) + count_dm_lines(p)
                     continue
@@ -646,25 +791,30 @@ def scan_days() -> list:
         out_rooms = []
         for rid, room in sorted(rooms.items()):
             entry_names = {e["name"] for e in room["entries"]}
-            # 新格式没有 {room}.jsonl.gz 主文件(第一片就是 _sHHMM): 造虚拟主条目承载切片
             for name in sorted(room["agg"].keys() - entry_names):
-                m2 = SESSION_DIR_RE.fullmatch(name)
-                is_sess = bool(m2)
+                # 注意: 不能光靠"名字像会话目录"来判断 —— v3 的正式会话名就是纯房间号,
+                # 而旧平铺数据的主名同样是纯房间号, 正则无法区分。
+                # 只有**目录真实存在**才算会话目录, 否则是旧平铺条目。
+                is_sess = resolve_session_dir(day_dir.name, name) is not None
                 room["entries"].append({
                     "name": name,
                     "is_test": ("test_" in name) if is_sess else name.startswith("test_"),
                     "dm_count": 0, "_base": _base_of_session_dir(name) if is_sess else name,
                     "_dir": name if is_sess else "", "_session": is_sess})
             for e in room["entries"]:
-                # 该条目若在聚合表里有切片行数, 且自身没拿到 meta 的准确总数, 就用估算值
                 agg_key = e["name"] if e["_session"] else e["_base"]
                 if agg_key in room["agg"] and not e["dm_count"]:
                     e["dm_count"] = room["agg"][agg_key]
             room["entries"].sort(key=lambda x: (x["is_test"], x["name"]))
-            out_rooms.append({"room": rid, "files": [
-                {"name": x["name"], "is_test": x["is_test"], "dm_count": x["dm_count"],
-                 "layout": "session" if x["_session"] else "flat"}
-                for x in room["entries"]]})
+            files = []
+            for x in room["entries"]:
+                item = {"name": x["name"], "is_test": x["is_test"],
+                        "dm_count": x["dm_count"],
+                        "layout": "session" if x["_session"] else "flat"}
+                if x.get("_schema") is not None:
+                    item["schema_version"] = x["_schema"]
+                files.append(item)
+            out_rooms.append({"room": rid, "files": files})
         days.append({"date": day_dir.name, "rooms": out_rooms})
     # 跨零点**旧数据**归并: 次日目录只有切片聚合(无主 meta/主文件=非独立会话)时,
     # 估算量并入前一日同名条目, 次日条目移除。
@@ -693,20 +843,18 @@ def scan_days() -> list:
                              if f["is_test"] or f.get("layout") == "session"]
         d["rooms"] = [r for r in d["rooms"] if r["files"]]
     days = [d for d in days if d["rooms"]]
-    # 给每个会话目录补上"比赛日": 目录日期只是数据落盘日(凌晨内容属昨晚 -> 落在昨天目录),
-    # 而用户认知与 Riot 赛程都按比赛日组织。前端据此显示"比赛日", 目录日期仍用于取数据。
+    # 给每个会话目录补上"比赛日/赛事日"。v3 布局下目录名本身就是赛事日(采集器按
+    # "会话结束时刻"命名), 直接采用; 老布局才需要用数据推断。
     for d in days:
+        # 若该日所有会话目录名就是赛事日(v3: 父目录名 == manifest.match_date), 直接用
         d["match_date"] = _session_match_date(d["date"])
         d["data_date"] = d["date"]      # 显式给出"数据日", 供前端显示「比赛日 + 数据日」
         # 每个会话补真实起止时间(毫秒墙钟): 前端据此显示时段并排序。
         # 取不到(如只有 afp 没有弹幕)就留空, 前端会跳过该会话。
         for room in d["rooms"]:
             for f in room["files"]:
-                if f.get("layout") == "session":
-                    t0, t1 = _session_time_range(d["date"], f["name"],
-                                                 DATA_DIR / d["date"] / f["name"])
-                else:
-                    t0, t1 = _session_time_range(d["date"], f["name"])
+                sess = resolve_session_dir(d["date"], f["name"])
+                t0, t1 = _session_time_range(d["date"], f["name"], sess)
                 f["start_ms"], f["end_ms"] = t0, t1
     # 场次列表按比赛日挂在 lists[比赛日], 而弹幕会话目录=比赛日(新归属)或起始日(旧数据):
     # 前端请求 matchlist 时若当日列表为空, 自动回落到前一日列表(旧数据兼容), 见 handle_matchlist_get
@@ -864,20 +1012,14 @@ def _session_match_date(date: str) -> str:
     day_dir = DATA_DIR / date
     if not day_dir.is_dir():
         return date
-    # 新布局: 目录名是 {数据日}_{HHMM}_{room}。注意前缀是**数据日**(record_start 的日历日,
-    # 凌晨会归到前一天), 并不等于比赛日 —— 例: 2026-10-25_2332 开录, 比赛日其实是 10-26。
-    # 所以这里不能直接取前缀当比赛日, 要按开录时刻重算:
-    #   开录在 23:32(当晚) -> 比赛日 = 当天日期 + 1 天? 不对, 取决于"比赛窗口"。
-    # 正确判定: 用会话目录里的数据实际最早 ts 的**日期**作为比赛日(凌晨内容属当晚比赛)。
+    # v3 布局: 每个会话目录带 manifest, 直接读 match_date(采集器按"结束时刻"算的)。
+    # 一个日期目录下若有多个正式会话, 取最晚的那个作该日的比赛日。
     best = None
     for sd in _day_dirs(date):
-        m = SESSION_DIR_RE.fullmatch(sd.name)
-        if not m:
-            continue
         if "test_" in sd.name:      # 测试会话不代表当晚正赛
             continue
         md = _session_dir_match_date(sd)
-        if best is None or md > best:
+        if md and (best is None or md > best):
             best = md
     if best:
         return best
@@ -911,8 +1053,15 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
     lists = load_matches()["lists"]
     match_date = _session_match_date(date)
     matches = _matchlist_for_session(date, lists)
+    # 旧数据的标题带 "G1 " 前缀, 展示前统一剥掉(不改存储, 保留原始数据)
+    fixed = []
+    for it in (matches or []):
+        if isinstance(it, dict):
+            it = dict(it)
+            it["title"] = _strip_game_prefix(it.get("title"))
+        fixed.append(it)
     # match_date 一并返回: 前端据此显示"比赛日", 并作为 /api/discover 的日期
-    return api_ok(matches=matches or [], match_date=match_date)
+    return api_ok(matches=fixed, match_date=match_date)
 
 
 def _matchlist_for_session(date: str, lists: dict):
@@ -1069,7 +1218,12 @@ def riot_fetch_schedule() -> list:
 
 def discover_draft_for_date(date: str) -> list:
     """北京时间 date 当天 01:00-09:00(凌晨~上午)的比赛块 -> 场次草稿。
-    双方均 TBD 的占位块跳过(无回放匹配价值)。标题形如 "G1 TES vs AL"。"""
+    双方均 TBD 的占位块跳过(无回放匹配价值)。
+
+    标题直接用**战队名**(如 "HLE vs IG"), 不加 "G1/G2" 前缀 —— 序号是赛程里的位置,
+    既可能因改期/加赛变化, 对用户也没有信息量; 对阵双方才是识别一场比赛的依据。
+    旧数据里的 "G1 HLE vs IG" 由 _strip_game_prefix() 在展示时剥掉。
+    """
     y, m, d = (int(x) for x in date.split("-"))
     win0 = datetime(y, m, d, 1, 0, tzinfo=DISCOVER_TZ)
     win1 = datetime(y, m, d, 9, 0, tzinfo=DISCOVER_TZ)
@@ -1081,9 +1235,37 @@ def discover_draft_for_date(date: str) -> list:
         c1, c2 = ev["teams"]
         if c1.upper() == "TBD" and c2.upper() == "TBD":
             continue
-        draft.append({"title": f"G{len(draft) + 1} {c1} vs {c2}",
+        draft.append({"title": f"{c1} vs {c2}",
                       "teams": [c1, c2], "start": local})
     return draft
+
+
+GAME_PREFIX_RE = re.compile(r"^\s*G\d+\s+")
+# 已知的"看起来像序号、其实是战队名"的队名(G2 是最典型的例子)。
+# 剥 "G1 " 前缀时必须避开它们, 否则 "G2 vs TES"(G2 战队对 TES) 会被剥成 "vs TES"。
+_TEAM_NAMES_LOOKING_LIKE_GAME_NO = {"G2", "G3", "G4", "G5"}
+
+
+def _strip_game_prefix(title: str) -> str:
+    """剥掉旧数据标题里的 "G1/G2 " 序号前缀(展示用, 不修改存储)。
+
+    只在**后面还跟着完整对阵**时才剥: "G1 HLE vs IG" -> "HLE vs IG"。
+    必须避开真实战队名: "G2 vs TES" 里的 G2 是队名, 剥掉就成 "vs TES" 了
+    (实测 2026-10-26 赛程里就有一场 G2 战队的比赛)。
+    """
+    t = str(title or "").strip()
+    m = GAME_PREFIX_RE.match(t)
+    if not m:
+        return t
+    # 前缀里的 "G{n}" 若正好是知名战队名(且不在开头当作序号用), 不剥
+    head = t.split()[0] if t.split() else ""
+    rest = t[m.end():].strip()
+    # 判断依据: 剥掉后剩余部分必须仍是 "A vs B" 形式, 否则说明剥错了
+    if head in _TEAM_NAMES_LOOKING_LIKE_GAME_NO and rest.count("vs") == 0:
+        return t
+    if " vs " not in (" " + rest + " "):
+        return t
+    return rest
 
 
 def _bili_buvid3() -> str:
@@ -1546,34 +1728,53 @@ async def handle_overview(request: web.Request) -> web.Response:
         lst = matches_all["lists"].get(match_date) or []
         align = matches_all["align"]
 
-        # 每场比赛: 取它的 BV + offset + 分P结构(分P信息来自 playurl, 需要网络;
-        # 这里只用已缓存/已记录的元信息, 不主动打 B 站接口 —— 总览要秒开)
+        # 每场比赛: 取它的 BV + 分P 级 offset。分P 的**名称与时长**来自 matches.json
+        # 里对齐时记录的信息(pages), 不主动打 B 站接口 —— 总览要秒开。
         tracks = []
         for idx, m in enumerate(lst):
             if not isinstance(m, dict):
                 continue
-            title = str(m.get("title") or "")
+            title = _strip_game_prefix(m.get("title"))
             bv = str(m.get("bv") or "")
             offset = m.get("offset_sec")
             if isinstance(offset, bool) or not isinstance(offset, (int, float)):
                 offset = 0
-            # 若该 BV 有整场对齐记录, 用它的 offset 覆盖场次列表里可能过期的值
+            pages = {}
             for akey, aentry in align.items():
                 if not isinstance(aentry, dict):
                     continue
-                if str(aentry.get("bv") or "") != bv or not bv:
+                if not bv or str(aentry.get("bv") or "") != bv:
                     continue
-                ao = aentry.get("offset_sec")
-                if isinstance(ao, (int, float)) and not isinstance(ao, bool):
-                    offset = float(ao)
+                pg = aentry.get("pages")
+                if isinstance(pg, dict) and pg:
+                    pages = pg
+                    # 兼容字段 offset_sec 取第一分P, 用于没有 pages 的旧记录
+                    ao = aentry.get("offset_sec")
+                    if isinstance(ao, (int, float)) and not isinstance(ao, bool):
+                        offset = float(ao)
                 break
+            # 分P 段: 每个分P 一个独立 offset(同一场次内各分P 落点不同)
+            segs = []
+            for pg_no, pv in sorted(pages.items(), key=lambda kv: int(kv[0])):
+                if not isinstance(pv, dict):
+                    continue
+                po = pv.get("offset_sec")
+                if isinstance(po, bool) or not isinstance(po, (int, float)):
+                    continue
+                segs.append({
+                    "page": int(pg_no),
+                    "part": _strip_game_prefix(pv.get("part") or ("P%s" % pg_no)),
+                    "offset_sec": round(float(po), 3),
+                    "duration": pv.get("duration"),
+                    "confidence": pv.get("confidence"),
+                })
+            segs.sort(key=lambda s: s["offset_sec"])   # 按真实时间先后排列, 不按 P 序号
             tracks.append({
                 "idx": idx, "title": title, "bv": bv,
                 "offset_sec": round(float(offset), 3),
                 "auto": m.get("auto"),
-                # 该场在弹幕主轴上的落点(相对主轴起点, 秒): offset 是"回放 t=0 对应的
-                # 真实墙钟", 主轴 0 点是首条弹幕, 故相对位置 = offset - (t0-anchor) 由前端算
                 "has_bv": bool(bv),
+                "parts": segs,
             })
         return {
             "date": raw_date,
@@ -1725,14 +1926,12 @@ def find_afp_paths(date: str, file: str) -> list:
     这里在当日目录找不到时, 再去次日目录找同名 afp(次日目录无独立主 meta 时才算
     同一会话残留, 避免误取第二天晚上的新指纹)。"""
     paths = []
-    m = SESSION_DIR_RE.fullmatch(file)
-    if m:   # 新布局: file 就是会话目录名。afp 名同样不一定等于目录推导名, 直接扫目录。
-        sess = DATA_DIR / date / file
-        if sess.is_dir():
-            cands = sorted(p for p in sess.iterdir()
-                           if ".afp.jsonl" in p.name and p.is_file())
-            if cands:
-                return cands
+    sess = resolve_session_dir(date, file)
+    if sess is not None:   # 会话目录布局: afp 名不一定等于目录推导名, 直接扫目录
+        cands = sorted(p for p in sess.iterdir()
+                       if ".afp.jsonl" in p.name and p.is_file())
+        if cands:
+            return cands
     # 旧平铺布局 + 各会话子目录
     for d in _scope_dirs(date):
         paths = _afp_in_dir(d, file)
@@ -1796,12 +1995,19 @@ def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4):
     return audiofp.fingerprint(x, 16000, hop_sec=hop_sec, win_sec=win_sec)
 
 
-async def bili_dash_audio_url(session, bv: str):
-    """尝试 dash 纯音轨直链(fnval=16, 优先 30280/192kbps)。拿不到返回 None(不抛错)。"""
+async def bili_dash_audio_url(session, bv: str, cid=None):
+    """尝试 dash 纯音轨直链(fnval=16, 优先 30280/192kbps)。拿不到返回 None(不抛错)。
+
+    **必须按 cid 取**: 官方回放把一场比赛拆成多个分P(第一局/赛后采访/赛前评论),
+    每个分P 有自己的 cid 和音轨。旧实现只用 info["cid"](恒为第一分P)取音轨,
+    导致 P2/P3 拿到的是 P1 的音频, 对齐全错位(实测三个"分P"指纹长度全是 50.5 分钟)。
+    cid 为 None 时才回落到第一分P(兼容旧调用)。"""
     try:
-        info = await bili_view(session, bv)
+        if cid is None:
+            info = await bili_view(session, bv)
+            cid = info["cid"]
         async with session.get("https://api.bilibili.com/x/player/playurl",
-                               params={"bvid": bv, "cid": info["cid"],
+                               params={"bvid": bv, "cid": cid,
                                        "qn": 64, "fnval": 16},
                                headers=_bili_headers()) as r:
             play = await r.json(content_type=None)
@@ -1824,9 +2030,12 @@ async def bili_dash_audio_url(session, bv: str):
         return None
 
 
-async def download_dash_audio(session, bv: str, page: int, url: str) -> Path:
-    """下载 dash 音轨到缓存目录(已存在则复用), 返回本地文件路径。"""
-    dst = AFP_CACHE_DIR / f"{bv}_{page}.audio.m4s"
+async def download_dash_audio(session, bv: str, cid, url: str) -> Path:
+    """下载 dash 音轨到缓存目录(已存在则复用), 返回本地文件路径。
+
+    文件名用 cid 而非 page: 分P 的顺序会变(官方可调整), cid 才是分P 的稳定标识。
+    旧缓存用 page 命名, 会和新缓存混淆, 这里统一改用 cid。"""
+    dst = AFP_CACHE_DIR / f"{bv}_{cid}.audio.m4s"
     if dst.is_file() and dst.stat().st_size > 1024:
         return dst
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1851,8 +2060,9 @@ async def download_dash_audio(session, bv: str, page: int, url: str) -> Path:
     return dst
 
 
-def _afp_cache_file(bv: str, page: int) -> Path:
-    return AFP_CACHE_DIR / f"{bv}_{page}.fp.npz"
+def _afp_cache_file(bv: str, cid) -> Path:
+    """回放指纹缓存路径。用 cid 而非 page: 分P 顺序可能变, cid 才是稳定标识。"""
+    return AFP_CACHE_DIR / f"{bv}_{cid}.fp.npz"
 
 
 def _save_fp_cache(cache: Path, fp, hop: float, win: float) -> None:
@@ -1872,7 +2082,11 @@ def _save_fp_cache(cache: Path, fp, hop: float, win: float) -> None:
 
 async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0.2,
                                  win_sec: float = 0.4, local_audio=None):
-    """取回放({bv} P{page})的音频指纹(带磁盘缓存, 避免 2636s 视频反复拉流)。
+    """取回放({bv} P{page})的音频指纹(带磁盘缓存, 避免长视频反复拉流)。
+
+    **按分P 精确取**: 先 bili_view 拿 pages, 用 page 找到该分P 的 cid, 再用 cid
+    取音轨。旧实现直接取第一分P 的 cid, 导致 P2/P3 指纹全是 P1 的(实测复现),
+    且缓存键 {bv}_{page} 会把错误结果缓存下来反复复用。
 
     优先级: local_audio 调试参数 > 磁盘缓存 > dash 纯音轨 > html5 mp4 整段(经
     本服务 /api/stream 反代; 多段按顺序拼接指纹)。
@@ -1882,7 +2096,18 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     if local_audio:                      # 调试/测试: 本地音频直接算, 不碰网络与缓存
         fp = await asyncio.to_thread(ffmpeg_audio_fp, local_audio, hop_sec, win_sec)
         return fp, f"本地音频({Path(local_audio).name})"
-    cache = _afp_cache_file(bv, page)
+
+    # 解析该分P 的 cid(拿不到 pages 时回落 info["cid"])
+    info = await bili_view(session, bv)
+    cid = info.get("cid")
+    for p in (info.get("pages") or []):
+        if int(p.get("page") or 0) == int(page):
+            cid = p.get("cid")
+            break
+    if not cid:
+        raise ApiError(f"取不到 {bv} P{page} 的 cid")
+
+    cache = _afp_cache_file(bv, cid)
     if cache.is_file():
         try:
             z = np.load(cache)
@@ -1899,10 +2124,10 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
             except OSError:
                 pass
     # ① dash 纯音轨: 数据量比整段 mp4 小一个数量级
-    audio_url = await bili_dash_audio_url(session, bv)
+    audio_url = await bili_dash_audio_url(session, bv, cid)
     if audio_url:
         try:
-            m4s = await download_dash_audio(session, bv, page, audio_url)
+            m4s = await download_dash_audio(session, bv, cid, audio_url)
             fp = await asyncio.to_thread(ffmpeg_audio_fp, str(m4s), hop_sec, win_sec)
             await asyncio.to_thread(_save_fp_cache, cache, fp, hop_sec, win_sec)
             return fp, f"dash音轨({m4s.stat().st_size // 1024 // 1024}MB)"
@@ -1910,7 +2135,7 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
                 OSError, ValueError) as e:
             print(f"[autocalign] dash 音轨路线失败, 转入 mp4 兜底: {e}")
     # ② 整段 mp4 兜底: html5 durl(可能多段), ffmpeg 走本服务 /api/stream 反代
-    play = await bili_playurl_mp4(session, bv)
+    play = await bili_playurl_mp4(session, bv, page)
     urls = play["urls"]
     fps = []
     for i, u in enumerate(urls):
@@ -1923,13 +2148,220 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     return fp, f"mp4直链({len(urls)}段)"
 
 
+class DanmakuDensity:
+    """把某会话的弹幕按分钟分桶, 供对齐时判断"哪一段才是真比赛"。
+
+    比赛进行时弹幕密度远高于赛后闲聊/重播; 当音频对齐给出多个自洽候选时,
+    密度是有效的第二信号(实测能把真场次和伪峰区分开: 6.8 万 vs 1.4 万条)。
+    """
+
+    def __init__(self, bins: dict, bin_sec: int = 60, anchor_ms: int = 0):
+        self.bins = bins            # {相对 anchor 的桶序号: 条数}
+        self.bin_sec = bin_sec
+        self.anchor_ms = int(anchor_ms or 0)
+
+    @classmethod
+    def build(cls, date: str, file: str, anchor_ms: int, bin_sec: int = 60):
+        """扫该会话全部弹幕, 以 anchor 为零点按 bin_sec 分桶。"""
+        buckets = {}
+        try:
+            paths = danmaku_paths(date, file)
+        except Exception:
+            return None
+        if not paths or not anchor_ms:
+            return None
+        for p in paths:
+            try:
+                with open_text(p) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            o = json.loads(line)
+                        except ValueError:
+                            continue
+                        t = o.get("ts")
+                        if not isinstance(t, (int, float)) or t <= 0:
+                            continue
+                        k = int((int(t) - anchor_ms) / 1000 // bin_sec)
+                        buckets[k] = buckets.get(k, 0) + 1
+            except (OSError, EOFError, gzip.BadGzipFile, zlib.error):
+                continue
+        return cls(buckets, bin_sec, anchor_ms) if buckets else None
+
+    def density_for(self, offset_ms: int, duration_sec: float) -> float:
+        """某个起点(offset_ms = "回放 0 秒"对应的墙钟毫秒)对应区间的弹幕总量。
+
+        注意桶号是**相对 anchor** 的: 必须先把墙钟减去 anchor 再除以 bin_sec,
+        直接拿绝对时间戳去除会落到不存在的桶上, 结果恒为 0(已踩过)。
+        """
+        start_sec = (int(offset_ms) - self.anchor_ms) / 1000.0
+        start_bin = int(start_sec // self.bin_sec)
+        n_bins = max(1, int(duration_sec // self.bin_sec))
+        return float(sum(self.bins.get(start_bin + i, 0) for i in range(n_bins)))
+
+
+def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
+                    density=None, anchor_ms=None, later_than_ms=None):
+    """把一个分P 的回放指纹对齐到直播 afp 的各个连接段上。
+
+    返回 {"offset_ms", "confidence", "matched_seconds", "conn", "t0_ms",
+          "windows_ok", "windows_spread", "candidates", "picked_by"}。
+
+    四道判据(从弱到强):
+      1. 单窗置信度 conf >= min_conf (挡掉随机水平 ~1.0)
+      2. inf 置信度视为不可判定(只有单一峰, 实测随机噪声也能拿到)
+      3. 多窗一致性: 各窗推算的 offset 必须几乎相同(实测正常对齐离散 0.0s)
+      4. **弹幕密度 + 时序约束**: 比赛时弹幕远多于赛后闲聊。当出现多个
+         "分别自洽"但位置相隔很远的候选时:
+           - later_than_ms 给出前一集的对齐位置时, 优先取它之后的候选
+             (同一场次的分P 在直播时间轴上必然按时间先后排列)
+           - 再用密度区分
+         实测案例: P1 在 01:07(conf 10.19) 与 07:26(conf 10.07) 都有高分,
+         密度 39145 vs 6670 -> 前者是真场次, 后者是伪峰。
+    """
+    ref_frames = int(fp_replay.shape[0])
+    hits = []
+    rejected = []
+    for seg in conns:
+        n = seg["n"]
+        if n <= ref_frames:
+            windows = [(0, n)]
+        else:
+            # 窗 = 回放的 75%, 步进 = 半窗: 保证任一实际起点都能被某个窗完整覆盖
+            wlen = max(int(ref_frames * 0.75), AUTO_MIN_CONN_FRAMES)
+            step = max(wlen // 2, 1)
+            windows = [(s, min(s + wlen, n)) for s in range(0, n - wlen + 1, step)]
+        for (a, b) in windows:
+            sub = seg["frames"][a:b]
+            try:
+                r = audiofp.align(fp_replay, sub, hop)
+            except ValueError as e:           # 窗比回放长等
+                rejected.append(f"段{seg['c']}窗[{a}:{b}] {e}")
+                continue
+            if not (math.isfinite(r["offset_sec"]) and r["best_score"] > 0):
+                continue
+            # inf 置信度 = 只有单一峰, 不可判定(实测随机噪声等长时也能拿到 inf)
+            if not math.isfinite(r["confidence"]) or r["confidence"] < min_conf:
+                continue
+            matched = (b - a) * hop
+            if matched < min_match_sec:
+                continue
+            hits.append({
+                "conn": seg["c"],
+                "t0_ms": seg["t0_ms"] + int(a * hop * 1000),
+                "n": b - a,
+                "replay_pos": float(r["offset_sec"]),
+                "confidence": float(r["confidence"]),
+                "offset_ms": seg["t0_ms"] + int(a * hop * 1000)
+                              - int(float(r["offset_sec"]) * 1000),
+            })
+
+    if not hits:
+        detail = ("; ".join(rejected[:3]) if rejected else "无任何有效互相关结果")
+        raise ApiError(f"该分P 无法与直播音频对齐({detail})")
+
+    # ---- 把高置信度窗按"推算出的起点"聚类: 同一位置上的窗才是一致票 ----
+    hits.sort(key=lambda h: h["confidence"], reverse=True)
+    clusters = []      # [{members, offset_ms, conf, spread}]
+    for h in hits:
+        placed = False
+        for c in clusters:
+            if abs(h["offset_ms"] - c["offset_ms"]) <= AUTO_MAX_OFFSET_SPREAD_SEC * 1000:
+                c["members"].append(h)
+                # 用置信度加权平均更新中心
+                tot = sum(m["confidence"] for m in c["members"])
+                c["offset_ms"] = sum(m["offset_ms"] * m["confidence"] for m in c["members"]) / tot
+                c["conf"] = max(c["conf"], h["confidence"])
+                placed = True
+                break
+        if not placed:
+            clusters.append({"members": [h], "offset_ms": h["offset_ms"],
+                             "conf": h["confidence"]})
+
+    for c in clusters:
+        offs = [m["offset_ms"] for m in c["members"]]
+        c["spread"] = (max(offs) - min(offs)) / 1000.0
+        c["matched_seconds"] = max(m["n"] for m in c["members"]) * hop
+        c["best"] = max(c["members"], key=lambda m: m["confidence"])
+
+    if len(clusters) == 1:
+        pick, picked_by = clusters[0], "唯一候选"
+    else:
+        # 先用"同一场次内分P 在直播时间轴上按先后排列"约束。
+        # later_than_ms = 已对齐分P 的最早结束点。同一场次的分P 不会隔几个小时,
+        # 因此优先取"紧跟在它附近"的候选(窗口 = AUTO_SEQUENCE_WINDOW_SEC)。
+        cands = clusters
+        prefix = ""
+        if later_than_ms:
+            after = [c for c in cands if c["offset_ms"] >= later_than_ms - 60_000]
+            if after:
+                # 先看"紧邻"的(间隔 < 序列窗口), 这是同一场次分P 的典型情形
+                near = [c for c in after
+                        if c["offset_ms"] <= later_than_ms + AUTO_SEQUENCE_WINDOW_SEC * 1000]
+                if near:
+                    prefix = (f"时序紧邻约束({len(clusters)}→{len(near)} 个候选); ")
+                    cands = near
+                else:
+                    prefix = (f"时序约束(落在上一集之后, {len(clusters)}→{len(after)} 个候选); ")
+                    cands = after
+            else:
+                prefix = "时序约束无匹配, 退回全部候选; "
+
+        if density is not None and anchor_ms and len(cands) >= 1:
+            def dens_of(c):
+                return density.density_for(c["offset_ms"], c["matched_seconds"])
+            ranked = sorted(cands, key=lambda c: (dens_of(c), c["conf"]), reverse=True)
+            pick = ranked[0]
+            picked_by = (prefix +
+                         f"弹幕密度({dens_of(pick):.0f} 条" +
+                         (f" vs 次选 {dens_of(ranked[1]):.0f} 条" if len(ranked) > 1 else "") +
+                         f", {len(ranked)} 个候选)")
+            # 密度几乎打平时再看置信度差异是否足够大, 否则拒绝(不赌)
+            if len(ranked) > 1:
+                top_d, sec_d = dens_of(ranked[0]), dens_of(ranked[1])
+                if top_d <= sec_d * 1.05:
+                    # 密度分不开, 改用置信度: 只有当首选明显更高时才采信
+                    if ranked[0]["conf"] <= ranked[1]["conf"] * 1.2:
+                        raise ApiError(
+                            f"该分P 有 {len(ranked)} 个自洽候选, 弹幕密度与置信度都无法区分, "
+                            f"已拒绝写入(建议人工校准)")
+                    picked_by = prefix + f"置信度(密度接近, conf {ranked[0]['conf']:.2f} vs {ranked[1]['conf']:.2f})"
+        elif len(cands) == 1:
+            pick = cands[0]
+            picked_by = prefix + "时序约束唯一候选"
+        else:
+            raise ApiError(
+                f"该分P 有 {len(cands)} 个自洽但位置不同的对齐候选(可能是该局被重播), "
+                f"已拒绝写入(建议人工校准)")
+
+    best = pick["best"]
+    return {
+        "offset_ms": int(round(pick["offset_ms"])),
+        "confidence": min(pick["conf"], 999.0),
+        "matched_seconds": pick["matched_seconds"],
+        "conn": best["conn"],
+        "t0_ms": best["t0_ms"],
+        "windows_ok": len(hits),
+        "windows_spread": round(pick["spread"], 3),
+        "candidates": len(clusters),
+        "picked_by": picked_by,
+    }
+
+
 async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                          local_audio=None) -> dict:
-    """自动对齐全流程(读 afp -> 回放指纹 -> 逐段互相关 -> 算 offset -> 写 matches)。
+    """自动对齐全流程(读 afp -> 逐分P 回放指纹 -> 互相关 -> 写 matches)。
 
-    offset 语义与前端完全一致(app.js: offset_sec = (wall_ms-anchor_ms)/1000
-    - 回放内位置): anchor_ms 取 compute_anchor_ms(meta)。
-    local_audio 仅供调试/测试注入回放音频, 正常流程传 None。"""
+    **逐分P 独立对齐**: 官方回放把一场比赛拆成多个分P(第一局/赛后采访/赛前评论),
+    每个分P 都是独立的直播切片, 因此各自有独立的 offset。整体对齐只能让第一个
+    分P 命中(已实测), 后两个就永远错位。
+
+    page 传 0 表示"这场比赛的**所有**分P 都各自对齐一遍"。
+
+    offset 语义与前端一致: replaySec = (wallMs - anchorMs)/1000 - offset_sec。
+    """
     if not HAS_AUDIOFP:
         raise ApiError(f"音频指纹模块不可用: {_AFP_IMPORT_ERR or 'numpy/audiofp 导入失败'}")
     t0 = time.monotonic()
@@ -1947,97 +2379,142 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         raise ApiError(f"音频指纹无有效连接段(每段至少 {AUTO_MIN_CONN_FRAMES} 帧"
                        f"≈{AUTO_MIN_CONN_FRAMES * hop:.0f}s, 全部段过短)")
 
-    # b) 回放指纹(dash 音轨优先, mp4 兜底, 带缓存)
-    fp_replay, src_desc = await get_replay_fingerprint(
-        session, bv, page, hop, win, local_audio=local_audio)
-
-    # c) 每个连接段与回放互相关(ref=回放, query=直播段)。
-    # 整晚单段(数小时)远长于回放(几十分钟)时, 对段滑窗: 窗=回放的 75%, 步进=半窗,
-    # 逐窗对齐取置信度最高的窗(该窗墙钟 = 段首 + 窗偏移*hop)
-    results = []
-    ref_frames = int(fp_replay.shape[0])
-    for seg in conns:
-        n = seg["n"]
-        if n <= ref_frames:
-            windows = [(0, n)]
-        else:
-            wlen = max(int(ref_frames * 0.75), AUTO_MIN_CONN_FRAMES)
-            step = max(wlen // 2, 1)
-            windows = [(s, min(s + wlen, n)) for s in range(0, n - wlen + 1, step)]
-        for (a, b) in windows:
-            sub = seg["frames"][a:b]
-            try:
-                r = await asyncio.to_thread(audiofp.align, fp_replay, sub, hop)
-            except ValueError as e:           # 窗比回放长等
-                print(f"[autocalign] 段 {seg['c']} 窗[{a}:{b}] 跳过: {e}", flush=True)
-                continue
-            if math.isfinite(r["offset_sec"]) and r["best_score"] > 0:
-                results.append({"conn": seg["c"],
-                                "t0_ms": seg["t0_ms"] + int(a * hop * 1000), "n": b - a,
-                                "offset_in_replay": r["offset_sec"],
-                                "confidence": r["confidence"]})
-    if not results:
-        raise ApiError("直播指纹与回放对齐失败(无有效互相关结果)")
-
-    # d) 取置信度最高段算最终 offset(与前端手动校准同一 anchor 语义)
-    results.sort(key=lambda r: r["confidence"], reverse=True)
-    best = results[0]
-    # conf 的唯一正确性闸门。注意 inf 必须被视为"不可判定"而非"极高置信":
-    # align 在次峰<=0(整段只有一个峰, 常见于片段长度接近回放长度或大量静音)时返回 inf,
-    # 旧实现 min(inf,999)=999 会直接放行 —— 实测纯随机噪声在接近等长时也能拿到 inf/5.5。
-    # 因此: inf -> 记为不可判定并拒绝; 同时要求匹配时长足够长才采信。
-    raw_conf = best["confidence"]
-    if not math.isfinite(raw_conf):
-        raise ApiError("自动校准无法给出可信结果(互相关只有单一峰, 无法判定置信度), "
-                       "已拒绝写入(请用密度图人工校准)")
-    conf = min(raw_conf, 999.0)
-    if conf < AUTO_MIN_CONFIDENCE:
-        raise ApiError(f"对齐置信度过低({conf:.2f} < {AUTO_MIN_CONFIDENCE}), "
-                       f"已拒绝写入(建议人工校准)")
-    matched_seconds = best["n"] * hop
-    if matched_seconds < AUTO_MIN_MATCH_SEC:
-        raise ApiError(f"参与对齐的音频过短({matched_seconds:.0f}s < {AUTO_MIN_MATCH_SEC:.0f}s), "
-                       f"置信度不可靠, 已拒绝写入(建议人工校准)")
-    # anchor 与 handle_match_get 同源: 聚合数据首行 ts 优先, meta 兜底(跨零点/未finalize 场景)
+    # anchor 与 handle_match_get 同源: 聚合数据首行 ts 优先, meta 兜底
     anchor_ms = first_ts_from_data(date, file)
     if not anchor_ms:
         try:
             anchor_ms = compute_anchor_ms(load_meta(date, file))
         except ApiError:
             anchor_ms = 0
-    offset_sec = (best["t0_ms"] - anchor_ms) / 1000.0 - best["offset_in_replay"]
-    auto_meta = {"confidence": round(conf, 3), "conn": best["conn"],
-                 "method": "audiofp",
-                 "ts": datetime.now().isoformat(timespec="seconds")}
-    key = f"{date}|{file}"
 
-    # e) 写回 matches.json: 锁内 read-modify-write, 只更新该 key 的 offset_sec + auto
+    # 弹幕密度(第二信号): 多候选时用它区分"真比赛"与"重播/伪峰"
+    density = await asyncio.to_thread(DanmakuDensity.build, date, file, anchor_ms)
+    if density:
+        print(f"[autocalign] 弹幕密度直方图已就绪({len(density.bins)} 个分钟桶)",
+              flush=True)
+
+    # b) 确定要对齐哪些分P
+    info = await bili_view(session, bv)
+    pages_meta = info.get("pages") or []
+    if page and page > 0:
+        targets = [{"page": int(page),
+                    "part": next((p.get("part") for p in pages_meta
+                                  if int(p.get("page") or 0) == int(page)), f"P{page}"),
+                    "duration": next((p.get("duration") for p in pages_meta
+                                      if int(p.get("page") or 0) == int(page)), 0)}]
+    else:
+        targets = [{"page": int(p["page"]), "part": p.get("part") or f"P{p['page']}",
+                    "duration": p.get("duration") or 0} for p in pages_meta]
+    if not targets:
+        raise ApiError(f"{bv} 没有可用的分P 信息")
+
+    # c) 逐分P 独立对齐; 单个分P 失败不影响其它分P(记为失败原因)
+    #    对齐顺序: 先按**时长降序**(最长的一般是正赛, 特征最强、最可靠),
+    #    再用已对齐的分P 给后续分P 提供时序约束(同一场次内分P 在直播轴上按时间先后排列)。
+    order = sorted(targets, key=lambda t: -(t.get("duration") or 0))
+    page_results, page_errors = {}, {}
+    aligned_bounds = []      # [(offset_ms, duration_sec)] 已对齐分P 的 [起点, 终点]
+    for tp in order:
+        pg = tp["page"]
+        try:
+            fp_replay, src_desc = await get_replay_fingerprint(
+                session, bv, pg, hop, win, local_audio=local_audio)
+            # 时序约束: 取已对齐分P 里"最早结束点"作为本集的下限参考,
+            # 只对时长明显短于最长分P 的"配件"(如赛后采访)启用, 避免误伤正赛。
+            later_than = None
+            if aligned_bounds:
+                last_end = max(o + int(d * 1000) for o, d in aligned_bounds)
+                later_than = last_end
+            r = await asyncio.to_thread(_align_one_page, fp_replay, conns, hop,
+                                        AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC,
+                                        density, anchor_ms, later_than)
+            r["offset_sec"] = round((r["offset_ms"] - anchor_ms) / 1000.0, 3)
+            r["part"] = tp["part"]
+            r["duration"] = tp["duration"]
+            r["src"] = src_desc
+            page_results[pg] = r
+            aligned_bounds.append((r["offset_ms"], float(tp.get("duration") or 0)))
+            print(f"[autocalign] {date}/{file} P{pg}({tp['part']}): "
+                  f"offset={r['offset_sec']} conf={r['confidence']:.2f} "
+                  f"匹配{r['matched_seconds']:.0f}s 窗户{r['windows_ok']}个 "
+                  f"候选{r['candidates']}个 依据={r['picked_by']}", flush=True)
+        except (ApiError, Exception) as e:     # noqa: B014 - 单页失败要隔离
+            page_errors[pg] = str(e)
+            print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 失败: {e}", flush=True)
+
+    if not page_results:
+        raise ApiError("所有分P 都无法对齐: " +
+                       "; ".join(f"P{k}: {v}" for k, v in page_errors.items()))
+
+    # d) 写回 matches.json: 每场一条记录, pages 里存各分P 的 offset
+    key = f"{date}|{file}"
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
     def _mut(matches):
         entry = dict(matches["align"].get(key) or {})
         entry.update({"date": date, "file": file, "bv": bv,
-                      "offset_sec": round(offset_sec, 3)})
-        entry["auto"] = auto_meta
+                      "title": info.get("title") or entry.get("title") or ""})
+        pages_map = dict(entry.get("pages") or {})
+        for pg, r in page_results.items():
+            pages_map[str(pg)] = {
+                "part": r["part"],
+                "duration": r["duration"],
+                "offset_sec": r["offset_sec"],
+                "confidence": round(r["confidence"], 3),
+                "matched_seconds": round(r["matched_seconds"], 1),
+                "windows_ok": r["windows_ok"],
+                "windows_spread": r["windows_spread"],
+                "candidates": r["candidates"],
+                "picked_by": r["picked_by"],
+                "method": "audiofp",
+                "ts": now_iso,
+            }
+        entry["pages"] = pages_map
+        # 兼容字段: 顶层 offset_sec 取**第一分P**(旧前端/旧代码读它)
+        first_pg = str(min(page_results.keys()))
+        entry["offset_sec"] = page_results[int(first_pg)]["offset_sec"]
+        entry["auto"] = {"confidence": round(page_results[int(first_pg)]["confidence"], 3),
+                         "method": "audiofp", "ts": now_iso}
         matches["align"][key] = entry
-        # 同步场次列表: 按 bv 全局匹配(lists 的日期键可能与会话日期不同, 如跨零点/赛程日)
+        # 同步场次列表: **按 bv + page 精确匹配**, 不再按 bv 全局扫
+        # (旧实现按 bv 扫会把同一 BV 的所有场次写成同一个 offset, 已实测造成错误)
         for day_list in matches.get("lists", {}).values():
             if not isinstance(day_list, list):
                 continue
             for item in day_list:
-                if isinstance(item, dict) and str(item.get("bv") or "") == bv:
-                    item["offset_sec"] = round(offset_sec, 3)
-                    item["auto"] = auto_meta
+                if not isinstance(item, dict) or str(item.get("bv") or "") != bv:
+                    continue
+                item_pages = item.get("pages")
+                if not isinstance(item_pages, dict):
+                    item_pages = {}
+                for pg, r in page_results.items():
+                    item_pages[str(pg)] = {
+                        "part": r["part"], "offset_sec": r["offset_sec"],
+                        "confidence": round(r["confidence"], 3)}
+                item["pages"] = item_pages
+                item["offset_sec"] = page_results[int(first_pg)]["offset_sec"]
 
     if not await asyncio.to_thread(update_matches, _mut):
         raise ApiError("matches.json 写入失败")
 
     elapsed = time.monotonic() - t0
-    message = (f"音频指纹对齐完成: 连接段 {best['conn']}/{len(conns)}, "
-               f"匹配直播音频 {matched_seconds:.0f}s, 回放指纹来源 {src_desc}, "
-               f"耗时 {elapsed:.1f}s")
-    print(f"[autocalign] {date}/{file} bv={bv} P{page}: {message}")
-    return {"offset_sec": round(offset_sec, 3), "confidence": round(conf, 3),
-            "matched_seconds": round(matched_seconds, 1),
-            "conn": f"{best['conn']}/{len(conns)}",
+    ok_pages = ", ".join(f"P{p}({r['part']})={r['offset_sec']:.1f}s"
+                         for p, r in sorted(page_results.items()))
+    message = (f"分P 对齐完成: {len(page_results)}/{len(targets)} 个分P 成功; "
+               f"{ok_pages}; 耗时 {elapsed:.1f}s")
+    if page_errors:
+        message += "; 失败: " + ", ".join(f"P{p}" for p in page_errors)
+    print(f"[autocalign] {date}/{file} bv={bv}: {message}")
+    return {"date": date, "file": file, "bv": bv,
+            "pages": {str(p): {"part": r["part"], "offset_sec": r["offset_sec"],
+                               "confidence": round(r["confidence"], 3),
+                               "matched_seconds": round(r["matched_seconds"], 1),
+                               "windows_ok": r["windows_ok"],
+                               "windows_spread": r["windows_spread"],
+                               "candidates": r["candidates"],
+                               "picked_by": r["picked_by"]}
+                      for p, r in sorted(page_results.items())},
+            "errors": page_errors,
             "elapsed_sec": round(elapsed, 1), "message": message}
 
 
@@ -2060,11 +2537,12 @@ async def handle_autocalign(request: web.Request) -> web.Response:
     if not BV_RE.fullmatch(bv):
         raise ApiError("字段 bv 非法(应形如 BV1xx411c7mD)")
     try:
-        page = int(body.get("page") or 1)
+        # page=0(默认) 表示"这场比赛的所有分P 各对齐一遍"; page>=1 只对齐指定分P
+        page = int(body.get("page") or 0)
     except (TypeError, ValueError):
         raise ApiError("字段 page 应为整数")
-    if page < 1:
-        raise ApiError("字段 page 应 >= 1")
+    if page < 0:
+        raise ApiError("字段 page 应 >= 0 (0=全部分P)")
     result = await run_autocalign(date, file, bv, page, request.app["http"])
     return api_ok(**result)
 

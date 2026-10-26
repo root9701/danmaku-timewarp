@@ -62,5 +62,8 @@ desktop.ini
 .DS_Store
 
 # ---------- 本地配置 ----------
-# config.json 含本机房间号/录制时间, 不同机器不同值。
+# config.json 含本机房间号/端口/赛事选择, 不同机器不同值 -> 不入库。
+# *.example.json 是模板, 必须入库(新用户照抄即可)。
 danmaku-collector/config.json
+danmaku-server/config.json
+

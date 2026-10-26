@@ -65,7 +65,9 @@ LIVE_END_CONFIRM = 2
 ROT_RETRY_SEC = 30  # 滚动切片失败后的重试间隔(避免 1s 辅助循环把 error 日志刷爆)
 # 对齐标记关键词: 命中的弹幕时间戳额外记入 meta.kw_events, 供回放对齐校准(一血/GG等事件两侧同构)
 EVENT_KWS = ("一血", "GG", "gg", "大龙", "水晶", "团灭", "五杀", "翻盘")
-DEFAULT_CONFIG = {"rooms": [7734200], "earliest_start": "now", "latest_end": "09:00",
+# rooms 默认**空**: 房间号必须由用户在自己的 config.json 里填。
+# 曾经默认写死某个房间号, 结果别人拿到代码会莫名其妙去录别人的直播间。
+DEFAULT_CONFIG = {"rooms": [], "earliest_start": "now", "latest_end": "09:00",
                   "poll_interval_sec": 60, "data_dir": "data", "log_dir": "logs",
                   "audio_fp": True, "slice_minutes": 60}
 # 跨零点会话归属: 凌晨 00:00-10:59 的录制内容属"前一晚比赛", 目录/日期语义归到比赛日。
@@ -153,7 +155,8 @@ def load_config(args):
         print("配置文件不存在: %s" % path, file=sys.stderr)
         sys.exit(2)
     else:
-        log.warning("未找到 %s, 使用默认配置", path)
+        log.warning("未找到配置文件 %s", path)
+        log.warning("请复制 config.example.json 为 config.json 并填写 rooms(直播间房间号)")
     cfg["rooms"] = [int(r) for r in cfg["rooms"]]
     cfg["poll_interval_sec"] = max(5, int(cfg["poll_interval_sec"]))
     cfg["slice_minutes"] = max(0, int(cfg["slice_minutes"]))  # 0=禁用滚动切片
@@ -1221,7 +1224,8 @@ def main():
     if args.test is not None:
         log.info("--test 模式: %s 秒", args.test)
     if not cfg["rooms"]:
-        log.error("rooms 为空, 退出")
+        log.error("rooms 为空 —— 请在 config.json 里填写要采集的直播间房间号, 例如:")
+        log.error('  { "rooms": [123456], "earliest_start": "01:00", "latest_end": "08:00" }')
         return 2
     # 单实例锁: 双开会同时 append 同一数据片 / afp 段号互撞, 直接损坏整晚数据
     lock = SingleInstanceLock(cfg["log_dir"] / "collector.lock")

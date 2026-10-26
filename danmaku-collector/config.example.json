@@ -1,0 +1,27 @@
+{
+  "_说明": "复制本文件为 config.json 并修改。config.json 是你的本机配置，不会进版本库。",
+
+  "_rooms说明": "要采集的 B 站直播间房间号。可以是多个。必填。",
+  "rooms": [7734200],
+
+  "_earliest_start说明": "几点开始录。'now'=立即, '01:00'=下一个凌晨1点, '+30m'=30分钟后。",
+  "earliest_start": "01:00",
+
+  "_latest_end说明": "几点自动停止。留空字符串 '' 表示不自动停。",
+  "latest_end": "08:00",
+
+  "_poll_interval_sec说明": "轮询间隔（秒），不建议低于 20。",
+  "poll_interval_sec": 30,
+
+  "_data_dir说明": "数据目录，相对本脚本目录。",
+  "data_dir": "data",
+
+  "_log_dir说明": "日志目录，相对本脚本目录。",
+  "log_dir": "logs",
+
+  "_audio_fp说明": "是否采集音频指纹。强烈建议开启——直播流过后就没有了，不开就无法自动对齐回放。",
+  "audio_fp": true,
+
+  "_slice_minutes说明": "弹幕数据切片间隔（分钟）。0=不切片，整晚一个文件。",
+  "slice_minutes": 60
+}

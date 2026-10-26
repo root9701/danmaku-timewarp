@@ -59,12 +59,41 @@ except ImportError:
     imageio_ffmpeg = None       # type: ignore
 
 # ---- 常量 ----
-# 8788 已被本机常驻的 node 服务占用(实测 bind 报 10048), 换 8789
-PORT = 8789
 BASE_DIR = Path(__file__).resolve().parent                  # danmaku-server/
 WEB_DIR = BASE_DIR / "web"                                  # 前端静态目录
 MATCHES_PATH = BASE_DIR / "matches.json"                    # 弹幕-视频匹配配置
 COOKIES_PATH = BASE_DIR / "cookies.txt"                     # 可选: B站 Cookie
+CONFIG_PATH = Path(os.environ.get("DANMAKU_CONFIG", "").strip()
+                   or BASE_DIR / "config.json")             # 可选的用户配置(不存在则全用默认)
+
+
+def _load_config(path: Path) -> dict:
+    """读 config.json。不存在/损坏都返回 {} —— 配置是**可选**的, 缺了必须能正常启动。"""
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"[config] 读取失败(用默认值继续): {e}", flush=True)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+CFG = _load_config(CONFIG_PATH)
+
+
+def _cfg(*keys, default=None):
+    """按路径取配置: _cfg("discover", "league_id", default="...")。任一层缺失即返回默认值。"""
+    cur = CFG
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return default if cur is None else cur
+
+
+# 8788 已被本机常驻的 node 服务占用(实测 bind 报 10048), 默认换 8789
+PORT = int(_cfg("port", default=8789))
 _env = os.environ.get("DANMAKU_DATA", "").strip()
 DATA_DIR = (Path(_env).resolve() if _env
             else BASE_DIR.parent / "danmaku-collector" / "data")
@@ -78,7 +107,7 @@ BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # 不写死绝对路径, 换机器也能跑, 也避免缓存随仓库/备份被带走)
 AFP_CACHE_DIR = Path(os.environ.get("AFP_CACHE", "").strip()
                      or (Path(tempfile.gettempdir()) / "danmaku_afp_cache"))
-AUTO_MIN_CONFIDENCE = 2.0   # 原型实测真对齐置信度 2.2-10.8, 低于 2 视为未验证
+AUTO_MIN_CONFIDENCE = float(_cfg("align", "min_confidence", default=2.0))
 AUTO_MIN_CONN_FRAMES = 50   # 连接段指纹至少 50 帧(约 10s @hop0.2)才参与对齐
 AUTO_MAX_OFFSET_SPREAD_SEC = 0.5  # 多个时间窗对齐出的 offset 允许的最大离散(秒)
 #   实测正常对齐时各窗离散为 0.0s(G3 三窗全 0.0), 因此 0.5s 已经非常宽松;
@@ -1147,11 +1176,47 @@ def _matchlist_for_session(date: str, lists: dict):
 # 公开出来是为了开箱即用; 若该 key 失效或被限流, 设同名环境变量覆盖即可, 不必改代码。
 _DEFAULT_RIOT_API_KEY = "0TvQnueqKa5mxJntVWt5w0w4LpLfEkrV1Ta8rQBb9Z"
 RIOT_API_KEY = (os.environ.get("RIOT_API_KEY", "").strip() or _DEFAULT_RIOT_API_KEY)
+
+# 赛事与时区/时间窗口都可配置(见 config.json 的 discover 段)。
+# 默认值对应"世界赛 + 北京时间凌晨到上午", 换赛区/常规赛改配置即可, 不必改代码。
+RIOT_LEAGUE_ID = str(_cfg("discover", "league_id", default="98767975604431411"))
 RIOT_SCHEDULE_URL = ("https://esports-api.lolesports.com/persisted/gw/getSchedule"
-                     "?hl=en-US&leagueId=98767975604431411")  # Worlds 正确 leagueId(getLeagues 实测)
-BILI_OFFICIAL_MID = 50329118          # 官方账号: 哔哩哔哩英雄联盟赛事
+                     f"?hl=en-US&leagueId={RIOT_LEAGUE_ID}")
+DISCOVER_ENABLED = bool(_cfg("discover", "enabled", default=True))
+BILI_OFFICIAL_MID = int(_cfg("bili", "official_mid", default=50329118))
 NET_TIMEOUT = 8                       # 秒, 对 Riot/B站 的单次请求超时
-DISCOVER_TZ = timezone(timedelta(hours=8))            # 北京时间(比赛块过滤窗口用)
+
+
+def _parse_hhmm(s, default):
+    """把 "01:00" 解析成 (1, 0); 非法则用默认值。"""
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(s or ""))
+    if not m:
+        return default
+    h, mi = int(m.group(1)), int(m.group(2))
+    return (h, mi) if 0 <= h < 24 and 0 <= mi < 60 else default
+
+
+def _load_tz(name):
+    """按 IANA 名称加载时区。
+
+    Windows 上 zoneinfo 需要 tzdata 包, 没装会抛 ZoneInfoNotFoundError。
+    这里**必须打警告而不是静默退回**: 时区错了会让赛程窗口整体偏移几小时,
+    表现是"明明有比赛却一场都没发现", 很难排查。宁可吵一点。
+    """
+    want = str(name or "Asia/Shanghai")
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(want)
+    except Exception as e:
+        print(f"[config] 时区 {want!r} 加载失败({e.__class__.__name__}), "
+              f"退回固定 UTC+08:00。若配置的不是东八区, 赛程窗口会整体偏移; "
+              f"Windows 请先 `pip install tzdata`", flush=True)
+        return timezone(timedelta(hours=8))
+
+
+DISCOVER_TZ = _load_tz(_cfg("discover", "timezone", default="Asia/Shanghai"))
+DISC_W0 = _parse_hhmm(_cfg("discover", "window_start", default="01:00"), (1, 0))
+DISC_W1 = _parse_hhmm(_cfg("discover", "window_end", default="09:00"), (9, 0))
 _SCHEDULE_CACHE = {"loaded": False, "ts": 0.0, "events": []}   # Riot 赛程内存缓存(赛程当天不变)
 _SCHEDULE_CACHE_TTL = 600             # 秒
 _SCHEDULE_LOCK = threading.Lock()
@@ -1284,8 +1349,15 @@ def discover_draft_for_date(date: str) -> list:
     旧数据里的 "G1 HLE vs IG" 由 _strip_game_prefix() 在展示时剥掉。
     """
     y, m, d = (int(x) for x in date.split("-"))
-    win0 = datetime(y, m, d, 1, 0, tzinfo=DISCOVER_TZ)
-    win1 = datetime(y, m, d, 9, 0, tzinfo=DISCOVER_TZ)
+    # 窗口可配置(见 config.json discover.window_start/window_end)。
+    # 默认 01:00-09:00 对应世界赛的北京时间凌晨档; 换赛区改配置即可。
+    # 窗口结束早于开始视为跨零点(如 23:00-06:00), 结束日顺延一天。
+    h0, m0 = DISC_W0
+    h1, m1 = DISC_W1
+    win0 = datetime(y, m, d, h0, m0, tzinfo=DISCOVER_TZ)
+    win1 = datetime(y, m, d, h1, m1, tzinfo=DISCOVER_TZ)
+    if win1 <= win0:
+        win1 += timedelta(days=1)
     draft = []
     for ev in riot_fetch_schedule():
         local = ev["start"].astimezone(DISCOVER_TZ)
@@ -1308,22 +1380,26 @@ _TEAM_NAMES_LOOKING_LIKE_GAME_NO = {"G2", "G3", "G4", "G5"}
 def _strip_game_prefix(title: str) -> str:
     """剥掉旧数据标题里的 "G1/G2 " 序号前缀(展示用, 不修改存储)。
 
-    只在**后面还跟着完整对阵**时才剥: "G1 HLE vs IG" -> "HLE vs IG"。
-    必须避开真实战队名: "G2 vs TES" 里的 G2 是队名, 剥掉就成 "vs TES" 了
-    (实测 2026-10-26 赛程里就有一场 G2 战队的比赛)。
+    只在**剥完仍是完整对阵**"A vs B"时才剥:
+      "G1 HLE vs IG" -> "HLE vs IG"   剥完第一词是 HLE(队名) ✓
+      "G4 GEN vs LYON" -> "GEN vs LYON"                        ✓
+      "G2 G2 vs TES" -> "G2 vs TES"   剥完第一词是 G2(队名)    ✓
+      "G2 vs TES"    -> 原样不动        剥完第一词是 vs -> 说明 G2 本身就是队名, 不能剥
+
+    判据: 剥完后的**第一个词不能是 vs**(那样说明队名被剥掉了)。
+    旧写法用 rest 里"有没有 vs"判断, 而 "vs TES" 里也有 vs, 会把 G2 战队
+    整场标题剥成 "vs TES"(实测踩过)。
     """
     t = str(title or "").strip()
     m = GAME_PREFIX_RE.match(t)
     if not m:
         return t
-    # 前缀里的 "G{n}" 若正好是知名战队名(且不在开头当作序号用), 不剥
-    head = t.split()[0] if t.split() else ""
     rest = t[m.end():].strip()
-    # 判断依据: 剥掉后剩余部分必须仍是 "A vs B" 形式, 否则说明剥错了
-    if head in _TEAM_NAMES_LOOKING_LIKE_GAME_NO and rest.count("vs") == 0:
+    if not rest:
         return t
-    if " vs " not in (" " + rest + " "):
-        return t
+    first = rest.split()[0]
+    if first.lower() == "vs":
+        return t          # 剥完就剩 "vs XXX", 说明被剥的那个 G\d+ 是队名
     return rest
 
 
@@ -1403,7 +1479,11 @@ def bili_search_replay(c1: str, c2: str, date: str) -> str:
     return best[1] if best else ""
 
 
-_TITLE_TEAMS_RE = re.compile(r"^\s*G\d+\s+(\S+)\s+vs\s+(\S+)", re.IGNORECASE)
+# 从标题解析两队 code。**不能**要求 "G1 " 前缀: 新数据标题就是 "HLE vs IG",
+# 强行要求前缀会让新格式全部解析失败(实测 G2 vs TES / MKOI vs DK 都返回 None),
+# 而 "G2 vs TES" 里的 G2 本身就是队名, 去掉前缀逻辑反而更安全。
+# 括号备注(旧数据里的"（待确认场次）")由 clean() 剥掉。
+_TITLE_TEAMS_RE = re.compile(r"^\s*(?:G\d+\s+)?(\S+)\s+vs\s+(\S+)", re.IGNORECASE)
 
 
 def _title_teams(title) -> tuple | None:

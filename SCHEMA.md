@@ -225,3 +225,66 @@ data/
 2. **语义变更必须 +`schema_version`**：例如改变 `offset_sec` 的参考零点
 3. **目录布局变更**：服务端必须先支持新旧两代，再迁移数据
 4. 前端**永不解析路径**：只依赖 API 返回的字段
+
+---
+
+## 7. 运行配置
+
+两端的配置都**不进版本库**，都属于"你的本机设置"。
+删除 config.json 后仍可启动（用内置默认值），这是刻意的：复制走代码就能跑。
+
+### 7.1 采集端 `danmaku-collector/config.json`
+
+模板见 `config.example.json`。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `rooms` | `[]` | 要采集的房间号，可多个。**必填**；为空时启动即报错并给出示例 |
+| `earliest_start` | `"now"` | `now` / `HH:MM`（下一次出现）/ `+30m` |
+| `latest_end` | `"09:00"` | 自动停止时刻，空串表示不停 |
+| `poll_interval_sec` | `60` | 轮询间隔，最小 5 |
+| `data_dir` / `log_dir` | `data` / `logs` | 相对脚本目录 |
+| `audio_fp` | `true` | 是否采音频指纹。关掉就没有自动校准能力，且事后无法补 |
+| `slice_minutes` | `60` | 弹幕切片间隔，`0` = 不切片 |
+
+### 7.2 播放端 `danmaku-server/config.json`
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `port` | `8789` | 网页端口 |
+| `discover.enabled` | `true` | 是否自动发现赛程 |
+| `discover.league_id` | Worlds | Riot 赛事 ID，见下表 |
+| `discover.timezone` | `Asia/Shanghai` | IANA 时区名 |
+| `discover.window_start` / `window_end` | `01:00` / `09:00` | 赛程过滤窗口；结束早于开始表示跨零点 |
+| `bili.official_mid` | `50329118` | B站官方回放账号 |
+| `align.min_confidence` | `2.0` | 对齐置信度下限 |
+| `align.vote_segments` | `8` | 多段投票切成几段 |
+| `align.vote_tolerance_sec` | `30` | 投票容差（秒） |
+
+常用 `league_id`：
+
+| 赛事 | ID |
+|---|---|
+| Worlds | `98767975604431411` |
+| LPL | `98767991299243165` |
+| LCK | `98767991310872058` |
+| LEC | `98767991302996019` |
+
+环境变量（优先级高于 config.json）：
+
+| 变量 | 作用 |
+|---|---|
+| `DANMAKU_CONFIG` | 指定配置文件路径 |
+| `DANMAKU_DATA` | 覆盖数据目录 |
+| `RIOT_API_KEY` | 覆盖内置社区 key（失效时用） |
+| `AFP_CACHE` | 回放音频指纹缓存目录 |
+
+### 7.3 时区的坑
+
+`discover.timezone` 用 IANA 名称。**Windows 上 `zoneinfo` 依赖 `tzdata` 包**，
+没装会抛 `ZoneInfoNotFoundError`——代码会打警告并退回 UTC+8，而不是静默忽略，
+因为时区错了会让赛程窗口整体偏移几小时，表现为"明明有比赛却一场都没发现"。
+
+```bash
+pip install tzdata
+```

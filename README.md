@@ -18,19 +18,92 @@
 ```
 lol延时直播/
 ├── README.md                 ← 本文档(总览/架构/数据格式/运维手册)
+├── SCHEMA.md                 ← 数据契约(manifest/afp/matches.json/API 字段)
 ├── danmaku-collector/        ← 采集端(Python, 见其 README)
 │   ├── collector.py          主程序: 状态机/WS协议/切片/防覆盖
 │   ├── live_audiofp.py       音频指纹 sidecar(拉流+增量指纹)
 │   ├── dashboard.py          控制台网页(8787)
 │   ├── phone_ctl.py          手机节点管理(status/start/stop/pull/test)
-│   ├── config.json           配置(房间/起止时间/开关)
-│   └── data/                 弹幕与指纹落盘(按比赛日分目录)
+│   ├── config.example.json   配置模板(复制成 config.json 后填)
+│   ├── config.json           你的本机配置(不入版本库)
+│   └── data/                 弹幕与指纹落盘(按赛事日分目录)
 └── danmaku-server/           ← 播放端(Python aiohttp + 原生JS, 见其 README)
     ├── server.py             8789: 静态页/弹幕聚合/对齐注册表/自动校准/赛程发现
     ├── audiofp.py            指纹库(读afp/互相关对齐)
+    ├── config.json           播放端配置(端口/赛事/时区/窗口), 可删
     ├── matches.json          对齐注册表+场次列表(持久化)
     └── web/                  前端(index.html + app.js + style.css, 无框架)
 ```
+
+## 配置（换赛事 / 换房间 / 换时区）
+
+两端各有自己的 `config.json`，**都不进版本库**，改完重启对应进程生效。
+两份都提供了 `*.example.json` 模板，删掉 config.json 也能用内置默认值启动。
+
+### 采集端 `danmaku-collector/config.json`
+
+```json
+{
+  "rooms": [7734200],
+  "earliest_start": "01:00",
+  "latest_end": "08:00",
+  "poll_interval_sec": 30,
+  "data_dir": "data",
+  "log_dir": "logs",
+  "audio_fp": true,
+  "slice_minutes": 60
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `rooms` | 要采集的直播间房间号，可多个。**必填**，留空会直接报错并提示 |
+| `earliest_start` | 开始录的时间。`"now"` 立即 / `"01:00"` 下一个凌晨 1 点 / `"+30m"` 30 分钟后 |
+| `latest_end` | 自动停止时间，`""` 表示不停 |
+| `audio_fp` | 是否采音频指纹。**强烈建议开**——直播流过后就没了，不开就没有自动对齐能力 |
+| `slice_minutes` | 弹幕切片间隔，`0` = 整晚一个文件 |
+
+### 播放端 `danmaku-server/config.json`
+
+```json
+{
+  "port": 8789,
+  "discover": {
+    "enabled": true,
+    "league_id": "98767975604431411",
+    "timezone": "Asia/Shanghai",
+    "window_start": "01:00",
+    "window_end": "09:00"
+  },
+  "bili": { "official_mid": 50329118 },
+  "align": { "min_confidence": 2.0 }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `port` | 网页端口 |
+| `discover.league_id` | 抓哪个赛事。Worlds=`98767975604431411`，LPL=`98767991299243165`，LCK=`98767991310872058`，LEC=`98767991302996019` |
+| `discover.timezone` | IANA 时区名。**Windows 需先 `pip install tzdata`**，否则会退回 UTC+8 并打警告 |
+| `discover.window_start` / `window_end` | 只在此时间窗口内的比赛才算"当晚场次"。结束早于开始表示跨零点（如 `23:00`→`06:00`） |
+| `bili.official_mid` | B站官方回放账号 ID（哔哩哔哩英雄联盟赛事 = 50329118） |
+
+**换赛区示例**：想录 LPL（北京时间晚上 17:00 开赛），改成
+
+```json
+{
+  "discover": {
+    "league_id": "98767991299243165",
+    "timezone": "Asia/Shanghai",
+    "window_start": "16:00",
+    "window_end": "23:00"
+  }
+}
+```
+
+采集端 `earliest_start` 相应改成 `"16:00"`、`latest_end` 改成 `"23:30"`。
+
+**换直播间**：只改采集端 `rooms` 为对应直播间数字即可，播放端无需改。
 
 ## 核心机制
 

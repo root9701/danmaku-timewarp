@@ -1,0 +1,26 @@
+{
+  "_comment": "服务端配置。缺省项使用代码内置默认值；改完重启生效。",
+
+  "port": 8789,
+
+  "discover": {
+    "_comment": "赛程自动发现。league_id 决定抓哪个赛事：Worlds=98767975604431411, LPL=98767991299243165, LCK=98767991310872058, LEC=98767991302996019, LCS=98767991299243165。时区用 IANA 名称。",
+    "enabled": true,
+    "league_id": "98767975604431411",
+    "timezone": "Asia/Shanghai",
+    "window_start": "01:00",
+    "window_end": "09:00"
+  },
+
+  "align": {
+    "_comment": "自动校准阈值。一般不用改。",
+    "min_confidence": 2.0,
+    "vote_segments": 8,
+    "vote_tolerance_sec": 30
+  },
+
+  "bili": {
+    "_comment": "B站官方回放搜索。official_mid 是账号 ID，哔哩哔哩英雄联盟赛事=50329118。",
+    "official_mid": 50329118
+  }
+}

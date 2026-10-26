@@ -68,8 +68,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="grid">
       <div>
         <label>直播间房间号（多个用英文逗号分隔）</label>
-        <input id="cfg-rooms" placeholder="7734200">
-        <div class="hint">LOL 赛事官方间默认 7734200</div>
+        <input id="cfg-rooms" placeholder="例如 7734200">
+        <div class="hint">填你要采集的直播间房间号；B站直播间地址里的数字即房间号</div>
       </div>
       <div>
         <label>最早开始时刻</label>

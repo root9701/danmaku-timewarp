@@ -52,9 +52,6 @@
       <section class="panel" id="panel-overview">
         <div class="panel-head"><span class="panel-ico">⯀</span>当晚总览
           <span id="ov-summary" class="align-cur">--</span>
-          <label class="ov-kw-toggle" title="防剧透：隐藏事件关键词（一血/大龙/水晶/GG 等）">
-            <input type="checkbox" id="chk-kw-spoiler" checked>显示事件关键词
-          </label>
           <button type="button" class="nbtn" id="btn-ov-refresh" title="重新读取当晚数据与各场分段">刷新</button>
         </div>
         <div class="panel-body">
@@ -111,16 +108,16 @@
             <span class="hint-line">用整晚音频指纹与官方回放互相关，自动对齐。这是首选方式。</span>
           </div>
 
-          <!-- 兜底: 手动校准。默认折叠, 只在自动校准失败/需要微调时展开。 -->
+          <!-- 兜底: 手动微调。默认折叠, 只在自动校准失败/需要微调时展开。 -->
           <details class="adv" id="manual-calib">
-            <summary>手动校准（兜底 · 自动校准不可用时使用）</summary>
+            <summary>手动微调（兜底 · 自动校准不准时用）</summary>
             <div class="panel-body">
               <p class="hint-line">
-                在上方<b>当晚总览</b>里点彩色事件标记跳到该时刻 → 等画面上该事件真实发生时点「对齐到此刻」；
-                或用下方微调按钮逐档校正。
+                自动校准算出的大致对齐值可以用下面的按钮逐档微调：
+                看着画面找个好认的时刻（比如某句解说），确认弹幕出现的位置对不对，
+                偏了就按 <b>−/+</b> 挪一档。
               </p>
               <div class="row calib-row">
-                <button type="button" class="btn" id="btn-align-now" disabled>对齐到此刻（先在总览点选事件）</button>
                 <span class="nudge" title="即时微调弹幕对齐">
                   <button type="button" class="nbtn" data-d="-30">-30</button><button type="button" class="nbtn" data-d="-10">-10</button><button type="button" class="nbtn" data-d="-5">-5</button><button type="button" class="nbtn" data-d="5">+5</button><button type="button" class="nbtn" data-d="10">+10</button><button type="button" class="nbtn" data-d="30">+30</button>
                 </span>

@@ -94,6 +94,10 @@ def _cfg(*keys, default=None):
 
 # 8788 已被本机常驻的 node 服务占用(实测 bind 报 10048), 默认换 8789
 PORT = int(_cfg("port", default=8789))
+# 监听地址。默认只绑本机; 想让手机/iPad 访问就把 config.json 的 host 改成 "0.0.0.0"
+# (或设环境变量 DANMAKU_HOST=0.0.0.0)。注意本服务无登录鉴权, 只在可信网络这样用。
+HOST = (os.environ.get("DANMAKU_HOST", "").strip()
+        or str(_cfg("host", default="127.0.0.1")))
 _env = os.environ.get("DANMAKU_DATA", "").strip()
 DATA_DIR = (Path(_env).resolve() if _env
             else BASE_DIR.parent / "danmaku-collector" / "data")
@@ -2828,6 +2832,28 @@ def build_app() -> web.Application:
     return app
 
 
+def _lan_ips() -> list:
+    """本机局域网 IPv4 地址(启动时打印, 方便手机/iPad 直接输入)。"""
+    ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("223.5.5.5", 80))      # 只为让内核选路由, 不真发包
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith("127."):
+                ips.append(ip)
+    except OSError:
+        pass
+    return [ip for ip in ips if not ip.startswith("169.254.")]
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2836,12 +2862,15 @@ def main() -> None:
     print()
     print("=" * 60)
     print("  弹幕延时直播 · 本地服务器")
-    print(f"  访问地址:     http://127.0.0.1:{PORT}")
+    print(f"  本机访问:     http://127.0.0.1:{PORT}")
+    if HOST not in ("127.0.0.1", "localhost"):
+        for ip in _lan_ips():
+            print(f"  局域网访问:   http://{ip}:{PORT}")
     print(f"  采集数据目录: {DATA_DIR}")
     print(f"  B站Cookie:    {'已加载' if load_cookie_header() else '未配置(可选)'}")
     print("  停止: 按 Ctrl+C")
     print("=" * 60)
-    web.run_app(build_app(), host="127.0.0.1", port=PORT, print=None)
+    web.run_app(build_app(), host=HOST, port=PORT, print=None)
 
 
 if __name__ == "__main__":

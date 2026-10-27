@@ -19,11 +19,10 @@
   var btnMute = $('btn-mute'), rngVol = $('rng-vol'), ctrlBar = $('ctrl-bar');
   var btnRate = $('btn-rate'), speedBadge = $('speed-badge'), btnSkip = $('btn-skip');
   var btnAutoAdvance = $('btn-auto-advance');
-  var alignCur = $('align-cur'), btnAlignNow = $('btn-align-now');
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
   var btnDiscover = $('btn-discover');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
-  var btnOvRefresh = $('btn-ov-refresh'), chkKwSpoiler = $('chk-kw-spoiler');
+  var btnOvRefresh = $('btn-ov-refresh');
   var manualCalib = $('manual-calib');
 
   /* ---------------- 全局状态 ---------------- */
@@ -381,7 +380,6 @@
     state.danmaku = list;
     state.applied = true; active.length = 0; resetTracks();
     dmList.innerHTML = ''; hideSc();
-    buildAlignChart();
     syncTitleForPlayback();
 
     fetch('/api/match', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1175,45 +1173,6 @@
     // 这些标记已从"校准面板"移到总览: 那里不再重复画密度曲线,
     // 事件标记统一放在这条主时间轴上, 既能辅助校准(点它跳转), 也能看清节奏。
     ov.order = [];
-    if (ov.markers && ov.markers.length && kwMarkersEnabled()) {
-      // 标签防重叠: 按 x 排序后贪心分配"行", 每行维护已占用到的最小 x,
-      // 保证同一行内标签不叠字。行数上限 3, 再密就只留竖线。
-      var placed = [];
-      ov.markers.forEach(function (m) {
-        m._x = ovX(m.wallMs);
-        placed.push(m);
-      });
-      placed.sort(function (a, b) { return a._x - b._x; });
-      var rowEnd = [-999, -999, -999];
-      placed.forEach(function (m) {
-        var lab = m.kw, lw = lab.length * 9 + 4;
-        var row = 0;
-        for (var r = 0; r < 3; r++) {
-          if (m._x > rowEnd[r] + 4) { row = r; break; }
-          row = -1;
-        }
-        if (row < 0) { m._row = -1; return; }     // 挤不下: 只画竖线不写标签
-        m._row = row;
-        rowEnd[row] = m._x + lw;
-      });
-      placed.forEach(function (m) {
-        var mx = m._x;
-        if (mx < 8 || mx > w - 8) { return; }
-        var sel = (typeof alignMarkers !== 'undefined' && alignSelIdx >= 0 && alignMarkers[alignSelIdx] === m);
-        g.strokeStyle = m.color;
-        g.lineWidth = sel ? 2.5 : 1;
-        g.globalAlpha = sel ? 1 : 0.85;
-        g.beginPath(); g.moveTo(mx, densTop); g.lineTo(mx, densTop + densH); g.stroke();
-        g.globalAlpha = 1;
-        if (m._row >= 0) {
-          g.fillStyle = m.color; g.font = '9px sans-serif';
-          var lx = Math.min(Math.max(2, mx - 5), w - m.kw.length * 9 - 4);
-          g.fillText(m.kw, lx, densTop - 4 - m._row * 10);
-        }
-        ov.order.push({ marker: m, x0: mx - 5, x1: mx + 5, y: densTop, h: densH });
-      });
-    }
-
     // ---- 下方: 分P块按时间摆进主轴轨道(不重叠的共用一条轨道) ----
     var laneTop = densTop + densH + 10;
     var avail = h - laneTop - 18;
@@ -1287,13 +1246,7 @@
   ovCanvas.addEventListener('mousemove', function (e) {
     var r = ovCanvas.getBoundingClientRect();
     var hit = ovHit(e.clientX - r.left, e.clientY - r.top);
-    if (hit && hit.marker) {
-      // 事件标记: 这是手动校准的兜底入口 —— 点它跳过去, 再「对齐到此刻」
-      var m = hit.marker;
-      ovCanvas.style.cursor = 'pointer';
-      ovCanvas.title = m.label + '（' + m.count + ' 条弹幕）— 点击跳到该时刻，' +
-                       '再用「对齐到此刻」手动校准';
-    } else if (hit && hit.it) {
+    if (hit && hit.it) {
       var tr = hit.it.tr, b = hit.it.b;
       ovCanvas.style.cursor = 'pointer';
       ovCanvas.title = tr.title + ' · ' + (b.part || ('P' + b.p)) +
@@ -1309,18 +1262,9 @@
     var r = ovCanvas.getBoundingClientRect();
     var x = e.clientX - r.left, y = e.clientY - r.top;
     var hit = ovHit(x, y);
-    if (hit && hit.marker) { playEventMarker(hit.marker); return; }
     if (hit && hit.it) { playFromOverview(hit.it.tr, hit.it.b); return; }
     if (state.applied) { seekV(clampSeek((ovMs(x) - baseMs()) / 1000)); }
   });
-
-  // 点事件标记: 跳到该时刻并选中它, 让「对齐到此刻」可用(手动校准兜底路径)
-  function playEventMarker(m) {
-    alignSelIdx = alignMarkers.indexOf(m);
-    if (state.applied) { seekV(clampSeek((m.wallMs - baseMs()) / 1000)); }
-    updateAlignNowBtn();
-    drawOverview();
-  }
 
   // 点总览某场某局 -> 切场并定位到该分P起点
   function playFromOverview(tr, block, opts) {
@@ -1359,106 +1303,14 @@
     });
   }
 
-  /* ---------------- 事件标注 / 防剧透开关 ---------------- */
-  // 防剧透: 事件关键词(一血/大龙/水晶/GG...)会直接透露比赛进程, 看"准直播"时等于剧透。
-  // 开关放在总览面板(事件标记现在也只画在总览上), 共用一份持久化设置。
-  var KW_SPOILER_KEY = 'dm-kw-spoiler-hidden';
-  function kwMarkersEnabled() {
-    try { return localStorage.getItem(KW_SPOILER_KEY) !== '1'; } catch (e) { return true; }
+
+  // 手动校准面板默认折叠; 自动校准失败时自动展开, 让兜底入口可见。
+  function updateManualCalibOpen() {
+    if (!manualCalib) { return; }
+    var autoFailed = alignStatus && !alignStatus.hidden &&
+                     /失败|不可用|错误/.test(alignStatus.textContent || '');
+    if (autoFailed) { manualCalib.open = true; }
   }
-  function setKwMarkersEnabled(on) {
-    try { localStorage.setItem(KW_SPOILER_KEY, on ? '0' : '1'); } catch (e) { /* 忽略 */ }
-    if (chkKwSpoiler) { chkKwSpoiler.checked = on; }
-    // 关掉时不生成标记 = 只显示密度, 不透露任何事件
-    buildAlignChart();
-  }
-  if (chkKwSpoiler) {
-    chkKwSpoiler.addEventListener('change', function () { setKwMarkersEnabled(chkKwSpoiler.checked); });
-  }
-
-  // 事件关键词: 用于在"当晚总览"的主时间轴上标注比赛关键节点。
-  // 注意(防剧透): 这些词会透露比赛进程, 由 kwMarkersEnabled() 统一开关。
-  var EV_KWS = [
-    { kw: '一血', min: 1, color: '#ff5c5c' },
-    { kw: '五杀', min: 1, color: '#ff5c5c' },
-    { kw: '团灭', min: 3, color: '#ffb020' },
-    { kw: '大龙', min: 3, color: '#9d5cff' },
-    { kw: '水晶', min: 3, color: '#4cd964' },
-    { kw: '结束了', min: 3, color: '#40b3ff' },
-    { kw: 'GG', min: 2, color: '#40b3ff' }
-  ];
-  var alignMarkers = [];    // [{wallMs, kw, count, label, color, row}]
-  var alignSelIdx = -1;
-
-  // 从弹幕流里聚簇出事件标记, 写入总览(ov.markers)并重绘。
-  // 密度曲线不再在这里画 —— 它和总览的密度区重复, 已合并到总览。
-  function buildAlignChart() {
-    alignMarkers = []; alignSelIdx = -1;
-    ov.markers = [];
-    if (state.danmaku.length && kwMarkersEnabled()) {
-      EV_KWS.forEach(function (cfg) {
-        var tsList = [];
-        state.danmaku.forEach(function (d) {
-          if (d.ty === 'dm' && d.t && d.t.indexOf(cfg.kw) >= 0) { tsList.push(d.ts); }
-        });
-        tsList.sort(function (a, b) { return a - b; });
-        var cluster = [], cnt = 0;
-        function flush() {
-          if (cluster.length && cnt >= cfg.min) {
-            var wall = cluster[Math.floor(cluster.length / 2)];
-            var dt = new Date(wall);
-            alignMarkers.push({ wallMs: wall, kw: cfg.kw, count: cnt, color: cfg.color,
-              label: cfg.kw + ' ' + two(dt.getHours()) + ':' + two(dt.getMinutes()) });
-          }
-          cluster = []; cnt = 0;
-        }
-        tsList.forEach(function (t) {
-          if (cluster.length && t - cluster[cluster.length - 1] > 30000) { flush(); }
-          cluster.push(t); cnt++;
-        });
-        flush();
-      });
-    }
-    // 最多 14 个, 按强度取; 再按时间排, 交错两行放标签
-    alignMarkers.sort(function (a, b) { return b.count - a.count; });
-    alignMarkers = alignMarkers.slice(0, 14);
-    alignMarkers.sort(function (a, b) { return a.wallMs - b.wallMs; });
-    alignMarkers.forEach(function (m, i) { m.row = i % 2; });
-    ov.markers = alignMarkers;
-    updateAlignNowBtn();
-    drawOverview();      // 事件标记画在总览主轴上
-  }
-
-  // 总览横轴: 事件标记/播放位置都用同一套映射
-  function alignX(wallMs) { return ovX(wallMs); }
-  function alignWall(x) { return ovMs(x); }
-  function drawAlignChart() { drawOverview(); }   // 兼容旧调用点: 统一重绘总览
-
-
-  function updateAlignNowBtn() {
-    var m = alignMarkers[alignSelIdx];
-    btnAlignNow.disabled = !m;
-    btnAlignNow.textContent = m
-      ? '对齐到此刻（事件：' + m.label + '）'
-      : '对齐到此刻（先在总览点选事件）';
-    // 手动校准默认折叠: 自动校准失败/需要微调时把它展开, 让兜底入口可见
-    if (manualCalib) {
-      var autoFailed = alignStatus && !alignStatus.hidden &&
-                       /失败|不可用|错误/.test(alignStatus.textContent || '');
-      if (m || autoFailed) { manualCalib.open = true; }
-    }
-  }
-
-  btnAlignNow.addEventListener('click', function () {
-    var m = alignMarkers[alignSelIdx];
-    if (!m || !state.applied) { return; }
-    var wantOffset = (m.wallMs - state.anchorMs - getV() * 1000) / 1000;
-    var delta = Math.round(wantOffset - state.offsetSec);
-    if (delta === 0) { alignSelIdx = -1; updateAlignNowBtn(); return; }
-    adjustOffset(delta);
-    alignSelIdx = -1;
-    updateAlignNowBtn();
-  });
 
   // 应用新 offset(绝对值): 即时平移弹幕映射(不重载)并保存。
   // 手动微调 adjustOffset 与「自动校准」共用同一条路径。
@@ -1472,7 +1324,8 @@
     active.length = 0;
     resetTracks();
     state.idx = upperBound(state.danmaku, getV() * 1000);
-    alignCur.textContent = 'offset: ' + state.offsetSec + 's';
+    var elOff = document.getElementById('align-cur');
+    if (elOff) { elOff.textContent = 'offset: ' + state.offsetSec + 's'; }
     drawOverview();
     // manual 标记: 手动微调要让服务端清掉旧的 auto(自动校准置信度)记录,
     // 避免条目里挂着"高置信度自动校准"的假象。自动校准写回时不需要(它自己写 auto)。
@@ -1500,6 +1353,8 @@
     alignStatus.hidden = !msg;
     alignStatus.textContent = msg || '';
     alignStatus.className = 'align-status' + (cls ? ' ' + cls : '');
+    // 自动校准失败时把"手动校准"折叠面板铺开, 让兜底入口直接可见
+    if (cls === 'err') { updateManualCalibOpen(); }
   }
 
   btnAutoAlign.addEventListener('click', function () {
@@ -1784,8 +1639,6 @@
   function init() {
     applySettings();
     // 防剧透开关初值来自持久化设置(默认显示事件标记)
-    var kwOn = kwMarkersEnabled();
-    if (chkKwSpoiler) { chkKwSpoiler.checked = kwOn; }
     elClock.textContent = fmtClock(new Date());
     loadDays();
     requestAnimationFrame(loop);

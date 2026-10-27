@@ -1,0 +1,51 @@
+{
+  "align": {
+    "2026-10-25|2026-10-25_2332_7734200": {
+      "bv": "BV1iTHT6TEvg",
+      "date": "2026-10-25",
+      "file": "2026-10-25_2332_7734200",
+      "offset_sec": 0,
+      "title": "TES vs AL"
+    }
+  },
+  "lists": {
+    "2026-10-25": [
+      {
+        "bv": "BV1iTHT6TEvg",
+        "offset_sec": 0,
+        "start_ms": 1792861200000,
+        "title": "TES vs AL"
+      },
+      {
+        "bv": "BV1h7HT6Epy",
+        "offset_sec": 0,
+        "start_ms": 1792864800000,
+        "title": "MKOI vs CFO"
+      },
+      {
+        "bv": "BV1gNHg6KE35",
+        "offset_sec": 0,
+        "start_ms": 1792868400000,
+        "title": "LOS vs G2"
+      },
+      {
+        "bv": "BV1t4Hu6wEXB",
+        "offset_sec": 0,
+        "start_ms": 1792875600000,
+        "title": "TSW vs IG"
+      },
+      {
+        "bv": "BV1woHM6XEtP",
+        "offset_sec": 0,
+        "start_ms": 1792879200000,
+        "title": "HLE vs GEN"
+      },
+      {
+        "bv": "BV1rrHu6QEAh",
+        "offset_sec": 0,
+        "start_ms": 1792872000000,
+        "title": "KC vs LYON"
+      }
+    ]
+  }
+}

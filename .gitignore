@@ -50,9 +50,19 @@ tmp/
 *.npz
 
 # ---------- 运行状态 ----------
-# matches.json 记录具体回放的 BV 与 offset(含逐分P 对齐结果), 属于本机运行状态;
-# 首次运行/重新对齐会自动重建。需要复现某次对齐结果时再单独备份。
+# matches.json = **本地覆盖层**: 只装用户自己手动微调/新算的记录, 不入库。
+# 上游分发的对齐结果在 danmaku-server/align/*.json(入库, 见 align/README.md)。
+# 拆开的原因: 一个文件既装"作者算的"又装"用户改的", 既发不出去也合不回来。
 danmaku-server/matches.json
+danmaku-server/*.json.bak
+
+# align/ 必须入库 —— 它是让别人「clone 下来就能回放」的核心资产
+!danmaku-server/align/
+!danmaku-server/align/*.json
+
+# ---------- 打包产物 ----------
+# tools/pack_data.py --strip-afp 生成的发行副本, 是"可重新生成"的中间产物
+dist/
 
 # ---------- 编辑器 / 系统 ----------
 .vscode/

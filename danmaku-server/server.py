@@ -61,7 +61,14 @@ except ImportError:
 # ---- 常量 ----
 BASE_DIR = Path(__file__).resolve().parent                  # danmaku-server/
 WEB_DIR = BASE_DIR / "web"                                  # 前端静态目录
-MATCHES_PATH = BASE_DIR / "matches.json"                    # 弹幕-视频匹配配置
+MATCHES_PATH = BASE_DIR / "matches.json"                    # 本地覆盖层(用户自己的改动, 不入库)
+# 分发的对齐结果: 一天一个文件, 入库(见 align/README.md)。
+# 为什么要拆: matches.json 同时装"作者算好的对齐结果"和"用户自己的手动微调",
+# 混在一个被 gitignore 的文件里, 既发不出去也合不回来。拆开后:
+#   align/*.json  = 只读, git pull 更新(上游算的)
+#   matches.json  = 可写, 本地覆盖(用户微调), 优先级更高
+ALIGN_DIR = Path(os.environ.get("DANMAKU_ALIGN", "").strip()
+                 or BASE_DIR / "align")
 COOKIES_PATH = BASE_DIR / "cookies.txt"                     # 可选: B站 Cookie
 CONFIG_PATH = Path(os.environ.get("DANMAKU_CONFIG", "").strip()
                    or BASE_DIR / "config.json")             # 可选的用户配置(不存在则全用默认)
@@ -216,22 +223,104 @@ _MATCHES_LOCK = threading.Lock()
 _AUTOCALIGN_LOCK = asyncio.Lock()
 
 
-def load_matches() -> dict:
-    """结构: {"align": {"date|file": {...}}, "lists": {"date": [{title,bv,offset_sec}]}}
-    兼容旧格式(顶层平铺 align 条目)自动迁移。"""
+# ============================================================================
+# 对齐记录的分层读取
+#
+# 三层, 优先级从低到高:
+#   1. align/{日期}.json   随仓库分发(只读)。一天一个文件, 减少冲突面。
+#   2. 旧版 matches.json   单文件整体(兼容; 也作为"用户本地覆盖层")
+#   3. 采集端现场推断      没有记录时由 /api/days 的 manifest 兜底
+#
+# 合并粒度是**单场比赛**(key = {日期}|{文件}|{BV}), 不是整天: 这样用户可以只覆盖
+# 自己不认同的那一场, 其余仍跟随上游更新。`lists` 按天整体覆盖(场次名单是原子的,
+# 半天合并没有意义)。
+#
+# 写回只写 MATCHES_PATH(本地层), 绝不改 align/ —— 那是上游产物, 用户 pull 时会覆盖。
+# ============================================================================
+_ALIGN_CACHE: dict = {}          # {文件名: (mtime, 解析结果)}
+_ALIGN_CACHE_LOCK = threading.Lock()
+
+
+def _read_json_file(path: Path):
+    """读一个 JSON 对象, 失败返回 None(不抛)。"""
     try:
-        data = json.loads(MATCHES_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"align": {}, "lists": {}}
-    if not isinstance(data, dict):
-        return {"align": {}, "lists": {}}
-    if "align" in data or "lists" in data:
-        return {"align": data.get("align") or {}, "lists": data.get("lists") or {}}
-    return {"align": data, "lists": {}}  # 旧格式迁移
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _load_align_dir() -> dict:
+    """读 align/ 下全部 {日期}.json, 合并成 {"align": {...}, "lists": {...}}。
+
+    单独缓存每个文件的解析结果(按 mtime 失效): 365 天的目录也只需 stat 一遍,
+    git pull 更新某一天后会自动重读那一天, 不会因为缓存看不到新数据。
+    """
+    out_align: dict = {}
+    out_lists: dict = {}
+    if not ALIGN_DIR.is_dir():
+        return {"align": out_align, "lists": out_lists}
+    try:
+        files = sorted(ALIGN_DIR.glob("*.json"))
+    except OSError:
+        return {"align": out_align, "lists": out_lists}
+    with _ALIGN_CACHE_LOCK:
+        live = set()
+        for p in files:
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            live.add(p.name)
+            hit = _ALIGN_CACHE.get(p.name)
+            if hit and hit[0] == mtime:
+                data = hit[1]
+            else:
+                data = _read_json_file(p) or {}
+                _ALIGN_CACHE[p.name] = (mtime, data)
+            al = data.get("align")
+            if isinstance(al, dict):
+                out_align.update(al)
+            ls = data.get("lists")
+            if isinstance(ls, dict):
+                out_lists.update(ls)
+        # 清掉已被删除的文件, 防止内存里留着幽灵记录
+        for name in list(_ALIGN_CACHE):
+            if name not in live:
+                _ALIGN_CACHE.pop(name, None)
+    return {"align": out_align, "lists": out_lists}
+
+
+def load_matches() -> dict:
+    """读取合并后的对齐记录: align/ 为底, 本地 matches.json 覆盖。
+
+    结构: {"align": {"{日期}|{文件}[|{BV}]": {...}}, "lists": {"{日期}": [...]}}
+    兼容旧格式(顶层平铺 align 条目)自动迁移。
+    """
+    base = _load_align_dir()
+    local = _read_json_file(MATCHES_PATH)
+    if not local:
+        return base
+    if "align" in local or "lists" in local:
+        loc_align = local.get("align") or {}
+        loc_lists = local.get("lists") or {}
+    else:
+        loc_align, loc_lists = local, {}       # 旧格式(顶层平铺)
+    if not isinstance(loc_align, dict):
+        loc_align = {}
+    merged_align = dict(base["align"])
+    merged_align.update(loc_align)             # 本地层优先, 单场粒度
+    merged_lists = dict(base["lists"])
+    if isinstance(loc_lists, dict):
+        merged_lists.update(loc_lists)         # 按天整体覆盖
+    return {"align": merged_align, "lists": merged_lists}
 
 
 def save_matches(matches: dict) -> bool:
-    """原子写入(唯一临时名 + 替换), 避免写一半损坏与并发互相踩踏。
+    """只写本地覆盖层 MATCHES_PATH(原子写入: 唯一临时名 + 替换)。
+
+    绝不写 align/ —— 那是上游分发的产物, 用户 git pull 时会更新; 若在此处写入,
+    下次 pull 就会冲突, 或把上游结果覆盖成自己的本地版本。
 
     每次调用生成独立的 tmp 文件名: 即使两个线程同时写, 也不会共用同一个
     临时文件而把彼此内容写坏(旧的固定 ".tmp" 名正是丢数据的根因)。"""
@@ -250,14 +339,48 @@ def save_matches(matches: dict) -> bool:
         return False
 
 
+def _split_local_layer(merged: dict) -> dict:
+    """从合并视图里裁掉"与 align/ 完全相同"的记录, 只留本地独有的部分。
+
+    为什么需要: update_matches 改的是合并视图, 若整份写回本地, 上游每天新增的记录
+    都会被复制进 matches.json, 用户 pull 后本地文件会越来越胖, 且与上游重复。
+
+    裁法: 某条记录若 align/ 里已有**完全相同的 JSON**, 就不写进本地层。
+    align/ 里没有的(用户新算的、手动微调的)才留下 —— 这正是"覆盖层"的语义。
+    """
+    base = _load_align_dir()
+    base_align = base["align"]
+    base_lists = base["lists"]
+
+    def canon(v) -> str:
+        return json.dumps(v, ensure_ascii=False, sort_keys=True)
+
+    out_align = {}
+    for k, v in (merged.get("align") or {}).items():
+        b = base_align.get(k)
+        if b is not None and canon(b) == canon(v):
+            continue                      # 上游已有同一份, 不必重复存
+        out_align[k] = v
+    out_lists = {}
+    for k, v in (merged.get("lists") or {}).items():
+        b = base_lists.get(k)
+        if b is not None and canon(b) == canon(v):
+            continue
+        out_lists[k] = v
+    return {"align": out_align, "lists": out_lists}
+
+
 def update_matches(mutator) -> bool:
     """在锁内做 read-modify-write。mutator(matches) 的返回值忽略。
 
-    所有写 matches.json 的地方都应走这里, 而不是各自 load→改→save。"""
+    所有写对齐记录的地方都应走这里, 而不是各自 load→改→save。
+    mutator 看到的是**合并视图**(align/ + 本地), 但落盘时只写本地独有的部分,
+    避免把上游分发的记录复制一份进本地文件。
+    """
     with _MATCHES_LOCK:
         matches = load_matches()
         mutator(matches)
-        return save_matches(matches)
+        return save_matches(_split_local_layer(matches))
 
 
 def load_meta(date: str, file: str) -> dict:
@@ -976,7 +1099,15 @@ async def handle_danmaku(request: web.Request) -> web.Response:
         raise ApiError("弹幕文件不完整(gzip 数据被截断)")
     except OSError as e:
         raise ApiError(f"弹幕文件读取失败: {e}")
-    return web.Response(text=text, content_type="text/plain", charset="utf-8")
+    # 传输层压缩: 整晚弹幕明文约 15.6 MB, 一晚上传/局域网传输都慢, 手机尤甚。
+    # 这里压的是**已经解压好的文本**, 与磁盘上的 .gz 切片无关。
+    # 实测 15.6 MB → 约 4.2 MB, 代价约 70 ms CPU(在 worker 线程里, 不堵事件循环)。
+    # aiohttp 3.9+ 用 enable_compression() 按请求的 Accept-Encoding 自动协商,
+    # 客户端不支持时直接明文返回, 行为与旧版一致。
+    resp = web.Response(text=text, content_type="text/plain", charset="utf-8",
+                        headers={"Cache-Control": "no-store"})
+    resp.enable_compression()
+    return resp
 
 
 # ---- /api/match: 读取/保存 弹幕文件与视频的匹配信息 ----

@@ -21,7 +21,8 @@
 - **两端不许互相 import**。采集端要能单独拷到手机 Termux 跑；播放端只读采集端的数据目录。跨端只通过文件系统。
 - **指纹数学定义改一处必改两处**（`danmaku-server/audiofp.py` 与 `danmaku-collector/live_audiofp.py`），改完必须跑 `tests/test_align.py` 的逐 bit 等价断言。
 - **`data/` 下的产物不删不改**。音频指纹无法再生——直播流消失后，那晚就永远不能自动对齐。
-- **写 `matches.json` 只走 `update_matches()`**，它带锁 + 唯一临时名 + 原子替换。自己 `load → 改 → save` 会丢数据。
+- **写对齐记录只走 `update_matches()`**，它带锁 + 唯一临时名 + 原子替换，且只落「与 `align/` 不同」的记录。
+- **绝不写 `danmaku-server/align/`**。那是上游分发的只读产物，写了会让用户 `git pull` 冲突。
 - **`.bat` 保持 UTF-8 无 BOM + CRLF**（`.gitattributes` 已固定）。改成 LF 会让 cmd 把多行当一条命令、中文乱码。
 - **启动脚本保持前台运行**。后台化会改变进程生命周期，牵扯退出脚本的定位逻辑。
 - **判据里的数字不许写死在文档**：行数、超标项数由 `python tools\quality_gate.py` 现场产出。

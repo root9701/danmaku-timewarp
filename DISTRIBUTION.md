@@ -57,7 +57,7 @@ git pull          # 只拉新增的弹幕(每晚约 10 MB), 不会重下历史
 
 ```mermaid
 flowchart LR
-    A["作者每晚挂机采集"] --> B["danmaku-collector/data/<br/>弹幕切片 + manifest"]
+    A["作者每晚挂机采集"] --> B["data/<br/>弹幕切片 + manifest"]
     A --> C["自动校准"]
     C --> D["danmaku-server/align/<br/>对齐结果(入库)"]
     B --> E["git push"]
@@ -66,7 +66,7 @@ flowchart LR
     F --> G["直接回放"]
 ```
 
-**弹幕在 `danmaku-collector/data/`，对齐结果在 `danmaku-server/align/`。** 两者都由 `git pull` 更新。
+**弹幕在仓库根的 `data/`，对齐结果在 `danmaku-server/align/`。** 两者都由 `git pull` 更新。
 
 ---
 

@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "danmaku-collector" / "data"
+DATA = ROOT / "data"
 ALIGN = ROOT / "danmaku-server" / "align"
 DIST = ROOT / "dist"
 

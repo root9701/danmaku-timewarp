@@ -22,6 +22,8 @@ lol延时直播/
 ├── 架构总览.md / 术语表.md / 模块设计/
 ├── tools/quality_gate.py           ← 质量闸门(退出码说话)
 ├── tests/test_align.py             ← 对齐算法回归
+├── data/                           ← 采集产物(两端共用, 见 SCHEMA.md)
+│   {赛事日}/{房间号}/ manifest + 切片 + afp
 ├── danmaku-collector/              ← 采集端(可单独部署到手机)
 │   collector.py / live_audiofp.py / dashboard.py / phone_ctl.py
 │   启动采集.bat / 启动控制台.bat / 退出控制台.bat

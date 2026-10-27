@@ -14,22 +14,25 @@ env/
 #   data/{赛事日}/{room}/manifest.json + 切片 + afp + meta
 #   data/_test/{日期}T{HHMM}_{room}/  测试会话
 #
+# 数据放在**仓库根**的 data/(采集端代码与产物分家: 采集端可单独拷到手机跑,
+# 它自己的默认 data_dir 仍相对脚本目录; 本机采集靠 config.json 写 ../data 指过来)。
+#
 # 默认忽略 data 下全部内容，再逐条放行需要入库的会话。
 # 目前只保留 2026-10-26 的正赛(20 万条, 用来验证回放链路)。
-danmaku-collector/data/**
-!danmaku-collector/data/.gitkeep
-!danmaku-collector/data/2026-10-26/
-!danmaku-collector/data/2026-10-26/7734200/
+data/**
+!data/.gitkeep
+!data/2026-10-26/
+!data/2026-10-26/7734200/
 
 # ★ 音频指纹**必须入库**: 直播流已消失, 无法重新生成; 丢了就永远无法自动校准。
 #   体积约 0.59MB/小时(一晚约 7MB), 换来的是一整晚的自动对齐能力。
-!danmaku-collector/data/2026-10-26/7734200/*.afp.jsonl
-!danmaku-collector/data/2026-10-26/7734200/*.afp.jsonl.gz
+!data/2026-10-26/7734200/*.afp.jsonl
+!data/2026-10-26/7734200/*.afp.jsonl.gz
 # 弹幕切片与索引
-!danmaku-collector/data/2026-10-26/7734200/*.jsonl.gz
-!danmaku-collector/data/2026-10-26/7734200/*.jsonl
-!danmaku-collector/data/2026-10-26/7734200/*.meta.json
-!danmaku-collector/data/2026-10-26/7734200/manifest.json
+!data/2026-10-26/7734200/*.jsonl.gz
+!data/2026-10-26/7734200/*.jsonl
+!data/2026-10-26/7734200/*.meta.json
+!data/2026-10-26/7734200/manifest.json
 
 # 日志/锁/临时数据
 danmaku-collector/logs/

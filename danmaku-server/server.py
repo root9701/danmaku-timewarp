@@ -3,7 +3,7 @@
 托管前端静态页 web/; 弹幕回放 API: /api/days /api/danmaku /api/match(GET/POST);
 B站视频对接: /api/playurl(取 mp4 直链) /api/stream(直链 403 时的反代兜底)。
 
-数据源(只读): ../danmaku-collector/data/{YYYY-MM-DD}/
+数据源(只读): ../data/{YYYY-MM-DD}/
   正式 {room}.jsonl.gz(旧格式) / {room}_s{HHMM}.jsonl[.gz](小时滚动切片, 活动 raw 未压缩)
   + {room}_runN.jsonl.gz(同日旧 session 归档) + {room}.meta.json(finalize 总账, 含 parts);
   测试 test_HHMMSS_{room}[_s{HHMM}].jsonl[.gz] + 同基础名 .meta.json。
@@ -106,8 +106,11 @@ PORT = int(_cfg("port", default=8789))
 HOST = (os.environ.get("DANMAKU_HOST", "").strip()
         or str(_cfg("host", default="127.0.0.1")))
 _env = os.environ.get("DANMAKU_DATA", "").strip()
+# 数据在**仓库根**的 data/(不在采集端目录里): 采集端是"可单独拷到手机跑"的一份独立
+# 程序, 它自己的默认 data_dir 仍相对脚本目录; 本机采集时靠 config.json 写 ../data
+# 指到这里。这样播放端不必知道采集端代码在哪, 只认识仓库根的数据目录。
 DATA_DIR = (Path(_env).resolve() if _env
-            else BASE_DIR.parent / "danmaku-collector" / "data")
+            else BASE_DIR.parent / "data")
 
 BILI_REFERER = "https://www.bilibili.com/"
 BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

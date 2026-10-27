@@ -12,7 +12,7 @@ import json, os, sys, subprocess, datetime, html
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(ROOT)          # docs/ 的上一级 = 项目根
-DATA = os.path.join(ROOT, "danmaku-collector", "data")
+DATA = os.path.join(ROOT, "data")
 MJ = os.path.join(ROOT, "danmaku-server", "matches.json")
 OUT = os.path.join(ROOT, "docs", "项目全景.html")
 

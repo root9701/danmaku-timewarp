@@ -261,8 +261,13 @@ async def api_config(request):
         return web.json_response({"ok": False, "error": str(e)})
     old = _read_json_config()   # 控制台未展示的字段(audio_fp/slice_minutes 等)原样保留
     _sm = old.get("slice_minutes")
+    # data_dir / log_dir 必须沿用原值: 控制台不编辑它们, 写死默认值会把用户
+    # 配好的 "data_dir": "../data" 悄悄改回 "data", 表现为"保存配置后数据跑到了
+    # 采集端目录, 播放端突然读不到"。缺省时才回落默认。
     cfg = {"rooms": rooms, "earliest_start": earliest, "latest_end": latest,
-           "poll_interval_sec": poll, "data_dir": "data", "log_dir": "logs",
+           "poll_interval_sec": poll,
+           "data_dir": str(old.get("data_dir") or "data"),
+           "log_dir": str(old.get("log_dir") or "logs"),
            "audio_fp": bool(old.get("audio_fp", True)),
            "slice_minutes": max(0, int(_sm if _sm is not None else 60))}
     (collector.SCRIPT_DIR / "config.json").write_text(
@@ -309,6 +314,16 @@ async def api_stop(request):
     return web.json_response({"ok": True})
 
 
+def _data_dir():
+    """采集端实际使用的数据目录, 取自 config.json 的 data_dir(相对脚本目录解析)。
+
+    不写死 SCRIPT_DIR/"data": 本机把数据放在仓库根的 data/, 靠 config.json 的
+    "../data" 指过去。写死会让控制台的"最近结果/弹幕预览"永远读不到东西,
+    而采集进程明明在正常写盘 —— 这种只在一处失效的错位最难查。
+    """
+    return collector.load_config(collector.parse_args([]))["data_dir"]
+
+
 def _latest_meta():
     """最新的会话 meta。
 
@@ -317,7 +332,7 @@ def _latest_meta():
       * 旧:  data/{数据日}/{base}.meta.json                (平铺, 历史数据)
       * 更旧: data/{base}.meta.json                        (无日期层)
     """
-    data_dir = collector.SCRIPT_DIR / "data"
+    data_dir = _data_dir()
     for pattern in ("*/*/*meta.json", "*/*meta.json", "*meta.json"):
         found = _latest_file(data_dir, pattern)
         if found:

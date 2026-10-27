@@ -15,7 +15,7 @@ from pathlib import Path
 
 # 从仓库根推, 不写死绝对路径(换机器/换目录仍可用)
 PROJECT = Path(__file__).resolve().parent.parent
-DATA = PROJECT / "danmaku-collector" / "data"
+DATA = PROJECT / "data"
 MATCHES = PROJECT / "danmaku-server" / "matches.json"
 
 

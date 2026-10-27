@@ -874,8 +874,9 @@
 
   function syncAutoAdvanceBtn() {
     if (!btnAutoAdvance) { return; }
-    btnAutoAdvance.textContent = '连播: ' + (state.autoAdvance ? '开' : '关');
-    btnAutoAdvance.classList.toggle('off', !state.autoAdvance);
+    // 按钮在"播放设置"卡片里, 标签写状态值, 由父级 <span> 提供名字 —— 不再重复"连播:"前缀
+    btnAutoAdvance.textContent = state.autoAdvance ? '已开启' : '关闭';
+    btnAutoAdvance.classList.toggle('on', state.autoAdvance);
     btnAutoAdvance.title = state.autoAdvance
       ? '当前：一场播完自动接下一场（点击关闭）'
       : '当前：播完停住（点击开启自动连播）';
@@ -1262,8 +1263,9 @@
   function syncSpoilerBtn() {
     var b = $('btn-spoiler');
     if (!b) { return; }
-    b.classList.toggle('off', !settings.spoiler);
-    b.textContent = settings.spoiler ? '防剧透' : '已关闭';
+    // 按钮在"播放设置"卡片里, 只写状态值; 名字由左侧 <span> 给
+    b.textContent = settings.spoiler ? '已开启' : '已关闭';
+    b.classList.toggle('on', !!settings.spoiler);
     b.title = settings.spoiler
       ? '防剧透已开启：隐藏时间标记与分P 色块（点击关闭）'
       : '防剧透已关闭：显示时间标记与分P 色块（点击开启）';

@@ -82,9 +82,9 @@ body {
 /* 控制条(悬停浮现; 全屏时 3 秒无操作自动隐藏) */
 #ctrl-bar {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 8;
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px;
-  background: linear-gradient(transparent, rgba(0,0,0,.8));
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 14px 10px;
+  background: linear-gradient(transparent, rgba(0,0,0,.78));
   opacity: 0; transition: opacity .25s;
 }
 .player-wrap:hover #ctrl-bar { opacity: 1; }
@@ -94,43 +94,64 @@ body {
 .player-wrap:fullscreen.ctrl-visible #ctrl-bar { opacity: 1; }
 /* 全屏时鼠标指针也一起隐藏, 避免静止时箭头压在画面上 */
 .player-wrap:fullscreen.ctrl-hidden, .player-wrap:fullscreen.ctrl-hidden * { cursor: none; }
-#ctrl-bar .cbtn {
-  background: rgba(255,255,255,.14); border: none; color: #fff;
-  border-radius: 6px; padding: 5px 12px; cursor: pointer;
-  font-size: 12px; white-space: nowrap;
+
+/* 进度条独占一整行: B站 就是这样, 好处是宽度铺满、不被右侧按钮挤压,
+   拖动精度高; 上方的空白留给事件标记图标。 */
+#prog-row { display: flex; align-items: center; width: 100%; }
+#btn-row {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 28px;
 }
-#ctrl-bar .cbtn:hover { background: rgba(255,255,255,.26); }
-#ctrl-bar .cbtn.off { background: rgba(255,255,255,.05); color: rgba(255,255,255,.45); }
+.ctr-spacer { flex: 1; }   /* 把右侧按钮推到头, 左侧只留播放与时间 */
+
+#ctrl-bar .cbtn {
+  background: transparent; border: none; color: #fff;
+  border-radius: 6px; padding: 4px 8px; cursor: pointer;
+  font-size: 13px; white-space: nowrap;
+}
+#ctrl-bar .cbtn:hover { background: rgba(255,255,255,.16); }
+#ctrl-bar .cbtn.off { color: rgba(255,255,255,.45); }
 /* 图标按钮: 定宽, 不用 emoji 也能对齐(▶ ⛶ 🔊 在等宽字体下宽度差异大) */
 #ctrl-bar .cbtn.ico {
-  padding: 0; width: 30px; text-align: center;
+  padding: 0; width: 30px; height: 26px; text-align: center;
   font-size: 13px; line-height: 26px;
 }
-#time-label { font-size: 12px; color: #eee; font-variant-numeric: tabular-nums; white-space: nowrap; }
-#prog { flex: 1; height: 16px; display: flex; align-items: center; cursor: pointer; position: relative; touch-action: none; }
-#prog::before {
-  content: ""; position: absolute; left: 0; right: 0; height: 4px;
-  background: rgba(255,255,255,.28); border-radius: 2px;
+#time-label {
+  font-size: 12px; color: #eee; font-variant-numeric: tabular-nums;
+  white-space: nowrap; padding: 0 4px 0 2px;
 }
+/* 进度条: 整行铺满; 高度够手指/鼠标点中 */
+#prog {
+  flex: 1; height: 18px; display: flex; align-items: center;
+  cursor: pointer; position: relative; touch-action: none;
+}
+#prog::before {
+  content: ""; position: absolute; left: 0; right: 0; height: 3px;
+  background: rgba(255,255,255,.26); border-radius: 2px;
+}
+#prog:hover::before { height: 4px; }
 #prog-inner {
-  position: absolute; left: 0; height: 4px; background: var(--blue);
+  position: absolute; left: 0; height: 3px; background: var(--blue);
   border-radius: 2px; width: 0; pointer-events: none;
 }
+#prog:hover #prog-inner { height: 4px; }
 /* 进度条上的事件标记(一血/大龙/水晶…): 只画一根 2px 竖线, 不抢进度条本身。
    防剧透开启时不填充内容, 由 JS 清空。 */
 #prog-marks { position: absolute; inset: 0; pointer-events: none; }
 .prog-mark {
-  position: absolute; top: 4px; width: 2px; height: 8px;
+  position: absolute; top: 3px; width: 2px; height: 12px;
   border-radius: 1px; background: #ffd166;
   transform: translateX(-1px);
 }
 .prog-mark.t-obj { background: #7fd1ff; }   /* 中立资源/建筑 */
 .prog-mark.t-kill { background: #ff8f6b; }  /* 击杀/团灭 */
 #prog-thumb {
-  position: absolute; width: 11px; height: 11px; border-radius: 50%;
-  background: #fff; left: 0; transform: translateX(-5px);
-  box-shadow: 0 0 2px rgba(0,0,0,.6); pointer-events: none;
+  position: absolute; width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; left: 0; transform: translateX(-6px);
+  box-shadow: 0 0 3px rgba(0,0,0,.7); pointer-events: none;
+  opacity: 0; transition: opacity .15s;
 }
+#prog:hover #prog-thumb { opacity: 1; }
 
 /* ---------- 控制条弹出菜单(画质/倍速/弹幕设置) ---------- */
 .cmenu-wrap { position: relative; display: inline-flex; }
@@ -246,6 +267,10 @@ body {
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-primary { background: var(--blue); }
 .btn-accent { background: var(--accent); }
+/* 开关型按钮(播放设置卡片里的防剧透/连播): 状态用底色区分, 一眼看出开没开 */
+.btn-toggle { background: #3a4150; color: var(--text-dim); min-width: 84px; }
+.btn-toggle.on { background: rgba(63,185,111,.18); color: var(--ok); }
+.settings-hint { margin-top: 10px; line-height: 1.75; display: block; }
 
 .adv { border-top: 1px dashed var(--line); }
 .adv summary {
@@ -366,9 +391,8 @@ body {
   #side { flex: none; width: 100%; min-height: 300px; max-height: 360px; }
   .player-wrap { max-width: 100%; }
 }
-/* 控制条按钮多, 窄屏时允许换行并把长文案按钮换成图标尺寸, 否则进度条被压到看不见 */
+/* 控制条按钮多, 窄屏时把音量收窄, 其余按钮允许换行(进度条已独占一行, 不会被压) */
 @media (max-width: 1180px) {
-  #ctrl-bar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
-  #ctrl-bar #prog { order: -1; flex: 1 1 100%; }
+  #btn-row { flex-wrap: wrap; gap: 6px; }
   #rng-vol { width: 56px; }
 }

@@ -34,26 +34,76 @@ RAW_BASE = f"https://raw.githubusercontent.com/{GH_OWNER}/{GH_REPO}/{GH_BRANCH}"
 INDEX_NAME = "data-index.json"
 
 UA = "danmaku-timewarp-updater/1"
-TIMEOUT = 30
+# 连接超时与读取超时分开: 挂死的现场通常是"连上了但不返回", 读取超时才有用。
+# 30 秒整体超时在直连被阻断时会等满, 前端表现为长时间无响应 —— 用户以为程序卡了。
+TIMEOUT = 20
+_MAX_ATTEMPTS = 2
 
 
 class UpdateError(Exception):
     """更新失败, 消息可直接展示给用户。"""
 
 
-def _get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def _proxies() -> dict:
+    """当前生效的代理配置。
+
+    为什么需要这个:
+      Python 的 urllib 默认用 getproxies(), 它**只读环境变量**。而 Windows 上
+      用户常见的做法是在系统设置里配代理(Clash/V2Ray 之类), 那是注册表 +
+      WinINet 的配置, urllib 读不到 —— 于是程序直连 GitHub, 在需要代理的网络
+      环境下会 RemoteDisconnected 或长时间挂起。
+
+    为什么不能写死走代理:
+      用户的代理是**按需开启**的。代理没开时硬走它, 反而全部失败。
+      所以这里读"当前是否有系统代理", 有就用, 没有就直连。
+
+    为什么必须显式带 no 列表:
+      ProxyHandler 只认字典里的 no 项。丢了它, localhost / 127.0.0.1 的请求
+      也会被送去代理 —— 而本机服务(回归测试的假数据源、局域网回放)不该走代理,
+      且多数代理对本地地址的处理并不一致, 表现为时通时不通。
+    """
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            return r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise UpdateError(f"资源不存在(404): {url}") from e
-        raise UpdateError(f"下载失败 HTTP {e.code}: {url}") from e
-    except urllib.error.URLError as e:
-        raise UpdateError(f"连不上数据源(检查网络): {e.reason}") from e
-    except TimeoutError as e:
-        raise UpdateError("下载超时, 请重试") from e
+        reg = urllib.request.getproxies_registry() or {}
+    except Exception:
+        reg = {}
+    src = reg or {k: v for k, v in urllib.request.getproxies().items() if k != "no"}
+    if not src:
+        return {}
+    no = reg.get("no") or ",".join(
+        ["127.0.0.1", "localhost", "::1"])
+    return {**src, "no": no}
+
+
+def _get(url: str) -> bytes:
+    """下载一个 URL。
+
+    代理策略: 先按系统代理配置试, 失败再直连试一次。
+    这样"代理开着"和"代理关着"两种状态都能工作, 不需要用户改配置。
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    proxies = _proxies()
+    # 依次尝试: 走代理 -> 直连。代理没配时第一个就是直连, 不会重复。
+    plans = [proxies, {}] if proxies else [{}]
+    last = None
+    for plan in plans[: (_MAX_ATTEMPTS if proxies else 1)]:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(plan))
+        try:
+            with opener.open(req, timeout=TIMEOUT) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            # HTTP 错误是服务器明确答复, 换路径也没用, 直接抛
+            if e.code == 404:
+                raise UpdateError(
+                    f"远端还没有数据清单(404)。作者可能尚未发布，或仓库名有变：{url}"
+                ) from e
+            raise UpdateError(f"下载失败 HTTP {e.code}: {url}") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+            continue                     # 这条路径不通, 试下一条
+    hint = ("；若你平时需要开代理才能访问 GitHub，请确认代理已启动"
+            if proxies else "")
+    raise UpdateError(
+        f"连不上数据源：{last.__class__.__name__}{hint}") from last
 
 
 def fetch_index() -> dict:

@@ -97,14 +97,23 @@
       var pm = pms[k];
       var off = pageOffsetOf(pm.page);
       if (off == null) {
-        if (prevEnd == null) { continue; }   // 第一页就没有, 跳过(后续页仍可串)
-        off = (prevEnd - state.anchorMs) / 1000;   // 接在上一页末尾
+        // 该分P 没有对齐结果(自动校准失败/被时间窗拒绝)。
+        // 不能"接在上一页末尾"猜一个位置: page_marks 来自 B站接口(回放真实有哪几个
+        // 分P), 而 offset 来自我们的对齐结果, 两者**不是同一个集合**。猜出来的位置会
+        // 把它之后的分P 一起带偏, 表现为"点 BLG 的块却显示 T1 的赛前评论"。
+        // 也不必从 segs 里删掉它 —— segs 与视频分段(state.segs)必须同序同数, 否则
+        // seekV 会算错。做法是保留占位, 但标 locatable=false, 映射时跳过。
+        segs.push({ page: pm.page, part: pm.part, w0: null, w1: null,
+                    s0: (pm.start_sec || 0) * 1000, estimated: false,
+                    locatable: false });
+        continue;
       }
       off += state.offsetDelta;                   // 手动微调整体平移
       var w0 = state.anchorMs + off * 1000;
       var dur = (typeof pm.duration === 'number' && pm.duration > 0) ? pm.duration : 0;
       segs.push({ page: pm.page, part: pm.part, w0: w0, w1: w0 + dur * 1000,
-                  s0: (pm.start_sec || 0) * 1000, estimated: pageOffsetOf(pm.page) == null });
+                  s0: (pm.start_sec || 0) * 1000, estimated: false,
+                  locatable: true });
       prevEnd = w0 + dur * 1000;
     }
     segs.sort(function (a, b) { return a.w0 - b.w0; });
@@ -117,9 +126,15 @@
     if (!segs.length) { return null; }
     var v = getV() * 1000;
     for (var i = 0; i < segs.length; i++) {
+      // 未对齐的分P 没有可信区间, 不能命中
+      if (!segs[i].locatable) { continue; }
       if (v >= segs[i].s0 && v < segs[i].s0 + (segs[i].w1 - segs[i].w0)) { return segs[i]; }
     }
-    return segs[segs.length - 1];
+    // 兜底: 返回最后一个可定位的段(未对齐段不参与)
+    for (var j = segs.length - 1; j >= 0; j--) {
+      if (segs[j].locatable) { return segs[j]; }
+    }
+    return null;
   }
 
   // 当前画面时刻对应的真实墙钟(毫秒)。总览播放线、点空白跳转都用它。
@@ -128,7 +143,10 @@
     var v = getV();
     if (!segs.length) { return state.anchorMs + (state.offsetSec + state.offsetDelta) * 1000 + v * 1000; }
     var seg = currentPageSeg();
-    if (!seg) { return segs[0].w0 + v * 1000; }
+    if (!seg) {
+      // 一个可定位的分P 都没有: 退回标量 offset(不改状态, 只是算个近似值)
+      return state.anchorMs + (state.offsetSec + state.offsetDelta) * 1000 + v * 1000;
+    }
     return seg.w0 + (v * 1000 - seg.s0);
   }
 
@@ -136,17 +154,21 @@
   function seekToWallMs(wallMs) {
     var segs = buildPageSegs();
     if (!segs.length) { seekV(clampSeek((wallMs - baseMs()) / 1000)); return; }
-    for (var i = 0; i < segs.length; i++) {
-      if (wallMs >= segs[i].w0 && wallMs < segs[i].w1) {
-        seekV(clampSeek(segs[i].s0 / 1000 + (wallMs - segs[i].w0) / 1000));
+    // 只有已对齐的分P 才有可信墙钟区间; 未对齐的(locatable=false)不参与命中与吸附。
+    var loc = [];
+    for (var q = 0; q < segs.length; q++) { if (segs[q].locatable) { loc.push(segs[q]); } }
+    if (!loc.length) { seekV(clampSeek((wallMs - baseMs()) / 1000)); return; }
+    for (var i = 0; i < loc.length; i++) {
+      if (wallMs >= loc[i].w0 && wallMs < loc[i].w1) {
+        seekV(clampSeek(loc[i].s0 / 1000 + (wallMs - loc[i].w0) / 1000));
         return;
       }
     }
     // 落在局间休息(该时刻没有视频): 取时间上最近的分P 边界
     var best = null, bd = Infinity;
-    for (var k = 0; k < segs.length; k++) {
-      var d = Math.min(Math.abs(wallMs - segs[k].w0), Math.abs(wallMs - segs[k].w1));
-      if (d < bd) { bd = d; best = segs[k]; }
+    for (var k = 0; k < loc.length; k++) {
+      var d = Math.min(Math.abs(wallMs - loc[k].w0), Math.abs(wallMs - loc[k].w1));
+      if (d < bd) { bd = d; best = loc[k]; }
     }
     if (best) { seekV(clampSeek(best.s0 / 1000 + (wallMs - best.w0) / 1000)); }
   }
@@ -173,6 +195,9 @@
     var kept = [];
     for (var si = 0; si < segs.length; si++) {
       var s = segs[si];
+      // 未对齐的分P(locatable=false)没有可信的墙钟区间, 它的弹幕直接丢弃 ——
+      // 硬塞一个猜出来的位置比丢掉更糟: 会把别的分P 的弹幕错位到它那里。
+      if (!s.locatable || s.w0 == null) { continue; }
       for (var i = 0; i < dm.length; i++) {
         var ts = dm[i].ts;
         if (ts >= s.w0 && ts < s.w1) {
@@ -733,13 +758,28 @@
   });
   videoEl.addEventListener('ended', function () {
     if (!state.applied) { return; }
-    if (state.segIdx < state.segs.length - 1) {
-      switchSeg(state.segIdx + 1, 0, true);
+    // 找到下一段"有对齐结果"的视频段。未对齐的分P(见 buildPageSegs 的 locatable)
+    // 没有可信的墙钟位置, 它的弹幕已在 recomputeRels 里丢弃 —— 播它只会得到
+    // "标题写着这一局、画面是另一段、一条弹幕都没有"的混乱体验, 直接跳过。
+    var next = state.segIdx + 1;
+    while (next < state.segs.length && !segIndexLocatable(next)) { next++; }
+    if (next < state.segs.length) {
+      switchSeg(next, 0, true);
       return;
     }
     // 整场(全部分P)播完 -> 若开了"连播", 自动接下一场
     if (state.autoAdvance) { advanceToNextMatch(); }
   });
+
+  // 第 i 个视频段是否有对齐结果(可按 page_marks 与 video segs 的同序关系判定)。
+  // page_marks 由 /api/playurl 按分P 顺序给出, 与 urls/seg_lengths 一一对应;
+  // 拿它的 page 号去 pageOffsets 查即可。
+  function segIndexLocatable(i) {
+    var pms = state.pageMarks || [];
+    if (!pms.length) { return true; }        // 没有分P 信息时不做限制
+    if (i >= pms.length) { return true; }
+    return pageOffsetOf(pms[i].page) != null;
+  }
 
   /* ---- 连播: 自动接下一场 ---- */
   // 需求: "连续播放, 自动播放下一场"。以总览的轨道顺序(即比赛时间顺序)为准,
@@ -791,8 +831,7 @@
       return;
     }
     showToast('自动播放下一场：' + nx.title);
-    // 连播要**从头**放整场(含开头的赛前/BP 等), 而不是跳到第一个对局块 ——
-    // blocks 已被 OV_SKIP_PART_RE 过滤掉非对局段, 用 blocks[0] 会跳过开场内容。
+    // 连播要**从头**放整场(含开头的赛前/BP 等), 而不是跳到第一个分P 块 ——
     // 传 null 表示"不定位, 从 0 开始"。
     playFromOverview(nx, null, { keepAutoAdvance: true });
   }
@@ -1248,18 +1287,15 @@
     ovLegend.innerHTML = html;
   }
 
-  // 分P里"赛前评论/赛后采访"等过程性内容对"总览看比赛节奏"是噪声:
-  // 它们会把色块拉长, 挤压真正的对局块, 还会制造假重叠。默认不画块
-  // (数据保留在 tr.blocks 里, 只是不上轴; 判定与过滤见 layoutOverviewLanes)。
-  // 注意"抽签仪式"**不算**配件: 它是当晚真发生的事, 用户可能想跳到那段。
-  var OV_SKIP_PART_RE = /(赛前|赛后|评论|采访|花絮|预告|广告|开幕式|颁奖)/;
-
   // 逐场生成"分P 块"。
   // 优先用服务端给出的**每分P 独立 offset**(tr.parts)——这是音频指纹逐分P 对齐的结果,
   // 每段都锚在自己的真实时刻上, 因此段与段之间的留白就是真实的局间休息。
   // 旧做法是按 P 序号把 page_marks 累加串联, 那只在"各分P 首尾无缝相接"时才对,
   // 而直播侧两局之间明明有休息, 累加会把这部分时间吃掉, 越往后偏得越多。
   // 没有 parts 数据时(未对齐过)才退回旧串联方式。
+  //
+  // 分P 里的一切段落都画, 不按名字筛选: 赛前评论/赛后采访/抽签仪式同样是直播里真实
+  // 存在的一段, 用户可能就想跳到那段看弹幕。是否"对局"由用户自己判断。
   function blocksFromParts(tr) {
     // 注意字段名是驼峰 offsetSec(前端 state 用驼峰), 不是接口里的 offset_sec。
     // 写错会得到 undefined, 参与乘法后整块变 NaN, 表现为"块算出来了但画不出来"。
@@ -1273,9 +1309,6 @@
         startMs: tr.startMs + ((p.offset_sec || 0) - baseOff) * 1000,
         durMs: (p.duration || 0) * 1000,
         conf: p.confidence,
-        // 赛前评论/赛后采访这类配件只占几分钟且不在对局中, 默认不画块
-        // (保留数据, 只在图上跳过), 避免把"比赛节奏"切碎。
-        accessory: OV_SKIP_PART_RE.test(String(p.part || '')),
       };
     }).filter(function (b) { return b.durMs > 0; });
   }
@@ -1304,21 +1337,18 @@
     var all = [];
     ov.tracks.forEach(function (tr, ti) {
       tr.blocks.forEach(function (b) {
-        // 赛前评论/赛后采访这类配件只占几分钟且不在对局中, 不参与排版也不画块。
-        // (数据保留在 tr.blocks 里, 只是不上轴; 旧实现设了 accessory 却从没读过,
-        //  结果这些配件既占轨道又画出小碎块 —— 截图里 02:45 那个绿色竖条就是它。)
-        if (b.accessory) { return; }
+        // **所有分P 都上轴**, 包括赛前评论/赛后采访/抽签这类配件。
+        // 它们同样是直播里真实存在的一段, 用户可能就想跳到"赛后采访"看那段弹幕。
+        // (曾短暂按名字过滤过配件, 结果用户发现"每场都有赛后采访, 图上却全没有" —— 那是错的。)
         all.push({ ti: ti, tr: tr, b: b, start: b.startMs, end: b.startMs + b.durMs });
       });
     });
     all.sort(function (a, b) { return a.start - b.start; });
-    // 同一条轴的"已占用结束点"; 只有真正冲突时才会走到第二条。
-    // 容忍值给 15 秒: 官方回放各分P 之间**本来就有秒级重叠**——实测
-    // "第二局"结束 06:54:54 与"抽签仪式"开始 06:54:47 重叠 7 秒, 是源视频本身
-    // 重复了几秒画面, 不是对齐误差。旧值 5 秒会把这种情况判成"真冲突",
-    // 于是那个分P 被挤到第二条轨道上, 看起来像多了一条时间轴(用户会问"为什么有两个轴")。
-    // 分P 时长都以分钟计, 十几秒的重叠对读图没有影响, 让它压上去即可。
-    var OVERLAP_TOL = 15000;
+    // 单条轴 + 层叠: 分P 之间本来就有秒级重叠(实测第二局止于 06:54:54、抽签仪式起于
+    // 06:54:47, 重叠 7 秒, 是源视频重复了几秒画面), 这种直接压上去即可。
+    // 只有**大面积重叠**(超过 60 秒, 说明两段内容真的并行/算错了)才另开一轨,
+    // 那时多轨是为了让人看见"这里有两个东西压在一起"。
+    var OVERLAP_TOL = 60000;
     var laneEnds = [];
     all.forEach(function (it) {
       var placed = -1;
@@ -1439,7 +1469,11 @@
       var tr = it.tr, b = it.b;
       var y = laneTop + it.lane * (laneH + 3);
       var x0 = ovX(it.start), x1 = ovX(it.end);
-      var bwid = Math.max(2, x1 - x0);
+      // 最小可点宽度: 赛后采访(386s)、抽签仪式(511s) 在 420 分钟的轴上只有 6~8 像素,
+      // 按真实宽度画会被相邻块压住、也点不中, 看起来像"这个分P 不存在"。
+      // 保底 4px, 同时保证它仍落在自己的真实起点上(不挪位置, 只加宽)。
+      var realW = Math.max(1, x1 - x0);
+      var bwid = Math.max(4, realW);
       // 颜色: 同一场的所有分P 用**同一个色相**, 靠**透明度**区分第几个分P。
       // 这样"一场比赛是连续的一段"在视觉上立刻成立, 而不是几个不相干的色块。
       var idxInTrack = (tr.blocks || []).indexOf(b);
@@ -1461,6 +1495,23 @@
         // 序号对用户没信息量, 而且上传顺序与真实时间顺序常常不一致, 容易误导。
         var label = String(b.part || ('P' + b.p));
         g.fillText(label.slice(0, Math.max(2, Math.floor(bwid / 8))), x0 + 3, y + laneH - 4);
+      } else if (realW < 30) {
+        // 太窄放不下文字: 在色块上方点一个小三角 + 短标签, 让它"看得见"。
+        // 只标前 4 个字, 避免互相重叠。
+        g.fillStyle = tr.color;
+        g.globalAlpha = 0.95;
+        g.beginPath();
+        g.moveTo(x0 + bwid / 2, y - 1);
+        g.lineTo(x0 + bwid / 2 - 3, y - 5);
+        g.lineTo(x0 + bwid / 2 + 3, y - 5);
+        g.closePath();
+        g.fill();
+        g.globalAlpha = 1;
+        g.fillStyle = 'rgba(230,233,239,.85)';
+        g.font = '8px sans-serif';
+        g.textAlign = 'center';
+        g.fillText(String(b.part || ('P' + b.p)).slice(0, 4), x0 + bwid / 2, y - 7);
+        g.textAlign = 'left';
       }
     });
 

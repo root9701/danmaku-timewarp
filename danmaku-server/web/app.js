@@ -152,7 +152,16 @@
   }
 
   // 按分P 分段重算全部弹幕的虚拟轴位置; 落在局间休息里的丢弃(见上方说明)。
-  // 重算后 danmaku 仍按 rel 升序, upperBound 二分才成立。
+  //
+  // **必须按墙钟时间逐段处理, 不能对全表二分**:
+  // 分P 的"上传顺序"与"真实时间顺序"不一定一致。实测 26 日 HLE vs IG:
+  //   P1 第一局(墙钟 01:00)、P2 赛后采访(01:51)、P3 赛前评论(00:45)
+  // 即 P3 在时间上**最早**, 但它在虚拟轴上排最后。若把 segs 排序后套一个二分,
+  // 算出的 rel 会从 4406s 突然回退到 281s —— danmaku 不再按 rel 升序,
+  // upperBound 的二分前提被破坏, 表现是"跨该分P 边界后弹幕整段消失"。
+  //
+  // 做法: 每个分P 段内独立映射(段内 rel 必然单调), 再按 rel 排序。
+  // 段与段在虚拟轴上互不重叠, 故排序后整体单调。
   function recomputeRels() {
     var dm = state.danmaku || [];
     var segs = buildPageSegs();
@@ -161,19 +170,19 @@
       for (var j = 0; j < dm.length; j++) { dm[j].rel = dm[j].ts - b0; }
       return;
     }
-    for (var i = 0; i < dm.length; i++) {
-      var ts = dm[i].ts;
-      // 二分找最后一个 w0 <= ts 的段
-      var lo = 0, hi = segs.length;
-      while (lo < hi) {
-        var mid = (lo + hi) >> 1;
-        if (segs[mid].w0 <= ts) { lo = mid + 1; } else { hi = mid; }
-      }
-      var s = (lo > 0) ? segs[lo - 1] : null;
-      dm[i].rel = (s && ts < s.w1) ? (s.s0 + (ts - s.w0)) : null;
-    }
     var kept = [];
-    for (var k = 0; k < dm.length; k++) { if (dm[k].rel !== null) { kept.push(dm[k]); } }
+    for (var si = 0; si < segs.length; si++) {
+      var s = segs[si];
+      for (var i = 0; i < dm.length; i++) {
+        var ts = dm[i].ts;
+        if (ts >= s.w0 && ts < s.w1) {
+          dm[i].rel = s.s0 + (ts - s.w0);
+          kept.push(dm[i]);
+        }
+      }
+    }
+    // 按 rel 升序(同一时刻保持原 ts 相对顺序, 稳定排序)
+    kept.sort(function (a, b) { return a.rel - b.rel || a.ts - b.ts; });
     state.danmaku = kept;
   }
 
@@ -580,6 +589,10 @@
     resetDanmakuIndex();
     dmList.innerHTML = ''; hideSc();
     syncTitleForPlayback();
+    // 校准区一直显示当前生效的 offset。初始加载也要刷新, 否则停在占位符「offset: --」,
+    // 用户看不到任何对齐值(要等点一次自动校准或微调才出现)。
+    var elOff0 = document.getElementById('align-cur');
+    if (elOff0) { elOff0.textContent = 'offset: ' + describePageOffsets(); }
 
     fetch('/api/match', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: date, file: file, bv: bv, offset_sec: offset,
@@ -615,9 +628,20 @@
   }
 
   /* ---------------- 播放控制 ---------------- */
-  // 依据当前虚拟播放位置, 找到落在哪一局, 更新左上角标题与徽标
+  // 依据当前虚拟播放位置, 找到落在哪一局, 更新左上角标题与徽标。
+  //
+  // 优先用 currentPageSeg(按**真实墙钟**判定的分段), 而不是按 page_marks 的序号累加:
+  // 分P 上传顺序与时间顺序可能不一致(实测 HLE vs IG: P3 赛前评论在时间上最早,
+  // 却排在虚拟轴最后)。按序号累加会与分段映射用两套口径, 表现是标题写着「第一局」
+  // 而弹幕已按「赛后采访」映射 —— 用户看到的就是"标题和内容对不上"。
   function currentPageMark() {
     if (!state.pageMarks || !state.pageMarks.length) { return null; }
+    var seg = currentPageSeg();
+    if (seg) {
+      for (var k = 0; k < state.pageMarks.length; k++) {
+        if (state.pageMarks[k].page === seg.page) { return state.pageMarks[k]; }
+      }
+    }
     var v = getV(), hit = null;
     for (var i = 0; i < state.pageMarks.length; i++) {
       var pm = state.pageMarks[i];
@@ -625,13 +649,21 @@
     }
     return hit;
   }
-  // 下一段(下一局)的起点; 已是最后一段返回 null
+  // 下一段(下一局)的起点; 已是最后一段返回 null。
+  // 按**虚拟轴位置**排序找下一个, 不按 page_marks 数组下标 —— 上传顺序可能是乱的。
   function nextPageMark() {
     if (!state.pageMarks || !state.pageMarks.length) { return null; }
     var cur = currentPageMark();
     if (!cur) { return state.pageMarks[0]; }
-    var i = state.pageMarks.indexOf(cur);
-    return (i >= 0 && i + 1 < state.pageMarks.length) ? state.pageMarks[i + 1] : null;
+    var nx = null;
+    for (var k = 0; k < state.pageMarks.length; k++) {
+      var pm = state.pageMarks[k];
+      if (pm.start_sec > cur.start_sec &&
+          (nx === null || pm.start_sec < nx.start_sec)) {
+        nx = pm;
+      }
+    }
+    return nx;
   }
   function syncTitleForPlayback() {
     if (!state.applied) { return; }

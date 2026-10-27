@@ -172,12 +172,69 @@ def strip_afp() -> int:
     return 0
 
 
+def write_index() -> int:
+    """生成 data-index.json —— 用户端「检查更新」就靠它判断该拉哪几天。
+
+    清单只描述正式会话(data/{日期}/{房间}/), 不含 _test。
+    每个日期记下完整文件列表与逐文件字节数: 字节数既用于显示"要下多少",
+    也用于下载后校验完整性(截断的响应能被发现)。
+    """
+    days = {}
+    for day, sess in iter_sessions():
+        rel_sess = sess.relative_to(ROOT).as_posix()
+        files, sizes, total = [], [], 0
+        for f in sorted(sess.iterdir()):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(ROOT).as_posix()
+            files.append(rel)
+            sizes.append({"name": rel, "bytes": f.stat().st_size})
+            total += f.stat().st_size
+        days.setdefault(day, {"files": [], "file_sizes": [],
+                              "sessions": [], "bytes": 0})
+        d = days[day]
+        d["files"].extend(files)
+        d["file_sizes"].extend(sizes)
+        d["sessions"].append(rel_sess)
+        d["bytes"] += total
+
+    idx = {
+        "schema_version": 1,
+        "generated_at": None,       # 由调用方填, 便于人眼判断新鲜度
+        "latest": max(days) if days else None,
+        "days": {k: days[k] for k in sorted(days)},
+    }
+    from datetime import datetime, timezone
+    idx["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = ROOT / "data-index.json"
+    out.write_text(json.dumps(idx, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    total_mb = sum(v["bytes"] for v in days.values()) / 1024 / 1024
+    print(f"生成 {out.relative_to(ROOT)}: {len(days)} 天, "
+          f"{sum(len(v['files']) for v in days.values())} 文件, {total_mb:.1f} MB")
+    print(f"  最新: {idx['latest']}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strip-afp", action="store_true",
                     help="生成不含 afp 的发行副本到 dist/")
+    ap.add_argument("--index", action="store_true",
+                    help="生成 data-index.json(用户端增量更新用)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    if args.index:
+        problems = []
+        for day, sess in iter_sessions():
+            problems.extend(check_session(day, sess))
+        if problems:
+            print("校验未通过, 拒绝生成清单:")
+            for p in problems:
+                print("  - " + p)
+            return 1
+        return write_index()
 
     if args.strip_afp:
         problems = []

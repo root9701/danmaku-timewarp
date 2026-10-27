@@ -44,6 +44,15 @@ from urllib.parse import quote, urlparse
 import aiohttp
 from aiohttp import web
 
+# 数据增量更新(缺库不致命: 只是"检查更新"按钮不可用, 其余功能不受影响)
+try:
+    import dataupdate            # 本目录 dataupdate.py
+    HAS_DATAUPDATE = True
+    _UPDATE_IMPORT_ERR = ""
+except ImportError as e:        # 理论上不会发生(它只用标准库)
+    HAS_DATAUPDATE = False
+    _UPDATE_IMPORT_ERR = str(e)
+
 # 音频指纹自动对齐依赖(缺库不致命, /api/autocalign 会返回明确错误)
 try:
     import numpy as np          # noqa: F401
@@ -3256,6 +3265,37 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             "elapsed_sec": round(elapsed, 1), "message": message}
 
 
+async def handle_update_check(request: web.Request) -> web.Response:
+    """查有没有新数据。不发下载, 只比对清单。"""
+    if not HAS_DATAUPDATE:
+        raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
+    try:
+        info = await asyncio.to_thread(dataupdate.check, DATA_DIR)
+    except dataupdate.UpdateError as e:
+        raise ApiError(str(e))
+    return api_ok(**info)
+
+
+async def handle_update_pull(request: web.Request) -> web.Response:
+    """拉取缺失的日期。阻塞下载放线程里, 不卡事件循环。"""
+    if not HAS_DATAUPDATE:
+        raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
+    try:
+        res = await asyncio.to_thread(dataupdate.update, DATA_DIR)
+    except dataupdate.UpdateError as e:
+        raise ApiError(str(e))
+    # 下载完顺手自检: 大小对不代表 gzip 完整(截断的响应只有解压才会暴露)
+    problems = []
+    for day in res.get("updated") or []:
+        d = DATA_DIR / day
+        if d.is_dir():
+            problems.extend(await asyncio.to_thread(dataupdate.verify_day, d))
+    if problems:
+        return api_ok(**res, verify_problems=problems,
+                      message=res["message"] + ", 但文件校验有问题(见详情)")
+    return api_ok(**res)
+
+
 async def handle_autocalign(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -3392,6 +3432,8 @@ def build_app() -> web.Application:
     r.add_get("/api/markers", handle_markers)
     r.add_get("/api/stream", handle_stream)
     r.add_post("/api/autocalign", handle_autocalign)
+    r.add_get("/api/update/check", handle_update_check)
+    r.add_post("/api/update/pull", handle_update_pull)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册
     return app
 

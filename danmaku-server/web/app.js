@@ -21,6 +21,7 @@
   var btnAutoAdvance = $('btn-auto-advance');
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
   var btnDiscover = $('btn-discover');
+  var btnUpdate = $('btn-update'), updateStatus = $('update-status');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
   var btnOvRefresh = $('btn-ov-refresh'), btnOvExpand = $('btn-ov-expand');
   var elTopMeta = $('topbar-meta');
@@ -2102,6 +2103,71 @@
     // 自动校准失败时把"手动校准"折叠面板铺开, 让兜底入口直接可见
     if (cls === 'err') { updateManualCalibOpen(); }
   }
+
+  /* ---------------- 检查更新: 从 GitHub 增量拉数据 ---------------- */
+
+  function setUpdateStatus(msg, cls) {
+    updateStatus.hidden = !msg;
+    updateStatus.textContent = msg || '';
+    updateStatus.className = 'align-status' + (cls ? ' ' + cls : '');
+  }
+
+  function fmtMB(bytes) {
+    var mb = (bytes || 0) / 1048576;
+    return mb >= 1 ? mb.toFixed(1) + ' MB' : Math.max(1, Math.round(mb * 1024)) + ' KB';
+  }
+
+  var updateBusy = false;
+
+  // 新数据落盘后必须重载日期下拉, 否则用户看不到刚下的一天。
+  // 复用 loadDays(): 它已处理"数据目录日 vs 比赛日"的显示差异与测试会话分组 ——
+  // 这里手写一份只会漏掉那些细节。代价是丢失用户当前的日期选择, 但刚下完新数据时
+  // 用户本来就想看新的那天, 重置反而是期望行为。
+  function reloadDays() {
+    loadDays();
+  }
+
+  btnUpdate.addEventListener('click', function () {
+    if (updateBusy) { return; }
+    updateBusy = true;
+    btnUpdate.disabled = true;
+    btnUpdate.textContent = '检查中…';
+    setUpdateStatus('正在检查远端数据…', '');
+
+    getJson('/api/update/check').then(function (j) {
+      if (!j || !j.ok) {
+        throw new Error(j && j.error ? j.error : '检查失败');
+      }
+      if (!j.need) {
+        setUpdateStatus('已是最新（本地 ' + (j.local_days || []).length +
+          ' 天，远端最新 ' + (j.remote_latest || '?') + '）', 'ok');
+        return null;
+      }
+      var days = (j.new_days || []).join('、');
+      setUpdateStatus('发现 ' + j.need + ' 天新数据（' + fmtMB(j.new_bytes) +
+        '）：' + days + '。开始下载…', '');
+      btnUpdate.textContent = '下载中…';
+      return fetch('/api/update/pull', { method: 'POST' }).then(function (r) {
+        return r.json();
+      });
+    }).then(function (j) {
+      if (!j) { return; }
+      if (!j.ok) { throw new Error(j.error || '下载失败'); }
+      if (j.verify_problems && j.verify_problems.length) {
+        setUpdateStatus(j.message + '；但校验发现 ' + j.verify_problems.length +
+          ' 个问题：' + j.verify_problems.slice(0, 3).join('；'), 'err');
+      } else {
+        setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），已刷新日期列表', 'ok');
+      }
+      if ((j.updated || []).length) { reloadDays(); }
+    }).catch(function (e) {
+      setUpdateStatus('更新失败：' + (e && e.message ? e.message : '未知错误'), 'err');
+    }).then(function () {
+      updateBusy = false;
+      btnUpdate.disabled = false;
+      btnUpdate.textContent = '检查更新';
+    });
+  });
 
   // 自动校准: 对齐**这场比赛的全部分P**(page=0)。
   // 历史缺陷: 这里硬编码 page:1, 只对齐第一局; 且只读顶层 offset_sec —— 而后端对多分P

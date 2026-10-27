@@ -716,11 +716,34 @@
     }
   }
 
+  // 播放失败的三种情况必须分开处理, 不能一律当成"浏览器阻止自动播放":
+  //   1) NotAllowedError  —— 真的被自动播放策略拦了, 需要用户点击
+  //   2) AbortError      —— play() 被新的 load() 打断。**这不是错误**: 切场时
+  //                          setup 先 load() 再 play(), 上一次 play 会被作废,
+  //                          此刻视频其实正在播。旧代码把这类也弹"点击开始",
+  //                          结果就是"弹出提示但实际能播"(用户报告的现象)。
+  //   3) 其他(如 NotSupportedError) —— 格式/直链问题, 走兜底重载或报错
   function startPlay() {
     pendingPlay = false;
-    videoEl.play().then(noop).catch(function () {
+    videoEl.play().then(noop).catch(function (err) {
+      var name = (err && err.name) || '';
+      if (name === 'AbortError') {
+        // 被 load() 打断: 交给下一次 play 继续, 什么都不做。
+        // 不弹遮罩 —— 弹了反而挡住正在播放的画面。
+        return;
+      }
+      if (name === 'NotAllowedError') {
+        pendingPlay = true;
+        showMask('浏览器阻止了自动播放，请点击开始。', '开始播放', function () {
+          hideMask();
+          videoEl.play().then(function () { pendingPlay = false; })
+            .catch(function () { showError('播放失败，请重试。'); });
+        });
+        return;
+      }
+      // 其他错误: 先尝试从遮罩点一下恢复(可能是直链刚过期), 仍失败才报错
       pendingPlay = true;
-      showMask('浏览器阻止了自动播放，请点击开始。', '开始播放', function () {
+      showMask('播放遇到问题，请点击重试。', '继续播放', function () {
         hideMask();
         videoEl.play().then(function () { pendingPlay = false; })
           .catch(function () { showError('播放失败，请重试。'); });
@@ -790,7 +813,10 @@
     }
     if (state.pendingAutoplay) {
       state.pendingAutoplay = false;
-      videoEl.play().catch(noop);
+      // 走统一的 startPlay, 由它按错误类型决定"忽略 AbortError / 提示用户点击"。
+      // 这里原来是 .catch(noop), 被 AbortError 打断时静默失败, 表现为"切到下一局后
+      // 画面停在第一帧不动、也没有任何提示"。
+      startPlay();
     }
   });
   videoEl.addEventListener('ended', function () {
@@ -964,7 +990,8 @@
       var nx = nextPageMark();
       if (!nx || !state.applied) { return; }
       seekV(clampSeek(nx.start_sec + 0.2));
-      if (videoEl.paused) { videoEl.play().catch(noop); }
+      // 用户主动点了"下一局": 失败要说清原因, 不能静默不动
+      if (videoEl.paused) { startPlay(); }
     });
   }
 
@@ -2217,7 +2244,8 @@
 
   /* ---------------- 控制条 ---------------- */
   btnPlay.addEventListener('click', function () {
-    if (videoEl.paused) { videoEl.play().catch(noop); } else { videoEl.pause(); }
+    // 用户点播放键: 失败要给出可操作提示(直链过期 / 被策略拦), 不能静默
+    if (videoEl.paused) { startPlay(); } else { videoEl.pause(); }
   });
   function syncPlayLabel() {
     // 图标按钮: 暂停时显示 ▶, 播放中显示 ‖。

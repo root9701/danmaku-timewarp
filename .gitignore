@@ -41,6 +41,7 @@ danmaku-collector/data_schedule_test/
 
 # ---------- 运行时临时文件 ----------
 run/
+**/run/
 tmp/
 *.tmp
 *.bak
@@ -67,5 +68,6 @@ desktop.ini
 # *.example.json 是模板, 必须入库(新用户照抄即可)。
 danmaku-collector/config.json
 danmaku-server/config.json
+
 
 

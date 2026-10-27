@@ -31,6 +31,7 @@ read_afp(path) -> {"conns": [{c, t0_ms, frames, n}], "params": {...}}
 import base64
 import gzip
 import json
+import math
 import wave
 
 import numpy as np
@@ -163,13 +164,19 @@ def fingerprint(samples, sr, hop_sec=0.2, win_sec=0.4):
 # ----------------------------------------------------------------------------
 # 对齐
 # ----------------------------------------------------------------------------
-def align(fp_ref, fp_query, hop_sec, exclude_sec=1.0):
+def align(fp_ref, fp_query, hop_sec, exclude_sec=1.0, valid_range=None):
     """把查询指纹滑动互相关到参考指纹上，求最优偏移。
 
     返回 dict:
       offset_sec   查询在参考中的起始时间（亚帧精度，抛物线插值）
       confidence   主峰/次峰比（次峰为排除主峰 ±exclude_sec 邻域后的最大值）
       best_score   主峰互相关得分
+
+    valid_range: (min_sec, max_sec) 可选，把搜索范围限制在偏移的这段时间内。
+      为什么需要：同一段音频在参考里可能出现多次（直播首播 + 之后的重播），
+      而**全局最大峰未必是想要的那次** —— 实测重播因码率更高，峰比首播还高。
+      若只在外面过滤结果，正确的峰根本不会出现在返回值里；必须在求 argmax 之前
+      就裁掉范围外的位置。给 None 时行为与旧版完全一致。
 
     实现说明（无逐位置双重循环）：
       得分曲线 s(m) = sum_k sum_d q[k,d] * r[m+k,d]，对每个频带 d 是一条
@@ -202,12 +209,36 @@ def align(fp_ref, fp_query, hop_sec, exclude_sec=1.0):
     valid = score[n_b - 1 : n_a]  # valid[j] 对应偏移 m = j
     nv = valid.shape[0]
 
-    j = int(np.argmax(valid))
+    # 限制搜索范围：只在 [k_lo, k_hi] 内取 argmax / 次峰。
+    # 抛物插值要用 j-1/j+1，故内层留出 1 帧余量；越界处退化为不插值。
+    k_lo, k_hi, trim = 0, nv - 1, False
+    if valid_range is not None:
+        try:
+            r_lo, r_hi = float(valid_range[0]), float(valid_range[1])
+        except (TypeError, ValueError, IndexError):
+            r_lo, r_hi = -float("inf"), float("inf")
+        if r_hi < r_lo:
+            r_lo, r_hi = r_hi, r_lo
+        k_lo = max(0, int(math.floor(r_lo / hop_sec)))
+        k_hi = min(nv - 1, int(math.ceil(r_hi / hop_sec)))
+        if k_hi < k_lo:
+            # 范围完全落在有效区间外：退化为全局搜索，不返回垃圾
+            k_lo, k_hi = 0, nv - 1
+        else:
+            trim = True
+
+    view = valid[k_lo : k_hi + 1]
+    j = k_lo + int(np.argmax(view))
     y1 = float(valid[j])
 
     # 次峰：排除主峰邻域（避免主峰肩部被当成次峰）
     ex = max(1, int(round(exclude_sec / hop_sec)))
     mask = np.ones(nv, dtype=bool)
+    if trim:
+        # 只在搜索范围内比较次峰，否则范围外的重播峰会把 confidence 压低，
+        # 明明是唯一合理的窗口内位置却被判成"不显著"
+        mask[:k_lo] = False
+        mask[k_hi + 1 :] = False
     lo, hi = max(0, j - ex), min(nv, j + ex + 1)
     mask[lo:hi] = False
     second = float(valid[mask].max()) if mask.any() else 0.0

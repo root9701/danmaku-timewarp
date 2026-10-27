@@ -40,6 +40,8 @@
     segs: [], segLens: [], segStarts: [0], segIdx: 0,
     pendingSeekMs: null, pendingAutoplay: false,
     pageMarks: [],        // [{page,part,start_sec,duration}] 每局在虚拟轴上的起点
+    pageOffsets: {},      // {page: offset_sec} 每个分P 各自的墙钟 offset(音频对齐结果)
+    offsetDelta: 0,       // 手动微调量(作用于所有分P, 整体平移弹幕)
     rate: 1,              // 用户设定的播放速度(持久化)
     boostRate: 0,         // 长按方向键的临时加速倍率(0=未激活)
     lastTapKey: 0, lastTapAt: 0,  // 双击 ←/→ 判定
@@ -54,6 +56,134 @@
 
   function baseMs() { return state.anchorMs + state.offsetSec * 1000; }
   function noop() {}
+
+  /* ---------------- 分P 分段时间映射 ----------------
+   * 播放器把官方回放的各分P **首尾相接**拼成一条"虚拟时间轴"(getV)。
+   * 但直播侧两局之间有局间休息, 官方回放把这部分剪掉了 —— 于是"虚拟轴位置"和
+   * "直播真实时刻"之间**不是一条直线**, 而是分段直线:
+   *
+   *   分P k 在虚拟轴上占 [S_k, S_k+Dur_k)
+   *   该分P 内 局部时间 t 对应的墙钟 = anchor + offset_k + t
+   *   => 虚拟位置 v 对应的墙钟 = anchor + offset_k*1000 + (v - S_k)*1000
+   *   => 弹幕挂到虚拟轴上的位置 rel = ts - (anchor + offset_k*1000 - S_k*1000)
+   *
+   * 历史缺陷: 全程只用一个标量 offset(而且取的是第一分P 的), 等价于假设
+   * "回放各分P 无缝相连且与直播等长"。实测偏差: AL 第二局 -213.9s、第三局 -207.8s,
+   * TSW vs LOS 第二局 -224.9s —— 弹幕整体晚几分钟, 越往后越离谱。
+   *
+   * 局间休息里的弹幕(视频里根本不存在那段)直接**丢弃**, 不压缩到相邻分P:
+   * 压缩会把休息期间的几百条弹幕堆到下一局开头, 比丢掉更难看出问题。
+   */
+  function pageOffsetOf(page) {
+    if (page == null) { return null; }
+    var o = state.pageOffsets[String(page)];
+    return (typeof o === 'number' && isFinite(o)) ? o : null;
+  }
+
+  // 某分P 实际采用的 offset: 有对齐结果用它, 没有则把该页接在上一页结束处(顺序串联猜测)。
+  // 返回 null 表示该页无法定位(连第一页都没有 offset)。
+  function buildPageSegs() {
+    var pms = (state.pageMarks || []).slice().sort(function (a, b) {
+      return (a.start_sec || 0) - (b.start_sec || 0);
+    });
+    if (!pms.length) { return []; }
+    var hasAny = false;
+    for (var i = 0; i < pms.length; i++) {
+      if (pageOffsetOf(pms[i].page) != null) { hasAny = true; break; }
+    }
+    if (!hasAny) { return []; }        // 完全没有分P 对齐数据 -> 调用方退化到单 offset
+    var segs = [], prevEnd = null;
+    for (var k = 0; k < pms.length; k++) {
+      var pm = pms[k];
+      var off = pageOffsetOf(pm.page);
+      if (off == null) {
+        if (prevEnd == null) { continue; }   // 第一页就没有, 跳过(后续页仍可串)
+        off = (prevEnd - state.anchorMs) / 1000;   // 接在上一页末尾
+      }
+      off += state.offsetDelta;                   // 手动微调整体平移
+      var w0 = state.anchorMs + off * 1000;
+      var dur = (typeof pm.duration === 'number' && pm.duration > 0) ? pm.duration : 0;
+      segs.push({ page: pm.page, part: pm.part, w0: w0, w1: w0 + dur * 1000,
+                  s0: (pm.start_sec || 0) * 1000, estimated: pageOffsetOf(pm.page) == null });
+      prevEnd = w0 + dur * 1000;
+    }
+    segs.sort(function (a, b) { return a.w0 - b.w0; });
+    return segs;
+  }
+
+  // 当前虚拟播放位置落在哪个分P 段(用于标题、进度标签等)
+  function currentPageSeg() {
+    var segs = buildPageSegs();
+    if (!segs.length) { return null; }
+    var v = getV() * 1000;
+    for (var i = 0; i < segs.length; i++) {
+      if (v >= segs[i].s0 && v < segs[i].s0 + (segs[i].w1 - segs[i].w0)) { return segs[i]; }
+    }
+    return segs[segs.length - 1];
+  }
+
+  // 当前画面时刻对应的真实墙钟(毫秒)。总览播放线、点空白跳转都用它。
+  function wallNowMs() {
+    var segs = buildPageSegs();
+    var v = getV();
+    if (!segs.length) { return state.anchorMs + (state.offsetSec + state.offsetDelta) * 1000 + v * 1000; }
+    var seg = currentPageSeg();
+    if (!seg) { return segs[0].w0 + v * 1000; }
+    return seg.w0 + (v * 1000 - seg.s0);
+  }
+
+  // 跳到指定墙钟时刻(把"总览上的一刻"翻译成虚拟轴位置)
+  function seekToWallMs(wallMs) {
+    var segs = buildPageSegs();
+    if (!segs.length) { seekV(clampSeek((wallMs - baseMs()) / 1000)); return; }
+    for (var i = 0; i < segs.length; i++) {
+      if (wallMs >= segs[i].w0 && wallMs < segs[i].w1) {
+        seekV(clampSeek(segs[i].s0 / 1000 + (wallMs - segs[i].w0) / 1000));
+        return;
+      }
+    }
+    // 落在局间休息(该时刻没有视频): 取时间上最近的分P 边界
+    var best = null, bd = Infinity;
+    for (var k = 0; k < segs.length; k++) {
+      var d = Math.min(Math.abs(wallMs - segs[k].w0), Math.abs(wallMs - segs[k].w1));
+      if (d < bd) { bd = d; best = segs[k]; }
+    }
+    if (best) { seekV(clampSeek(best.s0 / 1000 + (wallMs - best.w0) / 1000)); }
+  }
+
+  // 按分P 分段重算全部弹幕的虚拟轴位置; 落在局间休息里的丢弃(见上方说明)。
+  // 重算后 danmaku 仍按 rel 升序, upperBound 二分才成立。
+  function recomputeRels() {
+    var dm = state.danmaku || [];
+    var segs = buildPageSegs();
+    if (!segs.length) {
+      var b0 = baseMs();
+      for (var j = 0; j < dm.length; j++) { dm[j].rel = dm[j].ts - b0; }
+      return;
+    }
+    for (var i = 0; i < dm.length; i++) {
+      var ts = dm[i].ts;
+      // 二分找最后一个 w0 <= ts 的段
+      var lo = 0, hi = segs.length;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (segs[mid].w0 <= ts) { lo = mid + 1; } else { hi = mid; }
+      }
+      var s = (lo > 0) ? segs[lo - 1] : null;
+      dm[i].rel = (s && ts < s.w1) ? (s.s0 + (ts - s.w0)) : null;
+    }
+    var kept = [];
+    for (var k = 0; k < dm.length; k++) { if (dm[k].rel !== null) { kept.push(dm[k]); } }
+    state.danmaku = kept;
+  }
+
+  // 把弹幕映射重置到当前播放位置(改 offset / 换场次后调用)
+  function resetDanmakuIndex() {
+    active.length = 0;
+    resetTracks();
+    state.idx = upperBound(state.danmaku, getV() * 1000);
+  }
+
   function two(n) { return (n < 10 ? '0' : '') + n; }
   function fmtClock(d) { return two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds()); }
   function fmtCnt(sec) {
@@ -322,10 +452,13 @@
       if (!r.ok) { throw new Error('弹幕数据 HTTP ' + r.status); }
       return r.text();
     });
-    var pMatch = getJson('/api/match?date=' + enc(date) + '&file=' + enc(file)).then(function (j) {
-      if (!j || !j.ok || typeof j.anchor_ms !== 'number') { throw new Error('读取对齐信息失败'); }
-      return j;
-    });
+    // 带上 bv: 服务端按该场比赛返回逐分P 对齐结果(pages), 供分段映射使用。
+    // 不带 bv 时只能拿到会话级标量 offset —— 多场共用一个会话时会串场。
+    var pMatch = getJson('/api/match?date=' + enc(date) + '&file=' + enc(file) + '&bv=' + enc(bv))
+      .then(function (j) {
+        if (!j || !j.ok || typeof j.anchor_ms !== 'number') { throw new Error('读取对齐信息失败'); }
+        return j;
+      });
     var pPlay = fetchPlay(bv);
 
     Promise.all([pDm, pMatch, pPlay]).then(function (res) {
@@ -349,6 +482,37 @@
     });
     out.sort(function (a, b) { return a.ts - b.ts; });
     return out;
+  }
+
+  // 应用一批分P offset(自动校准返回后用), 并保持当前播放位置不变地重算弹幕.
+  function applyPageOffsets(newOffsets) {
+    if (!newOffsets) { return; }
+    Object.keys(newOffsets).forEach(function (k) {
+      if (typeof newOffsets[k] === 'number' && isFinite(newOffsets[k])) {
+        state.pageOffsets[k] = newOffsets[k];
+      }
+    });
+    // 顶层 offsetSec 同步为第一分P, 供"总览播放线/无分P数据"路径使用
+    var keys = Object.keys(state.pageOffsets).map(Number).sort(function (a, b) { return a - b; });
+    if (keys.length) { state.offsetSec = state.pageOffsets[String(keys[0])]; }
+    state.offsetDelta = 0;
+    inpOffset.value = String(Math.round(state.offsetSec * 1000) / 1000);
+    state.idx = 0;
+    recomputeRels();
+    resetDanmakuIndex();
+    var elOff = document.getElementById('align-cur');
+    if (elOff) {
+      elOff.textContent = 'offset: ' + describePageOffsets();
+    }
+    drawOverview();
+  }
+
+  function describePageOffsets() {
+    var ks = Object.keys(state.pageOffsets);
+    if (ks.length > 1) {
+      return ks.map(function (k) { return 'P' + k + '=' + state.pageOffsets[k].toFixed(1); }).join(' ');
+    }
+    return String(Math.round(state.offsetSec * 1000) / 1000) + 's';
   }
 
   function setup(date, file, dmText, match, play, bv, offset, matchTitle) {
@@ -375,10 +539,29 @@
     state.baseTitle = state.title;
     elLiveBadge.textContent = '回放中';
 
-    var list = parseDanmaku(dmText), base = baseMs();
-    for (var i = 0; i < list.length; i++) { list[i].rel = list[i].ts - base; }
-    state.danmaku = list;
-    state.applied = true; active.length = 0; resetTracks();
+    // 逐分P offset 来自 /api/match?bv=... (doApply 已带 bv 请求, 响应里 pages 就是分段映射数据)。
+    // 每个分P 有自己的 offset; 只用标量会从第二局起整体错位。
+    state.pageOffsets = {};
+    state.offsetDelta = 0;
+    if (match && match.pages && typeof match.pages === 'object') {
+      Object.keys(match.pages).forEach(function (k) {
+        var pv = match.pages[k];
+        if (pv && typeof pv.offset_sec === 'number' && isFinite(pv.offset_sec)) {
+          state.pageOffsets[k] = pv.offset_sec;
+        }
+      });
+    }
+    // 有分P 数据时, 顶层标量同步为第一分P(供无分P 路径与显示兜底)
+    if (Object.keys(state.pageOffsets).length) {
+      var ks = Object.keys(state.pageOffsets).map(Number).sort(function (a, b) { return a - b; });
+      state.offsetSec = state.pageOffsets[String(ks[0])];
+      state.offsetDelta = offset - state.offsetSec;   // 用户手动填的 offset 视为整体微调
+    }
+
+    state.danmaku = parseDanmaku(dmText);
+    state.applied = true;
+    recomputeRels();
+    resetDanmakuIndex();
     dmList.innerHTML = ''; hideSc();
     syncTitleForPlayback();
 
@@ -395,24 +578,22 @@
     startPlay();
 
     // 从总览点选进来的定位:
-    //  - block 有值: 定位到那一局的开头
+    //  - block 有值: 定位到那一局的开头(优先按分P 号精确到 page_marks)
     //  - block 为 null: 连播切过来, 从头开始(不定位)
     var po = state.pendingOverview;
     if (po && po.bv === bv) {
       state.pendingOverview = null;
-      var target = null, targetIdx = -1;
+      var target = null;
       if (po.block) {
         for (var k = 0; k < state.pageMarks.length; k++) {
-          var pm = state.pageMarks[k];
-          if (pm.page === po.block.p) { target = pm; targetIdx = k; break; }
+          if (state.pageMarks[k].page === po.block.p) { target = state.pageMarks[k]; break; }
         }
       }
       if (target) {
         seekV(clampSeek(target.start_sec));
       } else if (po.block) {
-        // 分P信息没取全时, 退化为按时间差定位: 该块相对回放起点的秒
-        var rel = (po.block.startMs - (state.anchorMs + po.offsetSec * 1000)) / 1000;
-        seekV(clampSeek(rel));
+        // 分P信息没取全时, 按墙钟时刻反查虚拟轴位置(分段映射, 不是简单相减)
+        seekToWallMs(po.block.startMs);
       }
     }
   }
@@ -1227,7 +1408,9 @@
 
     // ---- 当前播放位置(竖直白线) ----
     if (state.applied && ov.t0) {
-      var cx = ovX(baseMs() + getV() * 1000);
+      // 用分段映射求当前画面的真实墙钟: 直接把 getV() 加到一个标量 offset 上会在
+      // 第二局起跑偏(局间休息在回放里被剪掉), 实测 AL 第二局偏 -213.9s。
+      var cx = ovX(wallNowMs());
       if (cx >= 0 && cx <= w) {
         g.strokeStyle = '#fff'; g.lineWidth = 1.5;
         g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h - 14); g.stroke();
@@ -1263,7 +1446,8 @@
     var x = e.clientX - r.left, y = e.clientY - r.top;
     var hit = ovHit(x, y);
     if (hit && hit.it) { playFromOverview(hit.it.tr, hit.it.b); return; }
-    if (state.applied) { seekV(clampSeek((ovMs(x) - baseMs()) / 1000)); }
+    // 点空白: 跳到该墙钟时刻(分段映射翻译成虚拟轴位置, 落在局间休息时吸附到最近分P)
+    if (state.applied) { seekToWallMs(ovMs(x)); }
   });
 
   // 点总览某场某局 -> 切场并定位到该分P起点
@@ -1276,8 +1460,12 @@
     // 已经是当前场次: 直接定位, 不重新加载(不打断播放)
     if (state.applied && state.curBv === tr.bv) {
       if (block) {
-        var relSec = (block.startMs - state.anchorMs) / 1000 - tr.offsetSec;
-        seekV(clampSeek(relSec));
+        // 按分P 号精确跳到该局起点; 找不到再用墙钟时刻反查(分段映射)
+        var pm = null;
+        for (var q = 0; q < state.pageMarks.length; q++) {
+          if (state.pageMarks[q].page === block.p) { pm = state.pageMarks[q]; break; }
+        }
+        if (pm) { seekV(clampSeek(pm.start_sec)); } else { seekToWallMs(block.startMs); }
       }
       return;
     }
@@ -1312,20 +1500,16 @@
     if (autoFailed) { manualCalib.open = true; }
   }
 
-  // 应用新 offset(绝对值): 即时平移弹幕映射(不重载)并保存。
-  // 手动微调 adjustOffset 与「自动校准」共用同一条路径。
+  // 手动微调: 对所有分P 施加同一个平移量(delta), 然后重算弹幕映射并保存。
+  // 为什么不直接改 state.offsetSec: 有分P 对齐数据时, offset 是"每页一个"的字典,
+  // 改单个标量会出现"第一局对上了、第二局还错着"。用 delta 整体平移语义才一致。
   function applyOffsetValue(newOffset, fromAuto) {
     state.offsetSec = newOffset;
     inpOffset.value = String(Math.round(newOffset * 1000) / 1000);
-    var base = baseMs();
-    for (var i = 0; i < state.danmaku.length; i++) {
-      state.danmaku[i].rel = state.danmaku[i].ts - base;
-    }
-    active.length = 0;
-    resetTracks();
-    state.idx = upperBound(state.danmaku, getV() * 1000);
     var elOff = document.getElementById('align-cur');
-    if (elOff) { elOff.textContent = 'offset: ' + state.offsetSec + 's'; }
+    if (elOff) { elOff.textContent = 'offset: ' + describePageOffsets(); }
+    recomputeRels();
+    resetDanmakuIndex();
     drawOverview();
     // manual 标记: 手动微调要让服务端清掉旧的 auto(自动校准置信度)记录,
     // 避免条目里挂着"高置信度自动校准"的假象。自动校准写回时不需要(它自己写 auto)。
@@ -1339,6 +1523,20 @@
   function adjustOffset(delta) {
     if (!state.applied) {
       inpOffset.value = String((parseFloat(inpOffset.value) || 0) + delta);
+      return;
+    }
+    // 有分P 对齐数据: 平移 delta(不动每页的绝对值); 否则退化为改标量
+    if (Object.keys(state.pageOffsets).length) {
+      state.offsetDelta += delta;
+      var elOff = document.getElementById('align-cur');
+      if (elOff) {
+        elOff.textContent = 'offset: ' + describePageOffsets() +
+          (state.offsetDelta ? ' (微调 ' + (state.offsetDelta > 0 ? '+' : '') +
+            state.offsetDelta + 's)' : '');
+      }
+      recomputeRels();
+      resetDanmakuIndex();
+      drawOverview();
       return;
     }
     applyOffsetValue(state.offsetSec + delta);
@@ -1357,6 +1555,12 @@
     if (cls === 'err') { updateManualCalibOpen(); }
   }
 
+  // 自动校准: 对齐**这场比赛的全部分P**(page=0)。
+  // 历史缺陷: 这里硬编码 page:1, 只对齐第一局; 且只读顶层 offset_sec —— 而后端对多分P
+  // 只能返回 pages 字典, 于是 `j.ok && typeof j.offset_sec==='number'` 恒为假,
+  // 后端明明算成功, 界面一律显示「自动校准失败: 未知错误」(实测每一天每一场都这样)。
+  // 现在: 传 0(后端按 bili_view 返回的 pages 动态决定对齐哪些分P, 支持 Bo1/Bo3/Bo5 任意页数),
+  // 并优先读 pages 字典, 顶层字段仅作单分P 兼容。
   btnAutoAlign.addEventListener('click', function () {
     if (autoAlignBusy) { return; }
     if (!state.applied) {
@@ -1371,19 +1575,17 @@
     autoAlignBusy = true;
     btnAutoAlign.disabled = true;
     btnAutoAlign.textContent = '自动校准中…';
-    setAlignStatus('自动校准进行中：正在拉取回放音频并与直播音频指纹比对（首次约半分钟到一分钟）…', '');
+    setAlignStatus('自动校准进行中：正在拉取回放各分P 的音频并与整晚直播指纹比对（首次约半分钟到一分钟）…', '');
     fetch('/api/autocalign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: state.curDate, file: state.curFile, bv: bv, page: 1 })
+      body: JSON.stringify({ date: state.curDate, file: state.curFile, bv: bv, page: 0 })
     }).then(function (r) { return r.json(); }).then(function (j) {
-      if (j && j.ok && typeof j.offset_sec === 'number') {
-        applyOffsetValue(j.offset_sec, true);   // 自动校准: 与手动微调同一条 offset 应用路径(但保留 auto 记录)
-        setAlignStatus('自动校准完成: offset=' + j.offset_sec.toFixed(1) +
-          ' s (置信度 ' + (typeof j.confidence === 'number' ? j.confidence.toFixed(1) : '?') + ')', 'ok');
-      } else {
+      if (!j || !j.ok) {
         setAlignStatus('自动校准失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
+        return;
       }
+      applyAutocalignResult(j, bv);
     }).catch(function (e) {
       setAlignStatus('自动校准失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
     }).finally(function () {
@@ -1392,6 +1594,43 @@
       btnAutoAlign.textContent = '自动校准';
     });
   });
+
+  // 处理自动校准返回: 吸收每分P 的 offset, 重建分段映射, 并按"全成功/部分成功"分别提示。
+  // 部分成功也是有效结果(某局直播侧确实缺音频), 必须如实显示哪几页没对齐及原因,
+  // 而不是笼统一句"失败"让用户以为是功能坏了。
+  function applyAutocalignResult(j, bv) {
+    var pages = (j && j.pages && typeof j.pages === 'object') ? j.pages : {};
+    var okPages = Object.keys(pages);
+    var errs = (j && j.errors && typeof j.errors === 'object') ? j.errors : {};
+    var errKeys = Object.keys(errs);
+    if (!okPages.length && typeof j.offset_sec !== 'number') {
+      setAlignStatus('自动校准失败: ' + (j.message || '没有分P 对齐成功'), 'err');
+      return;
+    }
+    // 吸收到当前场次(只有 BV 一致才采纳, 避免把别的场的 offset 套到正在播的场)
+    if (bv && state.curBv && state.curBv !== bv) { return; }
+    // 后端 pages 的 key 就是分P 号
+    var newOffsets = {};
+    okPages.forEach(function (k) {
+      var pv = pages[k];
+      if (pv && typeof pv.offset_sec === 'number') { newOffsets[k] = pv.offset_sec; }
+    });
+    applyPageOffsets(newOffsets);
+
+    var msg = '自动校准完成：' + okPages.length + '/' + (j.total_pages || okPages.length) +
+              ' 个分P 对齐成功';
+    var det = okPages.map(function (k) {
+      var pv = pages[k];
+      return 'P' + k + ' ' + (pv.part || '') + '=' + pv.offset_sec.toFixed(1) + 's' +
+             (pv.confidence != null ? '(置信度' + pv.confidence.toFixed(1) + ')' : '') +
+             (pv.suspect ? '(疑似重播,已忽略)' : '');
+    }).join(', ');
+    if (det) { msg += ' — ' + det; }
+    if (errKeys.length) {
+      msg += '；未对齐: ' + errKeys.map(function (k) { return 'P' + k + '(' + errs[k] + ')'; }).join('; ');
+    }
+    setAlignStatus(msg, errKeys.length ? 'warn' : 'ok');
+  }
 
   /* ---------------- 刷新赛程(自动发现当天场次 + 搜索官方回放BV) ---------------- */
   var discoverBusy = false;

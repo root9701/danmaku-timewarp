@@ -127,6 +127,12 @@ AUTO_VOTE_TOLERANCE_SEC = 30      # 投票时"指向同一处"的容差(秒)
 # 参与对齐的音频时长下限: 测过纯随机噪声在"片段长度接近回放长度"时可达 conf 2.5~5.5,
 # 光靠置信度挡不住。真实比赛对齐通常能匹配几十秒以上, 故再要求匹配时长足够。
 AUTO_MIN_MATCH_SEC = 20.0
+# 赛程开始时间与实际开播的容差: 用 Riot/Riot 官方赛程的 startTime 作为"这场应该在哪个时段"
+# 的锚点, 前后各放开一段, 用来排除直播间早上的重播/回顾(音频与官方回放完全一致, 投票也会
+# 一致命中)。实测 Bo3 前一场提前结束后, 后一场比赛程早开 70 分钟, 故前向要放宽;
+# 后向按"整场时长 + 30 分钟收尾"算, 不需要额外放宽。
+AUTO_SCHEDULE_LEAD_SEC = 5400      # 允许比赛程提前 90 分钟开播
+AUTO_SCHEDULE_TAIL_SEC = 1800      # 整场时长之后再多给 30 分钟(赛后采访/抽签等)
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")        # 日期目录名(同时杜绝 ../ 越界)
 FILE_RE = re.compile(r"^[0-9A-Za-z_-]+$")           # 弹幕文件名(不含扩展名)
@@ -977,6 +983,10 @@ async def handle_danmaku(request: web.Request) -> web.Response:
 # ---- /api/match: 读取/保存 弹幕文件与视频的匹配信息 ----
 async def handle_match_get(request: web.Request) -> web.Response:
     date, file = require_date_file(request)
+    # 可选 bv: 带上时返回该场比赛的**逐分P 对齐结果**, 供前端做分段映射。
+    # 前端播放时每个分P 有各自的 offset(局间休息长度直播侧与回放侧不同), 只靠标量
+    # offset 会让第二局起的弹幕整体错位(实测 AL 第二局偏差 -213.9s)。
+    want_bv = str(request.query.get("bv") or "").strip()
     meta_missing = False
     try:
         meta = load_meta(date, file)
@@ -987,7 +997,8 @@ async def handle_match_get(request: web.Request) -> web.Response:
     anchor_ms = await asyncio.to_thread(first_ts_from_data, date, file) or 0
     if not anchor_ms and not meta_missing:
         anchor_ms = compute_anchor_ms(meta)
-    entry = load_matches()["align"].get(f"{date}|{file}") or {}
+    align = load_matches()["align"]
+    entry = align.get(f"{date}|{file}") or {}
     offset_sec = entry.get("offset_sec", 0)
     if isinstance(offset_sec, bool) or not isinstance(offset_sec, (int, float)):
         offset_sec = 0
@@ -995,8 +1006,34 @@ async def handle_match_get(request: web.Request) -> web.Response:
     # 绝不能把 meta.room_title(直播间当时的标题, 如"【预告】27号1点CFO vs T1")当比赛名,
     # 那正是"左上角比赛信息和实际选中的比赛不一致"的根因之一。
     title = str(entry.get("title") or "")
+
+    # 逐分P 对齐结果: 精确 key 优先, 再回退按 bv 扫(兼容只存过一场的旧记录)
+    pages_out, pages_bv = {}, ""
+    target_bv = want_bv
+    if not target_bv:
+        # 没传 bv: 用会话级汇总里记录的第一个 bv
+        bvs = entry.get("bvs")
+        if isinstance(bvs, list) and bvs:
+            target_bv = str(bvs[0] or "")
+    if target_bv:
+        rec = align.get(f"{date}|{file}|{target_bv}")
+        if not (isinstance(rec, dict) and isinstance(rec.get("pages"), dict)):
+            rec = None
+            for k, v in align.items():
+                if (isinstance(v, dict) and str(v.get("bv") or "") == target_bv
+                        and isinstance(v.get("pages"), dict) and v["pages"]):
+                    if k.count("|") >= 2:
+                        rec = v
+                        break
+                    if rec is None:
+                        rec = v
+        if isinstance(rec, dict) and isinstance(rec.get("pages"), dict):
+            pages_out = rec["pages"]
+            pages_bv = target_bv
+
     return api_ok(anchor_ms=anchor_ms, offset_sec=offset_sec,
-                  bv=str(entry.get("bv") or ""), title=title,
+                  bv=str(entry.get("bv") or "") or pages_bv, title=title,
+                  pages=pages_out, pages_bv=pages_bv,
                   room_title=str(meta.get("room_title") or "") if not meta_missing else "",
                   match_date=_session_match_date(date),
                   meta_missing=meta_missing)
@@ -1116,6 +1153,31 @@ def _session_match_date(date: str) -> str:
 
 
 # ---- /api/matchlist: 场次列表(点选谁和谁) ----
+def _pick_exact_align_rec(align: dict, date: str, bv: str):
+    """取某场比赛的精确对齐记录(key = `{date}|{file}|{bv}`, 该日可能有多个 session)。
+
+    matchlist 只有 date 没有 file(文件名要到 /api/days 之后才定), 因此按 `{date}|*|{bv}`
+    匹配。同一 BV 同一天理论上只有一条; 若有多条(目录被合并过), 取 pages 最多的那条 ——
+    那是信息最完整的记录, 也就是真正跑过全部分P 对齐的那次。
+    """
+    prefix = f"{date}|"
+    suffix = f"|{bv}"
+    best = None
+    best_n = -1
+    for k, v in align.items():
+        if not k.startswith(prefix) or not k.endswith(suffix):
+            continue
+        if k.count("|") < 2 or not isinstance(v, dict):
+            continue
+        pages = v.get("pages")
+        if not isinstance(pages, dict) or not pages:
+            continue
+        n = len(pages)
+        if n > best_n:
+            best, best_n = v, n
+    return best
+
+
 async def handle_matchlist_get(request: web.Request) -> web.Response:
     date = (request.query.get("date") or "").strip()
     if not DATE_RE.fullmatch(date):
@@ -1133,14 +1195,22 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
         it = dict(it)
         it["title"] = _strip_game_prefix(it.get("title"))
         # 合并该场自己的对齐状态: 前端据此显示「已对齐 N 个分P / 未对齐」。
-        # key 优先用 (date|file|bv) 精确记录; 老数据退回到按 bv 扫。
+        # **精确 key 优先**: {date}|{file}|{bv}。旧实现直接遍历 align 字典取第一条
+        # bv 命中的记录, 而同一 BV 可能残留多条(例如数据目录被合并改名后, 旧目录名的
+        # 记录还在), 字典顺序一旦先撞上残留记录就会读到错的 pages 数 ——
+        # 实测 TSW vs LOS 实际对齐了 2 个分P, 下拉框却显示「已对齐」(=1 个)。
         bv = str(it.get("bv") or "")
         rec = None
         if bv:
-            for k, v in align.items():
-                if isinstance(v, dict) and str(v.get("bv") or "") == bv:
-                    # 优先带 bv 维度的精确 key
-                    if k.count("|") >= 2:
+            exact = _pick_exact_align_rec(align, date, bv)
+            if exact is not None:
+                rec = exact
+            if rec is None:
+                # 回退: 先找带 bv 维度的记录, 再退回任意 bv 命中的旧记录
+                for k, v in align.items():
+                    if not isinstance(v, dict) or str(v.get("bv") or "") != bv:
+                        continue
+                    if k.count("|") >= 2 and v.get("pages"):
                         rec = v
                         break
                     if rec is None:
@@ -1148,7 +1218,12 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
         if rec:
             if rec.get("pages"):
                 it["pages"] = rec["pages"]
-            if rec.get("align_failed"):
+            if rec.get("page_errors"):
+                it["page_errors"] = rec["page_errors"]
+            # 失败标记只在**完全没有对齐结果**时才对外报。
+            # 历史缺陷: 一旦某次全失败写过 align_failed, 之后即便对齐成功、pages 已有内容,
+            # 下拉框仍显示「未对齐·直播可能未转播」—— 用户会以为功能坏了。
+            if rec.get("align_failed") and not rec.get("pages"):
                 it["align_failed"] = True
                 it["align_error"] = rec.get("align_error") or ""
         fixed.append(it)
@@ -1518,18 +1593,30 @@ async def handle_discover(request: web.Request) -> web.Response:
     for m in draft:
         m["bv"] = await asyncio.to_thread(
             bili_search_replay, m["teams"][0], m["teams"][1], date)
-    # c) 写回: 列表缺失/为空 -> 整体写入草稿; 已存在 -> 只回填空 bv, 其余字段不动
-    result = {"created": 0, "backfilled": 0}
+    # c) 写回: 列表缺失/为空 -> 整体写入草稿; 已存在 -> 只回填空 bv/开始时间, 其余字段不动
+    result = {"created": 0, "backfilled": 0, "time_filled": 0}
 
     def _mut(matches):
         lst = matches["lists"].get(date)
         if not lst:
             if draft:
-                matches["lists"][date] = [{"title": m["title"], "bv": m["bv"],
-                                           "offset_sec": 0} for m in draft]
+                matches["lists"][date] = [
+                    {"title": m["title"], "bv": m["bv"], "offset_sec": 0,
+                     "start_ms": int(m["start"].timestamp() * 1000)} for m in draft]
                 result["created"] = len(draft)
             return
         for entry in lst:
+            # 回填赛程开始时间(按队名匹配)。这是"该场次应该发生在直播的哪一段"的
+            # 唯一权威来源: 对齐算法用它排除早上重播/回顾里的伪峰。
+            if not isinstance(entry.get("start_ms"), (int, float)):
+                teams = _title_teams(entry.get("title"))
+                if teams:
+                    want0 = {t.lower() for t in teams}
+                    for m in draft:
+                        if {t.lower() for t in m["teams"]} == want0:
+                            entry["start_ms"] = int(m["start"].timestamp() * 1000)
+                            result["time_filled"] += 1
+                            break
             if str(entry.get("bv") or "").strip():
                 continue
             teams = _title_teams(entry.get("title"))
@@ -1546,7 +1633,8 @@ async def handle_discover(request: web.Request) -> web.Response:
         # 无变更就不落盘(省一次写); 有变更走锁内 read-modify-write
         probe = await asyncio.to_thread(load_matches)
         need = (not probe["lists"].get(date)) or any(
-            not str(e.get("bv") or "").strip() and _title_teams(e.get("title"))
+            (not str(e.get("bv") or "").strip() and _title_teams(e.get("title")))
+            or (not isinstance(e.get("start_ms"), (int, float)) and _title_teams(e.get("title")))
             for e in (probe["lists"].get(date) or []))
         if need:
             if not await asyncio.to_thread(update_matches, _mut):
@@ -1554,7 +1642,8 @@ async def handle_discover(request: web.Request) -> web.Response:
     out = [{"idx": i, "title": m["title"], "bv": m["bv"], "found": bool(m["bv"])}
            for i, m in enumerate(draft)]
     return api_ok(matches=out, riot_count=len(draft), date=date, data_date=raw_date,
-                  created=result["created"], backfilled=result["backfilled"])
+                  created=result["created"], backfilled=result["backfilled"],
+                  time_filled=result["time_filled"])
 
 
 # ---- /api/playurl: 通过B站网页接口取 mp4 直链 ----
@@ -2365,7 +2454,7 @@ class DanmakuDensity:
 
 def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
                     density=None, anchor_ms=None, later_than_ms=None,
-                    min_density=None):
+                    min_density=None, window_ms=None):
     """把一个分P 的回放指纹对齐到直播 afp 上, 返回它在直播时间轴中的起始位置。
 
     返回 dict:
@@ -2375,6 +2464,8 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
       votes            一致票数 / 总段落数
       candidates       找到的自洽位置个数(>1 表示该内容在直播里出现多次)
       all_candidates   全部自洽位置(毫秒, 升序), 便于排查
+      suspect          该分P 只在窗口外找到位置(早上重播/回顾), 已拒绝
+      suspect_reason   拒绝原因(给用户看)
 
     **为什么是「多段投票」而不是「一个长窗互相关」**
 
@@ -2417,37 +2508,60 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
     need = max(2, (n_seg + 2) // 3)      # ceil(n/3), 至少 2 票
     votes = []                            # [(主播内起点秒, 段序号, 置信度)]
     detail = []
+    # 窗口(墙钟秒): 给了就**优先在窗口内找**, 而不是先全局最优再筛。
+    # 差别很关键: 早上的重播与首播音频完全一致, 甚至可能更清晰(码率更高), 于是
+    # "全局最强位置"常常是重播那一段。若先取全局最优再按窗口过滤, 窗口内的正确位置
+    # 根本没进入候选, 那些页会被判成"只在窗口外找到"而整页作废 ——
+    # 实测 26 日 HLE vs IG 的赛后采访/赛前评论就这样被误杀了。
+    # 现在: 每段先在窗口内挑最强的, 窗口内没有才退回全局最强(留着给后面报"疑似重播")。
+    win_lo_s = win_hi_s = None
+    if window_ms:
+        win_lo_s, win_hi_s = window_ms[0] / 1000.0, window_ms[1] / 1000.0
+
     for i, st in enumerate(starts):
         piece = fp_replay[st:st + seg_frames]
-        best = None
+        best = None            # 全局最强 (base秒, conf)
+        best_in = None         # 窗口内最强
         for seg in conns:
             if seg["n"] < seg_frames:
                 continue
+            # 转成"该片段在**这一段连接**内允许的起始偏移"(秒), 传给 align 限制搜索。
+            # 必须在 align 内部限制: 它只返回全局最大峰, 而重播峰可能更高 ——
+            # 光在返回后过滤, 窗口内的正确峰根本不会出现(实测 26 日 HLE vs IG P2:
+            # 全局峰在 08:05、被窗口排除, 而窗口内 01:51 也有一个峰, 只是矮一点)。
+            rng = None
+            if win_lo_s is not None:
+                seg_t0_s = seg["t0_ms"] / 1000.0
+                # base = seg_t0 + off - st*hop  =>  off = base - seg_t0 + st*hop
+                rng = (win_lo_s - seg_t0_s + st * hop,
+                       win_hi_s - seg_t0_s + st * hop)
             try:
                 # 注意方向: **直播整段是 ref, 回放片段是 query**。
                 # align() 要求 query 不长于 ref, 且返回 query 在 ref 里的起始位置。
-                r = audiofp.align(seg["frames"], piece, hop)
+                r = audiofp.align(seg["frames"], piece, hop, valid_range=rng)
             except ValueError:
                 continue
             if not math.isfinite(r["offset_sec"]):
                 continue                     # inf = 只有单峰, 不可判定
-            if r["confidence"] < min_conf:
-                continue
+            pos_wall = seg["t0_ms"] / 1000.0 + r["offset_sec"]
+            base = pos_wall - st * hop       # 回放 t=0 对应的墙钟
             if best is None or r["confidence"] > best[1]:
-                best = (seg["t0_ms"] / 1000.0 + r["offset_sec"], r["confidence"], seg["c"])
-        if best is None:
-            detail.append(f"段{i}无可信位置")
+                best = (base, r["confidence"])
+            if win_lo_s is not None and win_lo_s <= base <= win_hi_s:
+                if best_in is None or r["confidence"] > best_in[1]:
+                    best_in = (base, r["confidence"])
+        pick = best_in if best_in is not None else best
+        if pick is None:
+            detail.append(f"段{i}无可判定位置")
             continue
-        pos_wall, conf, cidx = best
-        # 该片段在回放内的偏移是 st*hop, 故回放 t=0 对应的墙钟:
-        base = pos_wall - st * hop
+        base, conf = pick
         votes.append((base, i, conf))
-        detail.append(f"段{i}(回放{st*hop/60:.0f}分)->{base/3600:.2f}h conf={conf:.2f}")
+        detail.append(f"段{i}(回放{st*hop/60:.0f}分)->{base/3600:.2f}h conf={conf:.2f}"
+                      + ("(窗口内)" if best_in is not None else "(窗口外)"))
 
     if not votes:
-        raise ApiError("该分P 的音频在直播里找不到可信位置"
-                       "(各片段置信度都低于 %.1f, 可能这场没有直播画面或直播缺段)"
-                       % min_conf)
+        raise ApiError("该分P 的音频在直播里找不到可判定的位置"
+                       "(各片段都只有单峰, 可能这场直播没有音频或指纹损坏)")
 
     # ---- 按容差聚类投票, 得到「自洽位置」 ----
     votes.sort()
@@ -2466,27 +2580,83 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
     # 自洽位置的判定: **票数够 或 票的质量够高**。
     # 单纯数票会误杀"直播只播了一部分"的情况: 实测 HLE vs IG 第一局只有 2/8 段能匹配,
     # 但这 2 段的置信度是 7.00 / 7.16(随机水平只有 1.1), 且指向完全相同的位置 ——
-    # 这是可靠的定位, 只是直播确实缺了后半小时。
-    # 反之, 一堆 conf 刚过 2.0 的散票(如 8 段各自指向 8 个地方)不该被采信。
+    # ---- 自洽位置的判定 ----
+    # 判据是**投票一致性**, 而不是单段置信度。
+    #
+    # 为什么不能用单段置信度当门票: 单段 conf 是"该 3 分钟片段内部主峰/次峰比",
+    # 它反映的是**这段音频本身有多独特**, 不是"这个位置对不对"。实测 CFO vs T1 第一局:
+    # 8 段全部指向完全相同的位置(+47.4s, 离散 0.0 秒), 但只有 1 段 conf=8.28,
+    # 其余 7 段是 1.08~2.12(那段是 BP/解说, 音频特征不独特)。旧实现先用 min_conf
+    # 把低分票**丢掉**, 只剩 1 票, 达不到 need=3, 于是判"不可靠, 已拒绝" ——
+    # 一场普通 Bo1 的第一局都对齐不了, 这就是"自动校准永远失败"的直接原因。
+    #
+    # 反面对照(同样 8 段): 拿 26 日的回放去对 27 日的直播, 8 段分别散落在 8 个毫无关系的
+    # 位置(conf 全是 1.0~1.35), 最大簇只有 1 票。所以**"有多少段指向同一处"**是可靠判据,
+    # "每段自己多有把握"不是。
+    #
+    # 采纳条件(任一成立即采信):
+    #   ① 一致票数 >= ceil(N/3)      —— 多数段自洽
+    #   ② 2 张强票(conf>=6)          —— 票少但都很确定(直播只缺了一小部分)
+    #   ③ 1 张很强票(conf>=7) 且 总票数>=2 —— 部分段落极确定, 其余同向但特征弱
+    #   ④ 全票一致(票数==N) 且最强票 >= min_conf —— 8 段无一例外指向同一处,
+    #      这种离散 0.0s 的一致性不可能是巧合(随机散票不可能全撞一处)
     def cluster_score(c):
         """票数与票质的综合分: 各票置信度之和(低分票几乎不加分)。"""
         return sum(c[1])
 
+    strong_conf = max(6.0, min_conf * 3)
     solid = []
+    why = {}
     for c in clusters:
-        strong = [x for x in c[1] if x >= min_conf * 3]     # 强票: conf >= 6
-        if len(c[1]) >= need or len(strong) >= 2:
+        n_vote = len(c[1])
+        confs = sorted(c[1])
+        max_conf = confs[-1]
+        n_strong = len([x for x in confs if x >= strong_conf])
+        reasons = []
+        if n_vote >= need:
+            reasons.append("多段一致")
+        if n_strong >= 2:
+            reasons.append("%d 张强票" % n_strong)
+        if max_conf >= 7.0 and n_vote >= 2:
+            reasons.append("强票+同向")
+        if n_vote == n_seg and max_conf >= min_conf:
+            reasons.append("全票一致")
+        if reasons:
             solid.append(c)
+            why[id(c)] = "、".join(reasons)
     if not solid:
         best_c = max(clusters, key=cluster_score)
         raise ApiError(
-            "该分P 的音频位置不稳定(最多只有 %d/%d 段指向同一处且置信度不足), "
-            "判为不可靠, 已拒绝" % (len(best_c[1]), n_seg))
+            "该分P 的音频在直播里找不到自洽位置(最多 %d/%d 段指向同一处, 最强票 conf=%.2f); "
+            "可能是这场直播没有转播, 或采集期间音频断流"
+            % (len(best_c[1]), n_seg, max(best_c[1])))
 
     solid.sort(key=lambda c: c[0])          # 按时间升序 -> 取最早
+
+    # ---- 窗口约束: 排除"早上重播/回顾"里的伪峰 ----
+    # 直播间整晚常把前几场重播一遍, 音频与官方回放一模一样, 投票也会一致命中。
+    # 实测 CFO vs T1 的 P2「赛前评论」(01:00 那场的内容) 被对齐到了 07:44 ——
+    # 那是早上重播, 且当时弹幕全是「抽签」, 一旦采信, 那一局的弹幕就整体错了 6 小时。
+    # 因此: 给了 window_ms=(最早可接受墙钟, 最晚可接受墙钟) 时, 只接受落在窗内的候选;
+    # 全部候选都在窗外 -> 该页标 suspect 并**拒绝采纳**(宁可报未对齐, 也不能错位)。
+    suspect = False
+    suspect_reason = ""
+    all_pos = [int(round(c[0] * 1000)) for c in solid]
+    if window_ms:
+        w_lo, w_hi = window_ms
+        in_win = [c for c in solid if w_lo <= c[0] * 1000 <= w_hi]
+        if not in_win:
+            suspect = True
+            near = min(all_pos, key=lambda m: min(abs(m - w_lo), abs(m - w_hi)))
+            # 报错文案要能直接看懂"偏了多少": 优先按赛程窗口给相对差, 没有 anchor 时给绝对时刻。
+            ref = anchor_ms if anchor_ms else w_lo
+            suspect_reason = (
+                "该分P 只在窗口外找到位置(%s, 距赛程窗口 %+.0f 分钟), 判为早上重播/回顾, 未采纳"
+                % (_fmt_wall(near), (near - ref) / 60000.0))
+            raise ApiError(suspect_reason)
+        solid = in_win
+
     chosen = solid[0]
-    confs = sorted(chosen[1])
-    median_conf = confs[len(confs) // 2]
 
     # ---- 一致性: 选中的位置内部各票离散不能太大 ----
     same = [v for v in votes if abs(v[0] - chosen[0]) <= AUTO_VOTE_TOLERANCE_SEC]
@@ -2495,7 +2665,9 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
     offset_ms = int(round(chosen[0] * 1000))
     return {
         "offset_ms": offset_ms,
-        "confidence": min(float(median_conf), 999.0),
+        # 置信度给**最强票**(不是中位数): 低分票也有定位价值, 但它们会把中位数拉到
+        # 随机水平(~1.1), 让"已对齐"看起来像没对齐。最强票代表这次定位的证据强度。
+        "confidence": min(float(max(chosen[1])), 999.0),
         "matched_seconds": len(chosen[1]) * seg_frames * hop,
         "conn": 0,
         "t0_ms": int(round(chosen[0] * 1000)),
@@ -2504,10 +2676,50 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         "candidates": len(solid),
         "all_candidates": [int(round(c[0] * 1000)) for c in solid],
         "spread_sec": round(spread, 2),
-        "picked_by": ("多段投票 %d/%d 段一致" % (len(chosen[1]), n_seg) +
+        "picked_by": ("多段投票 %d/%d 段一致(%s)" % (len(chosen[1]), n_seg,
+                                                  why.get(id(chosen), "一致")) +
                       ("(取最早, 共 %d 处候选)" % len(solid) if len(solid) > 1 else "")),
+        "suspect": suspect,
+        "suspect_reason": suspect_reason,
         "debug": detail,
     }
+
+
+def _fmt_wall(ms) -> str:
+    """毫秒墙钟 -> 'MM-DD HH:MM' 便于日志阅读。"""
+    try:
+        return datetime.fromtimestamp(ms / 1000).strftime("%m-%d %H:%M")
+    except (OSError, ValueError, OverflowError):
+        return str(ms)
+
+
+def _schedule_window_for_bv(date: str, bv: str):
+    """取该场比赛的赛程开始时间(毫秒), 用于给对齐加时间窗约束。
+
+    数据来源: matches.json 的 lists[比赛日][].start_ms(由 /api/discover 从 Riot 赛程落盘)。
+    匹配方式: 该 BV 所在列表条目的 start_ms; 没有 bv 时按 bv 反查不到, 返回 None。
+
+    返回 (start_ms|None, 说明)。
+    """
+    try:
+        matches = load_matches()
+    except Exception:
+        return None, "读取赛程失败"
+    target_bv = str(bv or "").strip()
+    for day, lst in (matches.get("lists") or {}).items():
+        if not isinstance(lst, list):
+            continue
+        for it in lst:
+            if not isinstance(it, dict):
+                continue
+            if str(it.get("bv") or "") != target_bv:
+                continue
+            sm = it.get("start_ms")
+            if isinstance(sm, (int, float)) and not isinstance(sm, bool) and sm > 0:
+                return int(sm), f"{day} {it.get('title') or ''} 赛程"
+            # 该条目存在但没有赛程时间: 期间限内也别去别的天里找同 BV(同 BV 只会属一天)
+            return None, f"{day} {it.get('title') or ''} 无赛程时间"
+    return None, "赛程列表里没有该 BV"
 
 
 async def run_autocalign(date: str, file: str, bv: str, page: int, session,
@@ -2568,6 +2780,22 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     if not targets:
         raise ApiError(f"{bv} 没有可用的分P 信息")
 
+    # b2) 由赛程开始时间算出"该分P 允许落在哪个墙钟区间"。
+    # 没有赛程时间(旧数据/未刷新赛程)时 window 为 None -> 不做约束, 行为与旧版一致。
+    # 有了它才能挡住"早上重播"这类伪峰(见 _align_one_page 里的说明)。
+    win_lo = win_hi = None
+    sched_ms, win_reason = _schedule_window_for_bv(date, bv)
+    if sched_ms:
+        total_dur_sec = sum(int(p.get("duration") or 0) for p in pages_meta)
+        win_lo = sched_ms - AUTO_SCHEDULE_LEAD_SEC * 1000
+        win_hi = sched_ms + (total_dur_sec + AUTO_SCHEDULE_TAIL_SEC) * 1000
+        print(f"[autocalign] 赛程窗口: {_fmt_wall(win_lo)} ~ {_fmt_wall(win_hi)} "
+              f"({win_reason})", flush=True)
+    else:
+        print("[autocalign] 无赛程开始时间, 不做窗口约束"
+              "(点「刷新赛程」可补全, 能挡掉早上重播的误匹配)", flush=True)
+    window_ms = (win_lo, win_hi) if win_lo is not None else None
+
     # c) 逐分P 独立对齐。每个分P 各自投票定位, 互不影响。
     #    新算法(多段投票 + 取最早自洽位置)不需要密度/时序辅助判断:
     #      - 它自己会用 8 段投票过滤掉不稳定位置;
@@ -2580,7 +2808,8 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             fp_replay, src_desc = await get_replay_fingerprint(
                 session, bv, pg, hop, win, local_audio=local_audio)
             r = await asyncio.to_thread(_align_one_page, fp_replay, conns, hop,
-                                        AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC)
+                                        AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC,
+                                        anchor_ms=anchor_ms, window_ms=window_ms)
             r["offset_sec"] = round((r["offset_ms"] - anchor_ms) / 1000.0, 3)
             r["part"] = tp["part"]
             r["duration"] = tp["duration"]
@@ -2625,7 +2854,22 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         entry = dict(matches["align"].get(match_key) or {})
         entry.update({"date": date, "file": file, "bv": bv,
                       "title": info.get("title") or entry.get("title") or ""})
+        # 本次有分P 成功 -> 清掉历史失败标记。否则一旦某次全失败写入过 align_failed,
+        # 之后即使对齐成功, 下拉框也会永远显示「未对齐·直播可能未转播」。
+        for k in ("align_failed", "align_error", "align_failed_at"):
+            entry.pop(k, None)
+        # 部分分P 失败仍记下来(如赛前评论在开播前没录到), 供前端说明"哪几页没对齐"
+        if page_errors:
+            entry["page_errors"] = {str(k): str(v)[:300] for k, v in page_errors.items()}
+        else:
+            entry.pop("page_errors", None)
         pages_map = dict(entry.get("pages") or {})
+        # 本次判失败的分P 必须**删掉旧 offset**, 不能留着上次的值。
+        # 历史缺陷: 只写成功页、不清理失败页, 于是上一次(可能是按错误规则算出的)错位
+        # offset 会一直生效 —— 实测 CFO vs T1 的 P2 残留在 07:44 那个重播位置(24297.9s),
+        # 本次已正确判定"找不到", 但前端仍会拿旧值去映射, 弹幕整体错 6 小时。
+        for pg in page_errors:
+            pages_map.pop(str(pg), None)
         for pg, r in page_results.items():
             pages_map[str(pg)] = {
                 "part": r["part"],
@@ -2668,6 +2912,9 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 item_pages = item.get("pages")
                 if not isinstance(item_pages, dict):
                     item_pages = {}
+                # 列表里的 pages 同样要清掉本次失败的分P(理由同上)
+                for pg in page_errors:
+                    item_pages.pop(str(pg), None)
                 for pg, r in page_results.items():
                     item_pages[str(pg)] = {
                         "part": r["part"], "offset_sec": r["offset_sec"],
@@ -2686,14 +2933,29 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     if page_errors:
         message += "; 失败: " + ", ".join(f"P{p}" for p in page_errors)
     print(f"[autocalign] {date}/{file} bv={bv}: {message}")
+
+    # 顶层 offset_sec/confidence 取**第一分P**: 多分P 各有一个 offset, 顶层无法表达,
+    # 但前端/旧脚本都在读顶层字段来判断"这次校准成功了吗"。
+    # 历史缺陷: 只返回 pages 字典而没有顶层 offset_sec, 前端条件
+    # `j.ok && typeof j.offset_sec === 'number'` 恒为假 —— 后端算成功、界面却一律显示
+    # 「自动校准失败: 未知错误」, 实测每一场每一天都这样。故必须补上这两个兼容字段。
+    first_pg = min(page_results.keys())
     return {"date": date, "file": file, "bv": bv,
+            "offset_sec": page_results[first_pg]["offset_sec"],
+            "confidence": round(page_results[first_pg]["confidence"], 3),
+            "page": first_pg,
+            "total_pages": len(targets),
+            "aligned_pages": len(page_results),
+            "all_ok": not page_errors,
             "pages": {str(p): {"part": r["part"], "offset_sec": r["offset_sec"],
                                "confidence": round(r["confidence"], 3),
                                "matched_seconds": round(r["matched_seconds"], 1),
                                "votes": r.get("votes"),
                                "total_segments": r.get("total_segments"),
                                "candidates": r["candidates"],
-                               "picked_by": r["picked_by"]}
+                               "picked_by": r["picked_by"],
+                               "suspect": r.get("suspect", False),
+                               "suspect_reason": r.get("suspect_reason", "")}
                       for p, r in sorted(page_results.items())},
             "errors": page_errors,
             "elapsed_sec": round(elapsed, 1), "message": message}

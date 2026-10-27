@@ -94,3 +94,7 @@ danmaku-server/config.json
 
 
 
+
+# 演化方向与未实施决策：只在本机保留，不随仓库分发
+演化方向.md
+

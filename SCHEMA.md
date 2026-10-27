@@ -165,9 +165,20 @@ UTF-8 JSONL，四种行：
 | `GET /api/matchlist?date=` | 场次列表 + 各自对齐状态 |
 | `GET /api/overview?date=` | 一晚总览：密度直方图 + 各场分P 轨道 |
 | `GET /api/discover?date=` | Riot 赛程 → B站搜索回放 BV → 只回填空位 |
-| `GET /api/playurl?bv=&page=` | mp4 直链（多段时由前端拼接） |
+| `GET /api/playurl?bv=&page=&qn=` | mp4 直链（多段时由前端拼接）；`qn` 是画质码，缺省 720P |
+| `GET /api/markers?bv=` | B站 看点（一血/大龙/推塔…）换算到整条虚拟时间轴 |
 | `GET /api/stream?url=` | 反代 B站 CDN（白名单域名 + 解析后 IP 校验） |
 | `POST /api/autocalign` | 自动校准，`page=0` 表示全部分P |
+
+**`/api/playurl`** 的 `qn` 只影响 `durl`(整段 mp4) 这条路径，**可取值上限是 720P**：
+1080P 及以上只存在于 DASH，需自行拼接音视频裸轨，`<video>` 无法直出，故不提供。
+响应里 `quality` 是**实际下发**的画质（B站 可能降档），`qualities` 是可选档位
+`[{qn,label}]`，前端画质菜单只能列这两个字段的内容，不得自造档位。
+
+**`/api/markers`** 返回 `{bv, count, markers:[{at,page,part,label,team,side,kind}]}`。
+`at` 是**整条虚拟时间轴**上的秒数（= `page_marks[].start_sec + 该分P 内秒数`），
+`kind` 只有 `kill`/`obj` 两种，仅用于上色。**没有看点时返回空数组而不是错误** ——
+大量非官方/非赛事视频本来就没有看点，调用方不能据此报错。
 
 **`/api/days`** 返回 `days[].{date, match_date, data_date, rooms[].files[]}`；
 `file` 字段含 `name`/`is_test`/`dm_count`/`layout`/`schema_version`/`start_ms`/`end_ms`。

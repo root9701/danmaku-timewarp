@@ -32,18 +32,68 @@
         <canvas id="danmaku-canvas"></canvas>
         <span id="speed-badge" hidden>2×</span>
         <div id="ctrl-bar">
-          <button id="btn-play" type="button" class="cbtn" title="播放/暂停（空格）">播放</button>
-          <div id="prog" title="进度条（←/→ 快退快进，长按 ←/→ 2倍速）">
-            <div id="prog-inner"></div><div id="prog-thumb"></div>
-          </div>
+          <button id="btn-play" type="button" class="cbtn ico" title="播放/暂停（空格）">▶</button>
           <span id="time-label">--:--</span>
-          <button id="btn-mute" type="button" class="cbtn" title="静音">音量</button>
-          <input id="rng-vol" type="range" min="0" max="100" value="100" title="音量">
-          <button id="btn-rate" type="button" class="cbtn" title="播放速度（Shift+, / Shift+.）">1.0×</button>
+          <div id="prog" title="进度条（←/→ 快退快进，长按 ←/→ 2倍速）">
+            <div id="prog-inner"></div>
+            <div id="prog-marks"></div>
+            <div id="prog-thumb"></div>
+          </div>
           <button id="btn-skip" type="button" class="cbtn" title="跳到下一局" hidden>下一局</button>
-          <button id="btn-auto-advance" type="button" class="cbtn off" title="当前：播完停住（点击开启自动连播）">连播: 关</button>
+          <button id="btn-auto-advance" type="button" class="cbtn off" title="当前：播完停住（点击开启自动连播）">连播</button>
+
+          <span class="cmenu-wrap">
+            <button id="btn-quality" type="button" class="cbtn" title="画质">画质</button>
+            <div id="menu-quality" class="cmenu" hidden></div>
+          </span>
+          <span class="cmenu-wrap">
+            <button id="btn-rate" type="button" class="cbtn" title="播放速度（Shift+, / Shift+.）">1.0×</button>
+            <div id="menu-rate" class="cmenu" hidden></div>
+          </span>
+          <span class="cmenu-wrap">
+            <button id="btn-dm-set" type="button" class="cbtn" title="弹幕设置">弹幕设置</button>
+            <div id="panel-dm-set" class="cmenu cpanel" hidden>
+              <div class="cpanel-head">弹幕设置</div>
+              <label class="cpanel-row"><span>显示区域</span>
+                <select id="sel-dm-area">
+                  <option value="1" selected>满屏</option>
+                  <option value="0.75">3/4 屏</option>
+                  <option value="0.5">半屏</option>
+                </select>
+              </label>
+              <label class="cpanel-row"><span>不透明度</span>
+                <input id="rng-dm-opacity" type="range" min="20" max="100" step="5" value="90">
+              </label>
+              <label class="cpanel-row"><span>弹幕字号</span>
+                <select id="sel-dm-size">
+                  <option value="20">小</option>
+                  <option value="26" selected>中</option>
+                  <option value="34">大</option>
+                </select>
+              </label>
+              <label class="cpanel-row"><span>弹幕速度</span>
+                <input id="rng-dm-speed" type="range" min="60" max="200" step="10" value="100">
+              </label>
+              <label class="cpanel-row"><span>弹幕数量</span>
+                <select id="sel-dm-density">
+                  <option value="1" selected>全部</option>
+                  <option value="0.5">一半</option>
+                  <option value="0.25">较少</option>
+                  <option value="0.1">更少</option>
+                </select>
+              </label>
+              <label class="cpanel-chk"><input id="chk-dm-stroke" type="checkbox" checked> 文字描边</label>
+              <div class="cpanel-foot">
+                <button id="btn-dm-toggle" type="button" class="btn btn-sm">弹幕: 开</button>
+                <button id="btn-dm-reset" type="button" class="btn btn-sm btn-ghost">恢复默认</button>
+              </div>
+            </div>
+          </span>
           <button id="btn-dm-quick" type="button" class="cbtn" title="显示/隐藏弹幕">弹</button>
-          <button id="btn-fs" type="button" class="cbtn" title="全屏（含弹幕层）">全屏</button>
+          <button id="btn-spoiler" type="button" class="cbtn" title="防剧透：隐藏进度条标记与分P色块">防剧透</button>
+          <button id="btn-mute" type="button" class="cbtn ico" title="静音">🔊</button>
+          <input id="rng-vol" type="range" min="0" max="100" value="100" title="音量">
+          <button id="btn-fs" type="button" class="cbtn ico" title="全屏（含弹幕层）">⛶</button>
         </div>
         <div id="player-mask"><span class="mask-text">正在加载…</span></div>
       </div>
@@ -129,37 +179,14 @@
       </section>
 
       <!-- ============ 区块四：弹幕与显示 ============ -->
-      <section class="panel">
-        <div class="panel-head"><span class="panel-ico">⯃</span>弹幕与显示</div>
-        <div class="panel-body row">
-          <label class="fld"><span>弹幕区域</span>
-            <select id="sel-dm-area">
-              <option value="1" selected>满屏</option>
-              <option value="0.75">3/4 屏</option>
-              <option value="0.5">半屏</option>
-            </select>
-          </label>
-          <label class="fld"><span>弹幕数量</span>
-            <select id="sel-dm-density">
-              <option value="1" selected>全部</option>
-              <option value="0.5">一半</option>
-              <option value="0.25">较少</option>
-              <option value="0.1">更少</option>
-            </select>
-          </label>
-          <label class="fld"><span>透明度</span>
-            <input id="rng-dm-opacity" type="range" min="20" max="100" step="5" value="90">
-          </label>
-          <label class="fld"><span>字号</span>
-            <select id="sel-dm-size">
-              <option value="20">小</option>
-              <option value="26" selected>中</option>
-              <option value="34">大</option>
-            </select>
-          </label>
-          <button id="btn-dm-toggle" type="button" class="btn">弹幕: 开</button>
-        </div>
-      </section>
+      <!--
+        这些设置已移进播放器控制条的「弹幕设置」面板。理由: 调字号/透明度时眼睛盯着画面,
+        跑到底部卡片再翻回来根本对不上。这里保留一行入口提示, 避免老用户找不到。
+      -->
+      <p class="hint-line panel-hint">
+        弹幕字号 / 透明度 / 速度 / 描边 / 数量等设置，已移到播放器右下角的
+        <b>弹幕设置</b> 里，边看边调。
+      </p>
 
     </section>
 

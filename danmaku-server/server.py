@@ -1845,11 +1845,46 @@ async def bili_view(session, bv: str) -> dict:
             "duration": duration, "pages": pages}
 
 
-async def _bili_durl_segments(session, bv: str, cid, page_label: str = "") -> dict:
-    """取某个 cid 的 html5 mp4 durl 分段。返回 {urls, seg_lengths}。失败抛 ApiError。"""
+# html5 durl 这条取流路径能拿到的画质上限就是 720P(qn=64)。
+# 1080P 只在 DASH(fnval=16) 里, 而 DASH 把音视频拆成两条裸轨, <video> 无法直接播
+# (需要 MSE 自己拼接), 所以不做 —— 菜单只列 B站 accept_quality 里真实可取的档,
+# 不虚标。实测同一场: 720P 532 MB / 360P 226 MB, 确实是两份不同的文件。
+QUALITY_FALLBACK_DESC = {16: "360P", 32: "480P", 64: "720P", 74: "720P60",
+                         80: "1080P", 112: "1080P+", 116: "1080P60", 120: "4K"}
+PLAYURL_DEFAULT_QN = 64
+
+
+def _quality_list(data: dict) -> list:
+    """把 accept_quality/accept_description 揉成 [{qn,label}]。
+
+    B站这两个字段是**平行数组**(同下标对应), 但长度不一定相等, 缺的用兜底表补。
+    返回顺序即 B站 给的优先级(高画质在前)。"""
+    qns = data.get("accept_quality") or []
+    descs = data.get("accept_description") or []
+    out = []
+    for i, raw in enumerate(qns):
+        try:
+            qn = int(raw)
+        except (TypeError, ValueError):
+            continue
+        label = ""
+        if i < len(descs) and descs[i]:
+            label = str(descs[i])
+        if not label:
+            label = QUALITY_FALLBACK_DESC.get(qn, str(qn))
+        out.append({"qn": qn, "label": label})
+    return out
+
+
+async def _bili_durl_segments(session, bv: str, cid, page_label: str = "",
+                              qn: int = PLAYURL_DEFAULT_QN) -> dict:
+    """取某个 cid 的 html5 mp4 durl 分段。
+
+    返回 {urls, seg_lengths, quality, qualities}。失败抛 ApiError。
+    quality 是**实际下发**的画质(可能低于请求的 qn), qualities 是该视频可选档位。"""
     try:
         async with session.get("https://api.bilibili.com/x/player/playurl",
-                               params={"bvid": bv, "cid": cid, "qn": 64,
+                               params={"bvid": bv, "cid": cid, "qn": qn,
                                        "platform": "html5", "high_quality": 1},
                                headers=_bili_headers()) as r:
             play = await r.json(content_type=None)
@@ -1858,15 +1893,22 @@ async def _bili_durl_segments(session, bv: str, cid, page_label: str = "") -> di
     if not isinstance(play, dict) or play.get("code") != 0:
         msg = play.get("message") if isinstance(play, dict) else None
         raise ApiError(f"获取播放地址失败{page_label}: {msg or 'B站接口返回异常'}")
+    data = play.get("data") or {}
     urls, seg_lens = [], []
-    for item in (play.get("data") or {}).get("durl") or []:
+    for item in data.get("durl") or []:
         if isinstance(item, dict) and item.get("url"):
             urls.append(str(item["url"]))
             seg_lens.append(round((item.get("length") or 0) / 1000, 3))
-    return {"urls": urls, "seg_lengths": seg_lens}
+    try:
+        quality = int(data.get("quality") or 0)
+    except (TypeError, ValueError):
+        quality = 0
+    return {"urls": urls, "seg_lengths": seg_lens,
+            "quality": quality, "qualities": _quality_list(data)}
 
 
-async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
+async def bili_playurl_mp4(session, bv: str, page: int = 0,
+                           qn: int = PLAYURL_DEFAULT_QN) -> dict:
     """html5 平台 mp4 直链。page=0(默认) 表示**全部分P连播**; page>=1 只取该分P。
 
     为什么有"全分P连播": 官方回放把每局拆成独立分P(第一局/第二局/第三局),
@@ -1877,11 +1919,15 @@ async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
     多分段虚拟时间轴(getV/seekV)即可无缝跨局播放, 且 offset 语义不变
     (整条虚拟时间轴 = 官方回放完整时间线, 与赛程自然对应)。
 
+    qn 是**请求**的画质(64=720P, 16=360P)。B站 可能下发更低档, 实际值见返回的
+    quality。可选档位见 qualities。
+
     返回:
       urls/seg_lengths  全部分段(按播放顺序)
       duration          整条虚拟时间轴总长(= 各段之和, 前端进度条用)
       pages             分P清单 [{page,cid,duration,part}]
       page_marks        [{page,part,start_sec,duration}] 每局在虚拟轴上的起点(供分集标签)
+      quality/qualities 实际画质 / 可选画质(给前端画质菜单)
       mode              "all" | "page"
     """
     info = await bili_view(session, bv)
@@ -1893,7 +1939,7 @@ async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
         if sel is None:
             raise ApiError(f"该视频没有第 {page} 个分P(共 {total_pages} 个)")
         seg = await _bili_durl_segments(session, bv, sel["cid"],
-                                        f"(第 {page} 分P {sel['part']})")
+                                        f"(第 {page} 分P {sel['part']})", qn=qn)
         if not seg["urls"]:
             raise ApiError("未取得播放直链(可能需要 cookies.txt 登录 Cookie, 或视频不可播放)")
         seg_total = round(sum(seg["seg_lengths"]), 3)
@@ -1906,14 +1952,16 @@ async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
                 "page_part": sel["part"], "total_pages": total_pages,
                 "page_marks": [{"page": page, "part": sel["part"],
                                 "start_sec": 0, "duration": page_duration}],
+                "quality": seg["quality"], "qualities": seg["qualities"],
                 "mode": "page"}
 
     # --- 全分P连播 ---
     urls, seg_lens, page_marks, failed = [], [], [], []
+    quality, qualities = 0, []
     for p in pages:
         try:
             seg = await _bili_durl_segments(session, bv, p["cid"],
-                                            f"(第 {p['page']} 分P {p['part']})")
+                                            f"(第 {p['page']} 分P {p['part']})", qn=qn)
         except ApiError as e:
             # 单个分P取不到不拖垮整场: 记下来继续, 前端提示缺哪一局
             failed.append({"page": p["page"], "part": p["part"], "error": str(e)})
@@ -1921,6 +1969,10 @@ async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
         if not seg["urls"]:
             failed.append({"page": p["page"], "part": p["part"], "error": "无播放直链"})
             continue
+        # 画质/可选档位取**第一个成功分P**的: 同一视频各分P 档位一致,
+        # 逐P 取会让菜单选中项随分P 跳变。
+        if not qualities:
+            quality, qualities = seg["quality"], seg["qualities"]
         p_dur = round(sum(seg["seg_lengths"]), 3) or float(p["duration"] or 0)
         page_marks.append({"page": p["page"], "part": p["part"],
                            "start_sec": round(sum(seg_lens), 3), "duration": p_dur})
@@ -1932,6 +1984,7 @@ async def bili_playurl_mp4(session, bv: str, page: int = 0) -> dict:
             "duration": round(sum(seg_lens), 3), "title": info["title"],
             "pages": pages, "page": 0, "page_part": "",
             "total_pages": total_pages, "page_marks": page_marks,
+            "quality": quality, "qualities": qualities,
             "failed_pages": failed, "mode": "all"}
 
 
@@ -1947,8 +2000,111 @@ async def handle_playurl(request: web.Request) -> web.Response:
         raise ApiError("参数 page 应为整数")
     if page < 0:
         raise ApiError("参数 page 应 >= 0 (0=全部分P连播)")
-    play = await bili_playurl_mp4(request.app["http"], bv, page)
+    raw_qn = (request.query.get("qn") or "").strip()
+    qn = PLAYURL_DEFAULT_QN
+    if raw_qn:
+        try:
+            qn = int(raw_qn)
+        except (TypeError, ValueError):
+            raise ApiError("参数 qn 应为整数(画质码, 如 64=720P / 16=360P)")
+    play = await bili_playurl_mp4(request.app["http"], bv, page, qn=qn)
     return api_ok(**play)
+
+
+# ---- /api/markers: B站 看点(view_points) 当作时间标记 ----
+# B站 给官方回放打了"开始/第一滴血/双杀/击杀XX亚龙/第一座塔/团灭对手/纳什男爵…"这类
+# 看点, 带秒数与所属队伍。这就是用户说的"时间标记一血之类的", 比我们自己从画面/弹幕
+# 里猜可靠得多 —— 直接用作进度条刻度即可。
+#
+# 两个关键约束(实测得出):
+#   1) 它挂在 **cid** 上, 不是 bv 上。一个 bv 有多个分P, 每个分P 各有自己的看点和时间轴,
+#      所以必须按分P 分别取, 并把它换算到**整条虚拟时间轴**的位置(page_mark.start_sec + from)。
+#   2) 大量视频没有 view_points(非官方、老视频、非赛事内容), 返回空数组是正常结果,
+#      不是错误 —— 前端据此什么都不画。
+MARKER_CACHE_TTL = 6 * 3600      # 看点几乎不变, 缓存 6 小时足够(同一晚反复切分P 不打接口)
+MARKER_TYPE_KILL = "kill"        # 击杀/团灭类
+MARKER_TYPE_OBJ = "obj"          # 中立资源/建筑类
+# 顺序很重要: 先判资源再判击杀。B站 的资源类看点也叫"**击杀**山脉亚龙/纳什男爵",
+# 若先按"杀"字判定, 全场资源都会被染成击杀色, 两类就分不开了。
+MARKER_OBJ_WORDS = ("亚龙", "巢虫", "先锋", "男爵", "防御塔", "座塔", "水晶",
+                    "大龙", "小龙", "峡谷", "虚空", "虫")
+MARKER_KILL_WORDS = ("第一滴血", "双杀", "三杀", "四杀", "五杀", "团灭",
+                     "一血", "击杀英雄")
+_MARKER_CACHE: dict = {}
+
+
+def _marker_kind(content: str) -> str:
+    """把看点标题粗分成两类, 只用于前端上色(击杀暖色 / 资源冷色), 不做业务判定。"""
+    text = content or ""
+    if any(w in text for w in MARKER_OBJ_WORDS):
+        return MARKER_TYPE_OBJ
+    if any(w in text for w in MARKER_KILL_WORDS):
+        return MARKER_TYPE_KILL
+    return MARKER_TYPE_OBJ
+
+
+def _markers_from_view_points(vp: list, page: int, part: str,
+                              base_sec: float) -> list:
+    """把某分P 的 view_points 换算到整条虚拟时间轴。
+
+    base_sec 是该分P 在虚拟轴上的起点(page_marks.start_sec)。看点里的 from 是
+    该分P **内部**的秒数, 加上 base_sec 才是用户拖动进度条时的位置。"""
+    out = []
+    for x in vp or []:
+        if not isinstance(x, dict):
+            continue
+        try:
+            at = float(x.get("from"))
+        except (TypeError, ValueError):
+            continue
+        if at < 0:
+            continue
+        content = str(x.get("content") or "").strip()
+        if not content:
+            continue
+        out.append({"at": round(base_sec + at, 3), "page": page,
+                    "part": str(part or ""), "label": content,
+                    "team": str(x.get("team_name") or ""),
+                    "side": str(x.get("team_type") or ""),
+                    "kind": _marker_kind(content)})
+    out.sort(key=lambda m: m["at"])
+    return out
+
+
+async def _fetch_view_points(session, bv: str, cid) -> list:
+    """取一个 cid 的看点。取不到/没有都返回 [] —— 这不是错误, 只是没标可画。"""
+    try:
+        async with session.get("https://api.bilibili.com/x/player/wbi/v2",
+                               params={"bvid": bv, "cid": cid},
+                               headers=_bili_headers()) as r:
+            j = await r.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return []
+    if not isinstance(j, dict) or j.get("code") != 0:
+        return []
+    vp = (j.get("data") or {}).get("view_points")
+    return vp if isinstance(vp, list) else []
+
+
+async def handle_markers(request: web.Request) -> web.Response:
+    bv = (request.query.get("bv") or "").strip()
+    if not BV_RE.fullmatch(bv):
+        raise ApiError("参数 bv 缺失或格式不正确(应形如 BV1xx411c7mD)")
+    cached = _MARKER_CACHE.get(bv)
+    if cached and (time.monotonic() - cached[0]) < MARKER_CACHE_TTL:
+        return api_ok(**cached[1])
+    session = request.app["http"]
+    info = await bili_view(session, bv)
+    markers, base = [], 0.0
+    for p in info["pages"]:
+        vp = await _fetch_view_points(session, bv, p["cid"])
+        markers.extend(_markers_from_view_points(vp, p["page"], p["part"], base))
+        # 分P 在虚拟轴上的长度用 view 给的 duration(看点也是按这个时间轴标的);
+        # 拿不到就退化为 0 —— 只是后续分P 的标记会起点偏小, 前端仍有进度条兜底。
+        base += float(p.get("duration") or 0)
+    payload = {"bv": bv, "markers": markers, "count": len(markers)}
+    _MARKER_CACHE[bv] = (time.monotonic(), payload)
+    return api_ok(**payload)
 
 
 # ---- /api/overview: 一晚"总览时间轴"(剪辑软件式多轨) ----
@@ -3199,6 +3355,7 @@ def build_app() -> web.Application:
     r.add_get("/api/overview", handle_overview)
     r.add_get("/api/discover", handle_discover)
     r.add_get("/api/playurl", handle_playurl)
+    r.add_get("/api/markers", handle_markers)
     r.add_get("/api/stream", handle_stream)
     r.add_post("/api/autocalign", handle_autocalign)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册

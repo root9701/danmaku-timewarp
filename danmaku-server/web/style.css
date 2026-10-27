@@ -100,19 +100,84 @@ body {
   font-size: 12px; white-space: nowrap;
 }
 #ctrl-bar .cbtn:hover { background: rgba(255,255,255,.26); }
-#ctrl-bar .cbtn.off { background: rgba(255,255,255,.05); color: rgba(255,255,255,.45); text-decoration: line-through; }
+#ctrl-bar .cbtn.off { background: rgba(255,255,255,.05); color: rgba(255,255,255,.45); }
+/* 图标按钮: 定宽, 不用 emoji 也能对齐(▶ ⛶ 🔊 在等宽字体下宽度差异大) */
+#ctrl-bar .cbtn.ico {
+  padding: 0; width: 30px; text-align: center;
+  font-size: 13px; line-height: 26px;
+}
 #time-label { font-size: 12px; color: #eee; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #prog { flex: 1; height: 16px; display: flex; align-items: center; cursor: pointer; position: relative; touch-action: none; }
 #prog::before {
   content: ""; position: absolute; left: 0; right: 0; height: 4px;
   background: rgba(255,255,255,.28); border-radius: 2px;
 }
-#prog-inner { position: absolute; left: 0; height: 4px; background: var(--blue); border-radius: 2px; width: 0; }
+#prog-inner {
+  position: absolute; left: 0; height: 4px; background: var(--blue);
+  border-radius: 2px; width: 0; pointer-events: none;
+}
+/* 进度条上的事件标记(一血/大龙/水晶…): 只画一根 2px 竖线, 不抢进度条本身。
+   防剧透开启时不填充内容, 由 JS 清空。 */
+#prog-marks { position: absolute; inset: 0; pointer-events: none; }
+.prog-mark {
+  position: absolute; top: 4px; width: 2px; height: 8px;
+  border-radius: 1px; background: #ffd166;
+  transform: translateX(-1px);
+}
+.prog-mark.t-obj { background: #7fd1ff; }   /* 中立资源/建筑 */
+.prog-mark.t-kill { background: #ff8f6b; }  /* 击杀/团灭 */
 #prog-thumb {
   position: absolute; width: 11px; height: 11px; border-radius: 50%;
   background: #fff; left: 0; transform: translateX(-5px);
-  box-shadow: 0 0 2px rgba(0,0,0,.6);
+  box-shadow: 0 0 2px rgba(0,0,0,.6); pointer-events: none;
 }
+
+/* ---------- 控制条弹出菜单(画质/倍速/弹幕设置) ---------- */
+.cmenu-wrap { position: relative; display: inline-flex; }
+.cmenu {
+  position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 20;
+  min-width: 108px; padding: 6px;
+  background: rgba(22,26,34,.97); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+}
+.cmenu[hidden] { display: none; }
+.cmenu-item {
+  display: block; width: 100%; padding: 7px 12px; border: none; border-radius: 5px;
+  background: none; color: #dfe4ec; font-size: 13px; text-align: left;
+  cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.cmenu-item:hover { background: rgba(255,255,255,.1); }
+.cmenu-item.on { color: var(--blue); font-weight: 600; }
+.cmenu-item:disabled { color: #5c6472; cursor: not-allowed; }
+.cmenu-item:disabled:hover { background: none; }
+/* 弹幕设置面板: 比倍速菜单宽, 走"标签 + 控件"两列 */
+.cmenu.cpanel { width: 268px; padding: 10px 12px 12px; }
+.cpanel-head {
+  font-size: 13px; font-weight: 600; color: #fff;
+  padding: 2px 2px 8px; border-bottom: 1px solid rgba(255,255,255,.08); margin-bottom: 8px;
+}
+.cpanel-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 5px 2px; font-size: 12px; color: #c9d0dc;
+}
+.cpanel-row > span { flex: 0 0 64px; }
+.cpanel-row select {
+  flex: 1; background: #10131a; color: var(--text);
+  border: 1px solid rgba(255,255,255,.14); border-radius: 5px;
+  padding: 4px 6px; font-size: 12px;
+}
+.cpanel-row input[type="range"] { flex: 1; accent-color: var(--blue); min-width: 0; }
+.cpanel-chk {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 2px 6px; font-size: 12px; color: #c9d0dc; cursor: pointer;
+}
+.cpanel-chk input { accent-color: var(--blue); }
+.cpanel-foot {
+  display: flex; gap: 8px; padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,.08); margin-top: 4px;
+}
+.btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 5px; }
+.btn-ghost { background: rgba(255,255,255,.1); }
 #rng-vol { width: 72px; accent-color: var(--blue); }
 /* 倍速徽标: 长按方向键临时加速时浮现, 不占布局(absolute) */
 #speed-badge {
@@ -192,6 +257,7 @@ body {
 
 .hint-line { font-size: 12px; color: var(--text-dim); align-self: center; }
 .hint-line b { color: var(--text); }
+.panel-hint { padding: 0 2px; margin: 0; }
 
 /* ---------- toast 提示 ---------- */
 #toast {
@@ -299,4 +365,10 @@ body {
   .player-col { flex: 1 1 auto; }
   #side { flex: none; width: 100%; min-height: 300px; max-height: 360px; }
   .player-wrap { max-width: 100%; }
+}
+/* 控制条按钮多, 窄屏时允许换行并把长文案按钮换成图标尺寸, 否则进度条被压到看不见 */
+@media (max-width: 1180px) {
+  #ctrl-bar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  #ctrl-bar #prog { order: -1; flex: 1 1 100%; }
+  #rng-vol { width: 56px; }
 }

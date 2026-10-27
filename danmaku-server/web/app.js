@@ -466,8 +466,10 @@
 
   // page=0 → 服务端把全部"分P"(第一局/第二局/第三局)拼成一条连续时间轴,
   // 前端沿用已有的多分段虚拟时间轴顺序续播, 这样整场回放才能完整播放。
-  function fetchPlay(bv, page) {
-    var q = '/api/playurl?bv=' + enc(bv) + (page ? ('&page=' + enc(page)) : '');
+  // qn: 画质码(64=720P / 16=360P), 空则用服务端默认。
+  function fetchPlay(bv, page, qn) {
+    var q = '/api/playurl?bv=' + enc(bv) + (page ? ('&page=' + enc(page)) : '')
+          + (qn ? ('&qn=' + enc(qn)) : '');
     return getJson(q).then(function (j) {
       if (!j || !j.ok || !j.url) { throw new Error(j && j.error ? j.error : '获取回放播放地址失败'); }
       return j;
@@ -575,6 +577,11 @@
     state.curDate = date; state.curFile = file; state.curMatchTitle = matchTitle;
     state.curBv = bv;
     state.pageMarks = (play.page_marks && play.page_marks.length) ? play.page_marks.slice() : [];
+    // 画质: qualities 由服务端从 B站 accept_quality 转来, 是真实可选档位
+    qualityList = (play.qualities || []).slice();
+    curQuality = play.quality || 0;
+    syncQualityBtn();
+    renderQualityMenu();
     // 分段信息
     state.segs = (play.urls && play.urls.length) ? play.urls.slice() : [play.url];
     state.segLens = (play.seg_lengths && play.seg_lengths.length === state.segs.length)
@@ -630,6 +637,9 @@
     videoEl.currentTime = 0;
     hideMask();
     startPlay();
+    // 时间标记(一血/大龙…)随场次一起换。失败不影响播放, 所以不放在 Promise.all 里
+    // 等待 —— 那会让"标记接口慢"变成"整场都打不开"。
+    loadMarkers(bv);
 
     // 从总览点选进来的定位:
     //  - block 有值: 定位到那一局的开头(优先按分P 号精确到 page_marks)
@@ -736,9 +746,11 @@
     // 不重置的话, 上一分P 播完时进度条停在 100%, 切到下一分P 后
     // timeupdate 要等首帧才触发, 这段时间里"进度条在末尾、画面却是第二段开头",
     // 看起来像进度条坏了。这里先画一次, 保证切换瞬间就是对的。
+    lastMarkSeg = -1;
     syncProgress();
   }
   // 按当前分P 刷新进度条与时间标签(时间轴只有一条: 每个分P 各自独立计时)。
+  var lastMarkSeg = -1;    // 上次按哪个分P 画的标记(-1=还没画过)
   function syncProgress() {
     var segLen = state.segLens[state.segIdx] || 0;
     var segPos = videoEl.currentTime || 0;
@@ -750,6 +762,12 @@
     if (pm && pm.part) { label += '  ' + pm.part; }
     if (effectiveRate() !== 1) { label += '  ' + effectiveRate() + '×'; }
     timeLabel.textContent = label;
+    // 标记是按"当前分P"换算的, 换段后必须重画。timeupdate 每秒触发多次,
+    // 所以用 lastMarkSeg 挡住重复重建(标记列表不变时没必要动 DOM)。
+    if (lastMarkSeg !== state.segIdx) {
+      lastMarkSeg = state.segIdx;
+      renderProgMarks();
+    }
   }
   function seekV(sec) {
     if (!state.segs.length) { videoEl.currentTime = sec; return; }
@@ -919,11 +937,24 @@
     setRate(RATE_STEPS[i]);
   }
   btnRate.addEventListener('click', function () {
-    // 循环切换常用档位: 1 → 1.25 → 1.5 → 2 → 0.75 → 1
-    var cycle = [1, 1.25, 1.5, 2, 0.75];
-    var i = cycle.indexOf(state.rate);
-    setRate(cycle[(i + 1) % cycle.length]);
+    // 弹出档位菜单(B站 式竖排)。键盘 << >> / Shift+, . 仍可逐档切换。
+    toggleMenu('menu-rate');
   });
+
+  // 倍速菜单: 竖排档位, 当前项高亮。点一项即生效并关菜单。
+  function renderRateMenu() {
+    var m = $('menu-rate');
+    if (!m) { return; }
+    m.innerHTML = '';
+    RATE_STEPS.slice().reverse().forEach(function (r) {
+      var el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'cmenu-item' + (Math.abs(r - state.rate) < 1e-6 ? ' on' : '');
+      el.textContent = (r === 1 ? '1.0' : String(r)) + '×';
+      el.addEventListener('click', function () { closeMenus(); setRate(r); });
+      m.appendChild(el);
+    });
+  }
 
   // 跳过当前分P剩余部分(局间采访/赛前评论等), 直接进入下一局
   if (btnSkip) {
@@ -935,7 +966,141 @@
     });
   }
 
-  /* ---- 快进/快退: 方向键；长按 → 2 倍速持续播放 ---- */
+  /* ---- 画质选择 ----
+   * 可选项来自 B站 的 accept_quality(服务端 /api/playurl 的 qualities 字段),
+   * **不自己编档位**: 只列这个视频真实能下发的画质。
+   * 换画质 = 重新取直链 + 保持当前虚拟位置续播, 不能让用户从头开始看。
+   */
+  var qualityList = [];       // [{qn,label}] 当前视频可选档位
+  var curQuality = 0;         // 实际在用的画质码(服务端下发值, 可能低于请求值)
+
+  function qualityLabel(qn) {
+    for (var i = 0; i < qualityList.length; i++) {
+      if (qualityList[i].qn === qn) { return qualityList[i].label; }
+    }
+    return qn ? (qn + 'P') : '';
+  }
+  function syncQualityBtn() {
+    var b = $('btn-quality');
+    if (!b) { return; }
+    if (!qualityList.length) {
+      b.textContent = '画质';
+      b.title = '该视频没有可选的画质档位';
+      return;
+    }
+    // 按钮上只写分辨率主体(如 "720P"), 完整描述放进菜单和 title
+    var lab = qualityLabel(curQuality) || '画质';
+    b.textContent = lab.replace(/^(高清|超清|清晰|流畅|真彩)\s*/, '');
+    b.title = '画质：' + lab;
+  }
+  function renderQualityMenu() {
+    var m = $('menu-quality');
+    if (!m) { return; }
+    m.innerHTML = '';
+    if (!qualityList.length) {
+      m.innerHTML = '<div class="cmenu-item" style="color:#5c6472;cursor:default">无可选画质</div>';
+      return;
+    }
+    qualityList.forEach(function (q) {
+      var el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'cmenu-item' + (q.qn === curQuality ? ' on' : '');
+      el.textContent = q.label;
+      el.disabled = (q.qn === curQuality);
+      el.addEventListener('click', function () {
+        closeMenus();
+        setQuality(q.qn);
+      });
+      m.appendChild(el);
+    });
+  }
+
+  // 换画质: 保持在同一个分P 的同一秒, 只换直链。
+  // 为什么不能走 doApply: 那会重新选场次、重载弹幕、从 0 开始播。
+  function setQuality(qn) {
+    if (!state.applied || !state.curBv) { return; }
+    if (qn === curQuality) { return; }
+    var keepSeg = state.segIdx;
+    var keepTime = videoEl.currentTime || 0;
+    var wasPlaying = !videoEl.paused;
+    showToast('正在切换到 ' + qualityLabel(qn) + '…');
+    fetchPlay(state.curBv, 0, qn).then(function (play) {
+      var segs = (play.urls && play.urls.length) ? play.urls.slice() : [play.url];
+      var lens = (play.seg_lengths && play.seg_lengths.length === segs.length)
+        ? play.seg_lengths.slice() : [play.duration || 0];
+      // 分段数变了(极罕见)就不能按 segIdx 续播, 退回按虚拟轴位置
+      var vPos = (keepSeg < state.segStarts.length)
+        ? (state.segStarts[keepSeg] || 0) + keepTime : 0;
+      state.segs = segs;
+      state.segLens = lens;
+      state.segStarts = [0];
+      for (var s = 1; s < segs.length; s++) {
+        state.segStarts.push(state.segStarts[s - 1] + lens[s - 1]);
+      }
+      state.duration = typeof play.duration === 'number' ? play.duration : 0;
+      qualityList = (play.qualities || []).slice();
+      curQuality = play.quality || qn;
+      syncQualityBtn();
+      renderQualityMenu();
+      // 恢复位置: 在同一个分P 内就按原秒数回去, 否则按虚拟轴换算
+      state.segIdx = Math.min(keepSeg, segs.length - 1);
+      var local = (state.segIdx === keepSeg) ? keepTime : (vPos - (state.segStarts[state.segIdx] || 0));
+      state.pendingSeekMs = Math.max(0, local);
+      state.pendingAutoplay = wasPlaying;
+      triedFallback = false;
+      videoEl.src = segs[state.segIdx];
+      videoEl.load();
+      lastMarkSeg = -1;
+      syncProgress();
+      showToast('画质：' + qualityLabel(curQuality));
+    }).catch(function (e) {
+      showToast('切换画质失败：' + (e && e.message ? e.message : '网络错误'));
+    });
+  }
+
+  /* ---- 控制条弹出菜单(画质/倍速/弹幕设置) ----
+   * 三个菜单共用一套开关逻辑: 同时只开一个, 点外面关掉, Esc 关掉。
+   * 全屏时菜单是 z-index 最高的元素, 不会被控制条的自动隐藏规则影响
+   * (隐藏只作用于 #ctrl-bar 的 opacity, 而菜单在它内部 —— 所以鼠标进菜单时
+   *  要让 fsReveal 持续刷新, 见下面的 hover 判断)。
+   */
+  var MENU_IDS = ['menu-quality', 'menu-rate', 'panel-dm-set'];
+
+  function closeMenus() {
+    MENU_IDS.forEach(function (id) {
+      var el = $(id);
+      if (el) { el.hidden = true; }
+    });
+  }
+  function toggleMenu(id) {
+    var el = $(id);
+    if (!el) { return; }
+    var willOpen = el.hidden;
+    closeMenus();
+    if (!willOpen) { return; }
+    if (id === 'menu-rate') { renderRateMenu(); }
+    if (id === 'menu-quality') { renderQualityMenu(); }
+    el.hidden = false;
+  }
+  // 点控制条以外的地方关菜单。用 pointerdown 而非 click: 拖进度条时也要收起菜单。
+  document.addEventListener('pointerdown', function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest('.cmenu-wrap')) { return; }
+    closeMenus();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeMenus(); }
+  });
+  var btnQualityEl = $('btn-quality');
+  if (btnQualityEl) {
+    btnQualityEl.addEventListener('click', function () { toggleMenu('menu-quality'); });
+  }
+  var btnDmSetEl = $('btn-dm-set');
+  if (btnDmSetEl) {
+    btnDmSetEl.addEventListener('click', function () { toggleMenu('panel-dm-set'); });
+  }
+
+
   var LONGPRESS_MS = 350;      // 按下超过该时长视为"长按加速", 松手不再触发单次跳转
   var SEEK_STEP = 5;           // 单击 ←/→ 跳 5 秒
   var FAST_STEP = 15;          // Shift+←/→ 跳 15 秒(与主流播放器一致)
@@ -1044,8 +1209,88 @@
     toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, ms || 2600);
   }
 
-  /* ---------------- 弹幕引擎 ---------------- */
-  var settings = { area: 1, opacity: 0.9, size: 26, density: 1 };
+  /* ---------------- 时间标记(一血/大龙/水晶…) ----------------
+   * 来源: B站 看点(view_points), 见 server.py 的 /api/markers。
+   * 两条原则:
+   *   1) 标记是**增强**, 不是依赖: 接口失败/没数据就什么都不画, 绝不弹错、绝不挡播放。
+   *   2) 防剧透开启时**一根都不画** —— 一血/大龙/推掉水晶这些标记本身就会提前泄露
+   *      局势和结局(例: 07:30 就出现"击杀纳什男爵", 还没看到那儿就知道谁赢了)。
+   */
+  var markers = [];
+
+  function loadMarkers(bv) {
+    markers = [];
+    renderProgMarks();
+    if (!bv) { return; }
+    getJson('/api/markers?bv=' + enc(bv)).then(function (j) {
+      if (!j || !j.ok || state.curBv !== bv) { return; }   // 已切场: 丢弃迟到结果
+      markers = (j.markers || []).slice();
+      renderProgMarks();
+      showToast(j.count ? ('已载入 ' + j.count + ' 个时间标记') : '这个回放没有官方时间标记');
+    }).catch(function () { /* 标记拿不到不影响播放 */ });
+  }
+
+  // 把标记画到进度条上。位置必须按**当前分P**换算: 标记的 at 是整条虚拟时间轴
+  // 上的秒数, 而进度条现在只表示当前分P(见 syncProgress 的注释), 两者分母不同,
+  // 直接拿 at/state.duration 会全部挤在前几像素。
+  function renderProgMarks() {
+    var box = $('prog-marks');
+    if (!box) { return; }
+    box.innerHTML = '';
+    if (settings.spoiler || !markers.length) { return; }
+    var segLen = state.segLens[state.segIdx] || 0;
+    if (!(segLen > 0)) { return; }
+    var segStart = state.segStarts[state.segIdx] || 0;
+    markers.forEach(function (m) {
+      var local = m.at - segStart;
+      if (local < 0 || local > segLen) { return; }
+      var el = document.createElement('i');
+      el.className = 'prog-mark ' + (m.kind === 'kill' ? 't-kill' : 't-obj');
+      el.style.left = (local / segLen * 100) + '%';
+      el.title = fmtCnt(Math.floor(m.at)) + ' ' + m.label +
+                 (m.team ? (' · ' + m.team) : '');
+      box.appendChild(el);
+    });
+  }
+
+  /* ---------------- 防剧透 ----------------
+   * 用户要求默认开启。要藏两样东西, 因为它们都会泄露"打到第几局、谁赢了":
+   *   - 进度条上的时间标记(一血/大龙/水晶 → 直接看出局势与结局)
+   *   - 总览里的分P 色块(第一局/第二局/第三局 → 直接看出打了几局)
+   * 保留: 场次色带(谁 vs 谁)与密度曲线 —— 那是"今晚有哪几场", 不泄露比分。
+   */
+  function syncSpoilerBtn() {
+    var b = $('btn-spoiler');
+    if (!b) { return; }
+    b.classList.toggle('off', !settings.spoiler);
+    b.textContent = settings.spoiler ? '防剧透' : '已关闭';
+    b.title = settings.spoiler
+      ? '防剧透已开启：隐藏时间标记与分P 色块（点击关闭）'
+      : '防剧透已关闭：显示时间标记与分P 色块（点击开启）';
+  }
+  function setSpoiler(on) {
+    settings.spoiler = !!on;
+    syncSpoilerBtn();
+    saveSettings();
+    renderProgMarks();
+    drawOverview();
+    showToast(settings.spoiler ? '防剧透已开启' : '防剧透已关闭');
+  }
+  var btnSpoilerEl = $('btn-spoiler');
+  if (btnSpoilerEl) {
+    btnSpoilerEl.addEventListener('click', function () { setSpoiler(!settings.spoiler); });
+  }
+
+
+  // 说明: 字体选的是系统黑体, 不提供"选字体"(用户明确说不用), 但**描边可关** ——
+  // 白字加 4px 黑边在浅色画面上会糊成一坨, 关掉更清楚。
+  var settings = {
+    area: 1, opacity: 0.9, size: 26, density: 1,
+    speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
+    stroke: true,      // 文字描边
+    spoiler: true      // 防剧透(默认开): 隐藏进度条标记与总览分P 色块
+  };
+  var DM_DEFAULTS = { area: 1, opacity: 0.9, size: 26, density: 1, speed: 1, stroke: true };
   var FONT = 'bold 26px "Microsoft YaHei", "PingFang SC", sans-serif';
   var TRACK_H = 34;
   var MAX_ONSCREEN = 160;
@@ -1058,6 +1303,9 @@
         if ([1, 0.5, 0.25, 0.1].indexOf(+saved.density) >= 0) { settings.density = +saved.density; }
         if (isFinite(saved.opacity)) { settings.opacity = Math.min(1, Math.max(0.2, +saved.opacity)); }
         if ([20, 26, 34].indexOf(+saved.size) >= 0) { settings.size = +saved.size; }
+        if (isFinite(saved.speed)) { settings.speed = Math.min(2, Math.max(0.6, +saved.speed)); }
+        if (typeof saved.stroke === 'boolean') { settings.stroke = saved.stroke; }
+        if (typeof saved.spoiler === 'boolean') { settings.spoiler = saved.spoiler; }
         if (isFinite(saved.rate) && saved.rate >= 0.25 && saved.rate <= 4) { state.rate = +saved.rate; }
         if (typeof saved.autoAdvance === 'boolean') { state.autoAdvance = saved.autoAdvance; }
       }
@@ -1070,8 +1318,9 @@
     try {
       localStorage.setItem('dm-player-settings',
         JSON.stringify({ area: settings.area, opacity: settings.opacity,
-          size: settings.size, density: settings.density, rate: state.rate,
-          autoAdvance: state.autoAdvance }));
+          size: settings.size, density: settings.density, speed: settings.speed,
+          stroke: settings.stroke, spoiler: settings.spoiler,
+          rate: state.rate, autoAdvance: state.autoAdvance }));
     } catch (e) {}
   }
   function reflectSettings() {
@@ -1083,6 +1332,11 @@
     if (dsel) { dsel.value = String(settings.density); }
     rngDmOpacity.value = String(Math.round(settings.opacity * 100));
     selDmSize.value = String(settings.size);
+    var spd = $('rng-dm-speed');
+    if (spd) { spd.value = String(Math.round(settings.speed * 100)); }
+    var chk = $('chk-dm-stroke');
+    if (chk) { chk.checked = !!settings.stroke; }
+    syncSpoilerBtn();
     active.length = 0;
     resetTracks();
   }
@@ -1143,9 +1397,13 @@
     g.font = FONT;
     g.textBaseline = 'middle';
     g.lineJoin = 'round';
-    g.lineWidth = 4;
-    g.strokeStyle = '#000';
-    g.strokeText(text, 4, TRACK_H / 2);
+    // 描边可关(用户要求"可以调整是否描边")。关掉时只在浅色画面上可能看不清,
+    // 但那是用户自己的选择; 开着时 4px 黑边在最亮的画面里也压得住。
+    if (settings.stroke) {
+      g.lineWidth = 4;
+      g.strokeStyle = '#000';
+      g.strokeText(text, 4, TRACK_H / 2);
+    }
     g.fillStyle = '#fff';
     g.fillText(text, 4, TRACK_H / 2);
     return { c: c, dw: tw + 8, dh: TRACK_H };
@@ -1162,7 +1420,10 @@
     if (d.ty === 'sc') { showSc(d); return; }
     if (!state.dmOn) { return; }
     var sp = makeSprite(d.t);
-    var it = { sp: sp, w: sp.dw, x: W + 4, y: 0, v: Math.max(140, W / 9) };
+    // 速度倍率: 基准速度与画布宽度挂钩(宽屏跑得快, 保持"穿过屏幕的时间"接近),
+    // 再乘用户的 speed 设置。调慢可以让密集时段的弹幕看得清。
+    var baseV = Math.max(140, W / 9) * settings.speed;
+    var it = { sp: sp, w: sp.dw, x: W + 4, y: 0, v: baseV };
     var slot = -1;
     for (var i = 0; i < tracks.length; i++) {
       var last = tracks[i];
@@ -1402,10 +1663,15 @@
   function drawOverview() {
     var w = ovCanvas.clientWidth, h = ovCanvas.clientHeight;
     if (w <= 0 || h <= 0) { return; }
+    // 防剧透开启时只画"场次色带"(谁 vs 谁), 不画分P 色块(第一局/第二局…) ——
+    // 分P 的个数与名字本身就泄露了"打了几局、有没有被零封"。此时轨道区只剩色带,
+    // 高度也该跟着收回去, 否则色带下方留一片空。
+    var hideBlocks = !!settings.spoiler;
+    var lanes = hideBlocks ? [] : (ov.layout || []);
     // 有轨道块时把容器加高, 给分P 色块留出空间(否则密度图吃满 118px, 块高度为负画不出)
     var wrapEl = document.getElementById('ov-wrap');
     if (wrapEl) {
-      var wantLanes = (ov.layout || []).length > 0;
+      var wantLanes = lanes.length > 0;
       if (wantLanes && !wrapEl.classList.contains('has-lanes')) {
         wrapEl.classList.add('has-lanes');
         h = ovCanvas.clientHeight;      // 加高后重新取高度
@@ -1494,7 +1760,7 @@
     // 再清空会把标记从命中表里抹掉, 表现为"看得见竖线但点不到/hover 无提示"。
 
     // 轨道底纹 + 场次分界线
-    if (ov.tracks.length) {
+    if (lanes.length) {
       for (var li = 0; li < laneN; li++) {
         var ly = laneTop + li * (laneH + 3);
         g.fillStyle = 'rgba(255,255,255,.035)';
@@ -1502,7 +1768,7 @@
       }
     }
 
-    (ov.layout || []).forEach(function (it) {
+    lanes.forEach(function (it) {
       var tr = it.tr, b = it.b;
       var y = laneTop + it.lane * (laneH + 3);
       var x0 = ovX(it.start), x1 = ovX(it.end);
@@ -1876,12 +2142,21 @@
   btnPlay.addEventListener('click', function () {
     if (videoEl.paused) { videoEl.play().catch(noop); } else { videoEl.pause(); }
   });
-  function syncPlayLabel() { btnPlay.textContent = videoEl.paused ? '播放' : '暂停'; }
+  function syncPlayLabel() {
+    // 图标按钮: 暂停时显示 ▶, 播放中显示 ‖。
+    // 不用 ❚(U+275A)/⏸ 这类生僻字形 —— Windows 上部分字体缺字会变成豆腐块。
+    btnPlay.textContent = videoEl.paused ? '▶' : '‖';
+    btnPlay.title = (videoEl.paused ? '播放' : '暂停') + '（空格）';
+  }
   videoEl.addEventListener('play', syncPlayLabel);
   videoEl.addEventListener('pause', syncPlayLabel);
+  videoEl.addEventListener('volumechange', syncMuteIcon);
 
   videoEl.addEventListener('timeupdate', function () {
-    if (!isFinite(state.duration) || state.duration <= 0) { return; }
+    // 判据用**当前分P 的长度**, 不用 state.duration(整场总和):
+    // 单分P 播放时 duration 可能为 0/NaN, 那种情况下原来的守卫会直接 return,
+    // 进度条就永远不动了。
+    if (!((state.segLens[state.segIdx] || 0) > 0)) { return; }
     // 进度条按**当前分P**算, 不按整场总和。
     // 一场回放通常是多个分P(第一局 2905s + 赛后采访 386s ...), 求和后是第一局的
     // 1.3 倍 —— 第一局播完时进度条只走到 76%, 看起来"播完了还没走完";
@@ -1914,11 +2189,19 @@
   rngVol.addEventListener('input', function () {
     videoEl.volume = (+rngVol.value) / 100;
     videoEl.muted = false;
-    btnMute.textContent = '音量';
+    syncMuteIcon();
   });
+  // 音量用图标: 新控制条更紧凑, "音量/已静音"四个字会把进度条挤窄。
+  function syncMuteIcon() {
+    var v = videoEl.muted || videoEl.volume === 0;
+    btnMute.textContent = v ? '🔇' : '🔊';
+    btnMute.title = v ? '取消静音' : '静音';
+    btnMute.classList.toggle('off', v);
+  }
   btnMute.addEventListener('click', function () {
     videoEl.muted = !videoEl.muted;
-    btnMute.textContent = videoEl.muted ? '已静音' : '音量';
+    if (!videoEl.muted && videoEl.volume === 0) { videoEl.volume = 1; rngVol.value = '100'; }
+    syncMuteIcon();
   });
 
   // 全屏: 整容器(含弹幕层)
@@ -2016,6 +2299,30 @@
       settings.density = parseFloat(selDmDensity.value) || 1; reflectSettings(); saveSettings();
     });
   }
+  var rngDmSpeed = $('rng-dm-speed');
+  if (rngDmSpeed) {
+    rngDmSpeed.addEventListener('input', function () {
+      settings.speed = Math.min(2, Math.max(0.6, (+rngDmSpeed.value) / 100));
+      // 速度只影响新入场的弹幕(见 emitDm 里的 v), 场上已有的不跳变, 不重建精灵。
+      saveSettings();
+    });
+  }
+  var chkDmStroke = $('chk-dm-stroke');
+  if (chkDmStroke) {
+    chkDmStroke.addEventListener('change', function () {
+      settings.stroke = !!chkDmStroke.checked;
+      // 描边是烘焙进精灵的, 改设置后场上旧弹幕仍是旧样式 —— 清空重来最直观
+      reflectSettings(); saveSettings();
+    });
+  }
+  var btnDmReset = $('btn-dm-reset');
+  if (btnDmReset) {
+    btnDmReset.addEventListener('click', function () {
+      Object.keys(DM_DEFAULTS).forEach(function (k) { settings[k] = DM_DEFAULTS[k]; });
+      reflectSettings(); saveSettings();
+      showToast('弹幕设置已恢复默认');
+    });
+  }
 
   function setDmOn(on) {
     state.dmOn = on;
@@ -2058,8 +2365,12 @@
   /* ---------------- 启动 ---------------- */
   function init() {
     applySettings();
-    // 防剧透开关初值来自持久化设置(默认显示事件标记)
+    // 防剧透开关初值来自持久化设置(默认开)
     elClock.textContent = fmtClock(new Date());
+    syncPlayLabel();
+    syncMuteIcon();
+    syncQualityBtn();
+    syncSpoilerBtn();
     loadDays();
     requestAnimationFrame(loop);
   }

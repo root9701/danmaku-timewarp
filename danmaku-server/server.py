@@ -113,17 +113,15 @@ AFP_CACHE_DIR = Path(os.environ.get("AFP_CACHE", "").strip()
                      or (Path(tempfile.gettempdir()) / "danmaku_afp_cache"))
 AUTO_MIN_CONFIDENCE = float(_cfg("align", "min_confidence", default=2.0))
 AUTO_MIN_CONN_FRAMES = 50   # 连接段指纹至少 50 帧(约 10s @hop0.2)才参与对齐
-AUTO_MAX_OFFSET_SPREAD_SEC = 0.5  # 多个时间窗对齐出的 offset 允许的最大离散(秒)
-#   实测正常对齐时各窗离散为 0.0s(G3 三窗全 0.0), 因此 0.5s 已经非常宽松;
-#   超过它说明各窗匹配到了不同位置(伪峰/该时段根本不是这一局), 必须拒绝。
-AUTO_SEQUENCE_WINDOW_SEC = 1800   # 同一场次相邻分P 的最大合理间隔(30 分钟)
-#   赛后采访/赛前评论这类配件紧贴正赛, 不会隔几小时。用它把"紧邻候选"和其他时段的
-#   伪峰分开(实测 P2 赛后采访: 正确候选在 P1 结束后 0 分钟, 伪峰在 5~6 小时后)。
-AUTO_VOTE_SEGMENTS = 8            # 对齐时把回放切成几段去做投票
-#   切成短段比整段对齐可靠: 长篇里混进一段直播没播的内容, 整窗得分就被拉平。
-#   实测同一局比赛, 全长对齐 conf=1.01(判为不匹配), 3 分钟短段逐段对齐 conf 高到 5~9。
-AUTO_VOTE_TOLERANCE_SEC = 30      # 投票时"指向同一处"的容差(秒)
-#   30 秒足够吸收不同片段算出的亚秒级偏差, 又远小于相邻两场比赛的间隔(几十~上百分钟)。
+AUTO_VOTE_SEGMENTS = int(_cfg("align", "vote_segments", default=8))
+#   对齐时把回放切成几段去做投票。切成短段比整段对齐可靠: 长篇里混进一段直播没播的
+#   内容, 整窗得分就被拉平。实测同一局比赛, 全长对齐 conf=1.01(判为不匹配),
+#   3 分钟短段逐段对齐 conf 高到 5~9。
+AUTO_VOTE_TOLERANCE_SEC = float(_cfg("align", "vote_tolerance_sec", default=30))
+#   投票时"指向同一处"的容差(秒)。30 秒足够吸收不同片段算出的亚秒级偏差,
+#   又远小于相邻两场比赛的间隔(几十~上百分钟)。
+if AUTO_VOTE_SEGMENTS < 2:
+    raise SystemExit("config.json 的 align.vote_segments 至少为 2")
 # 参与对齐的音频时长下限: 测过纯随机噪声在"片段长度接近回放长度"时可达 conf 2.5~5.5,
 # 光靠置信度挡不住。真实比赛对齐通常能匹配几十秒以上, 故再要求匹配时长足够。
 AUTO_MIN_MATCH_SEC = 20.0
@@ -214,6 +212,8 @@ def load_cookie_header() -> str:
 # 两个请求同时 read-modify-write → tmp 互相覆盖 → replace 出交错 JSON,
 # 而 load_matches 对解析失败是**静默返回空表**, 表现为"全部对齐记录凭空消失"。
 _MATCHES_LOCK = threading.Lock()
+# 自动校准的全局互斥(asyncio 侧): 见 handle_autocalign。
+_AUTOCALIGN_LOCK = asyncio.Lock()
 
 
 def load_matches() -> dict:
@@ -344,7 +344,6 @@ SESSION_DIR_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4})_(\d+)(?:$|_test_(\d{6
 V3_SESSION_RE = re.compile(r"^(?:(\d{4}-\d{2}-\d{2})T(\d{4})_)?(\d+)$")
 TEST_ROOT = "_test"
 MANIFEST_NAME = "manifest.json"
-SCHEMA_VERSION = 1
 
 
 def _looks_like_session_dir(p: Path) -> bool:
@@ -1589,6 +1588,8 @@ async def handle_discover(request: web.Request) -> web.Response:
     raw_date = (request.query.get("date") or "").strip()
     if not DATE_RE.fullmatch(raw_date):
         raise ApiError("参数 date 非法(应为 YYYY-MM-DD)")
+    if not DISCOVER_ENABLED:
+        raise ApiError("赛程自动发现已关闭(config.json 的 discover.enabled = false)")
     # 前端传的是**数据目录日**(取文件要用它), 但赛程/Riot 窗口是按**比赛日**组织的。
     # 直接用目录日会去抓前一天的对阵: 例如目录 2026-10-25 装的是 10-26 凌晨的比赛,
     # 若按 10-25 去 discover, 拿到的是"TES vs AL"那一晚的场次, 与正在看的比赛完全不符,
@@ -1856,7 +1857,7 @@ def _session_density(date: str, file: str, bin_sec: int = OVERVIEW_BIN_SEC) -> d
     first_ts = last_ts = 0
     stamps = []
     total = 0
-    for p in paths:
+    for p in paths[:OVERVIEW_MAX_FILES]:
         try:
             with open_text(p) as f:
                 for line in f:
@@ -1988,7 +1989,7 @@ async def handle_overview(request: web.Request) -> web.Response:
                     offset = float(ao)
             else:
                 # 兼容旧记录: 会话级 key 里只存过一场, 或老格式没有 bv 维度
-                for akey, aentry in align.items():
+                for aentry in align.values():
                     if not isinstance(aentry, dict):
                         continue
                     if not bv or str(aentry.get("bv") or "") != bv:
@@ -2395,73 +2396,8 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     return fp, f"mp4直链({len(urls)}段)"
 
 
-class DanmakuDensity:
-    """把某会话的弹幕按分钟分桶, 供对齐时判断"哪一段才是真比赛"。
-
-    比赛进行时弹幕密度远高于赛后闲聊/重播; 当音频对齐给出多个自洽候选时,
-    密度是有效的第二信号(实测能把真场次和伪峰区分开: 6.8 万 vs 1.4 万条)。
-    """
-
-    def __init__(self, bins: dict, bin_sec: int = 60, anchor_ms: int = 0):
-        self.bins = bins            # {相对 anchor 的桶序号: 条数}
-        self.bin_sec = bin_sec
-        self.anchor_ms = int(anchor_ms or 0)
-
-    @classmethod
-    def build(cls, date: str, file: str, anchor_ms: int, bin_sec: int = 60):
-        """扫该会话全部弹幕, 以 anchor 为零点按 bin_sec 分桶。"""
-        buckets = {}
-        try:
-            paths = danmaku_paths(date, file)
-        except Exception:
-            return None
-        if not paths or not anchor_ms:
-            return None
-        for p in paths:
-            try:
-                with open_text(p) as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            o = json.loads(line)
-                        except ValueError:
-                            continue
-                        t = o.get("ts")
-                        if not isinstance(t, (int, float)) or t <= 0:
-                            continue
-                        k = int((int(t) - anchor_ms) / 1000 // bin_sec)
-                        buckets[k] = buckets.get(k, 0) + 1
-            except (OSError, EOFError, gzip.BadGzipFile, zlib.error):
-                continue
-        return cls(buckets, bin_sec, anchor_ms) if buckets else None
-
-    def density_for(self, offset_ms: int, duration_sec: float) -> float:
-        """某个起点(offset_ms = "回放 0 秒"对应的墙钟毫秒)对应区间的弹幕总量。
-
-        注意桶号是**相对 anchor** 的: 必须先把墙钟减去 anchor 再除以 bin_sec,
-        直接拿绝对时间戳去除会落到不存在的桶上, 结果恒为 0(已踩过)。
-        """
-        start_sec = (int(offset_ms) - self.anchor_ms) / 1000.0
-        start_bin = int(start_sec // self.bin_sec)
-        n_bins = max(1, int(duration_sec // self.bin_sec))
-        return float(sum(self.bins.get(start_bin + i, 0) for i in range(n_bins)))
-
-    def density_per_min(self, offset_ms: int, duration_sec: float) -> float:
-        """区间内的**每分钟平均弹幕数**, 用于判断"这段像不像真比赛"。
-
-        实测参考值(2026-10-26 那晚):
-          真实比赛时段  5000~11000 条/10分钟 = 500~1100 条/分
-          赛后闲聊/重播  200~250 条/分
-        """
-        dur_min = max(1.0, duration_sec / 60.0)
-        return self.density_for(offset_ms, duration_sec) / dur_min
-
-
 def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
-                    density=None, anchor_ms=None, later_than_ms=None,
-                    min_density=None, window_ms=None):
+                    anchor_ms=None, window_ms=None):
     """把一个分P 的回放指纹对齐到直播 afp 上, 返回它在直播时间轴中的起始位置。
 
     返回 dict:
@@ -2571,16 +2507,18 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
                        "(各片段都只有单峰, 可能这场直播没有音频或指纹损坏)")
 
     # ---- 按容差聚类投票, 得到「自洽位置」 ----
+    # **锚定式聚类**: 每票只与簇的**第一个**位置比, 不做链式传递。
+    # 链式(与簇内最新一票比)会让 100/130/160/190 这种每票只差 30 秒的散票
+    # 一路串成同一簇, 簇内离散累积到 90 秒仍算"一致" —— 实测随机噪声的 4 张
+    # 烂票(conf≈1.2)就是这样凑够票数被判通过的。
     votes.sort()
-    clusters = []           # [[中心秒, [置信度...], [段序号...], [各票位置...]]]
+    clusters = []           # [[锚点秒(决定簇边界), [置信度...], [段序号...], [各票位置...]]]
     for base, i, conf in votes:
         if clusters and base - clusters[-1][0] <= AUTO_VOTE_TOLERANCE_SEC:
             c = clusters[-1]
             c[1].append(conf)
             c[2].append(i)
-            c[3].append(base)
-            # 中心取簇内各票的中位数(避免被单个离群票拉走)
-            c[0] = c[3][len(c[3]) // 2]
+            c[3].append(base)      # 锚点 c[0] 不动, 边界由首个位置决定
         else:
             clusters.append([base, [conf], [i], [base]])
 
@@ -2619,6 +2557,16 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         confs = sorted(c[1])
         max_conf = confs[-1]
         n_strong = len([x for x in confs if x >= strong_conf])
+        # 簇内实际离散: 锚定聚类已保证它 <= 容差, 这里再卡一道硬上限,
+        # 把"票数够但各自偏得远"的伪一致挡掉(实测随机噪声 spread 达 47.58 秒)。
+        c_spread = max(c[3]) - min(c[3])
+        if c_spread > AUTO_VOTE_TOLERANCE_SEC:
+            why[id(c)] = "簇内离散 %.1fs 超容差" % c_spread
+            continue
+        # 置信度下限: 随机水平约 1.1~1.35, 低于 min_conf 的簇一律不算证据。
+        if max_conf < min_conf:
+            why[id(c)] = "最强票 conf=%.2f 低于下限 %.2f" % (max_conf, min_conf)
+            continue
         reasons = []
         if n_vote >= need:
             reasons.append("多段一致")
@@ -2633,10 +2581,19 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
             why[id(c)] = "、".join(reasons)
     if not solid:
         best_c = max(clusters, key=cluster_score)
+        best_n = len(best_c[1])
+        best_conf = max(best_c[1])
+        if best_n >= n_seg and best_conf < min_conf:
+            # 全票"一致"但置信度只是随机水平 —— 典型是音频根本不存在/全是噪声,
+            # 各段都退化到同一个默认位置。文案必须说清, 否则看着像算法自相矛盾。
+            raise ApiError(
+                "该分P 的音频在直播里匹配不到(全部 %d 段都落在同一处, 但最强票 conf=%.2f "
+                "仅达随机水平, 低于下限 %.2f); 该时段直播可能没有这段音频"
+                % (best_n, best_conf, min_conf))
         raise ApiError(
             "该分P 的音频在直播里找不到自洽位置(最多 %d/%d 段指向同一处, 最强票 conf=%.2f); "
             "可能是这场直播没有转播, 或采集期间音频断流"
-            % (len(best_c[1]), n_seg, max(best_c[1])))
+            % (best_n, n_seg, best_conf))
 
     solid.sort(key=lambda c: c[0])          # 按时间升序 -> 取最早
 
@@ -2665,6 +2622,15 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
 
     chosen = solid[0]
 
+    # ---- 音频时长下限: 拦随机噪声 ----
+    # 纯随机噪声在"片段长度接近回放长度"时 conf 也能到 2.5~5.5, 光靠置信度挡不住。
+    # 真实比赛对齐通常能命中几十秒以上, 故再要求参与投票的音频总时长达标。
+    matched_sec = len(chosen[1]) * seg_frames * hop
+    if matched_sec < min_match_sec:
+        raise ApiError(
+            "该分P 找到的位置只有 %.0f 秒音频吻合(低于下限 %.0f 秒), 证据不足, 未采纳"
+            % (matched_sec, min_match_sec))
+
     # ---- 一致性: 选中的位置内部各票离散不能太大 ----
     same = [v for v in votes if abs(v[0] - chosen[0]) <= AUTO_VOTE_TOLERANCE_SEC]
     spread = max(v[0] for v in same) - min(v[0] for v in same)
@@ -2675,7 +2641,7 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         # 置信度给**最强票**(不是中位数): 低分票也有定位价值, 但它们会把中位数拉到
         # 随机水平(~1.1), 让"已对齐"看起来像没对齐。最强票代表这次定位的证据强度。
         "confidence": min(float(max(chosen[1])), 999.0),
-        "matched_seconds": len(chosen[1]) * seg_frames * hop,
+        "matched_seconds": matched_sec,
         "conn": 0,
         "t0_ms": int(round(chosen[0] * 1000)),
         "votes": len(chosen[1]),
@@ -2766,11 +2732,8 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         except ApiError:
             anchor_ms = 0
 
-    # 弹幕密度(第二信号): 多候选时用它区分"真比赛"与"重播/伪峰"
-    density = await asyncio.to_thread(DanmakuDensity.build, date, file, anchor_ms)
-    if density:
-        print(f"[autocalign] 弹幕密度直方图已就绪({len(density.bins)} 个分钟桶)",
-              flush=True)
+    # 多段投票自己会滤掉不稳定位置, 多个自洽候选取最早 —— 不需要弹幕密度做第二信号
+    # (旧版那套"密度判真比赛"是单标量对齐时代的补丁, 算法重写后已成死代码)。
 
     # b) 确定要对齐哪些分P
     info = await bili_view(session, bv)
@@ -2997,7 +2960,13 @@ async def handle_autocalign(request: web.Request) -> web.Response:
         raise ApiError("字段 page 应为整数")
     if page < 0:
         raise ApiError("字段 page 应 >= 0 (0=全部分P)")
-    result = await run_autocalign(date, file, bv, page, request.app["http"])
+    # 同一时刻只允许一次自动校准: 它会拉多段音轨 + 写 matches.json,
+    # 两个请求并发会重复下载并互相覆盖写回结果(前端按钮有 busy 锁, 但那只是
+    # 客户端约束 —— 换个标签页或直接 curl 就绕过了)。
+    if _AUTOCALIGN_LOCK.locked():
+        raise ApiError("已有一次自动校准在进行中, 请等它结束")
+    async with _AUTOCALIGN_LOCK:
+        result = await run_autocalign(date, file, bv, page, request.app["http"])
     return api_ok(**result)
 
 
@@ -3197,8 +3166,8 @@ def main() -> None:
             print(f"  [启动失败] 端口 {PORT} 已被占用")
             print("=" * 60)
             print("  多半是已经有一个回放台在运行了。可以:")
-            print(f"    1. 回去找那个旧窗口, 直接关掉它; 或")
-            print(f"    2. 双击「退出回放台.bat」一键清理; 或")
+            print("    1. 回去找那个旧窗口, 直接关掉它; 或")
+            print("    2. 双击「退出回放台.bat」一键清理; 或")
             print(f"    3. 命令行查是谁占的: netstat -ano | findstr :{PORT}")
             print()
             print("  如果你就想同时开两个, 改 config.json 的 port 再启动。")

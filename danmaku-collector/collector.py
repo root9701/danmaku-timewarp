@@ -53,7 +53,8 @@ WS_TIMEOUT = 15
 HEADER = struct.Struct("!IHHII")
 HEADER_LEN = 16
 # op: 2=心跳(发送,空body) 3=心跳响应(仅喂看门狗) 5=业务消息(可能压缩) 7=认证(发送) 8=认证响应(code!=0即失败)
-OP_HEARTBEAT, OP_HEARTBEAT_REPLY, OP_MESSAGE, OP_AUTH, OP_AUTH_REPLY = 2, 3, 5, 7, 8
+# 注意 3 不回包给业务层, 只在 _watchdog_loop 里被"收到任何包"这一事实覆盖, 故无对应常量。
+OP_HEARTBEAT, OP_MESSAGE, OP_AUTH, OP_AUTH_REPLY = 2, 5, 7, 8
 PROTOVER_ZLIB, PROTOVER_BROTLI = 2, 3
 HEARTBEAT_SEC, WATCHDOG_SEC = 30, 60  # 心跳间隔 / 连续无任何包(含心跳响应)判死的时长
 FLUSH_SEC, PROGRESS_SEC, RECHECK_SEC = 30, 60, 60
@@ -70,9 +71,6 @@ EVENT_KWS = ("一血", "GG", "gg", "大龙", "水晶", "团灭", "五杀", "翻�
 DEFAULT_CONFIG = {"rooms": [], "earliest_start": "now", "latest_end": "09:00",
                   "poll_interval_sec": 60, "data_dir": "data", "log_dir": "logs",
                   "audio_fp": True, "slice_minutes": 60}
-# 跨零点会话归属: 凌晨 00:00-10:59 的录制内容属"前一晚比赛", 目录/日期语义归到比赛日。
-# 实现: 会话 record_start 在 [NIGHT_CUTOFF_START, NIGHT_CUTOFF_END) 时, 会话日 = 昨天日期。
-NIGHT_CUTOFF_START, NIGHT_CUTOFF_END = 0, 11
 # 滚动切片文件名后缀 _sHHMM(如 7734200_s0030.jsonl); meta 名派生时剥离
 SLICE_SUFFIX_RE = re.compile(r"(_s\d{4}|_run\d+)$")
 log = logging.getLogger("collector")

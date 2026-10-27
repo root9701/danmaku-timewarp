@@ -1220,6 +1220,13 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
                 it["pages"] = rec["pages"]
             if rec.get("page_errors"):
                 it["page_errors"] = rec["page_errors"]
+            # 对齐时 B 站实际有几个分P(用于显示"已对齐 1/2")。
+            # 不在这里实时请求 bili_view: matchlist 必须毫秒级返回(前端下拉框依赖它),
+            # 而分P 总数在对齐时就已经知道了, 直接落盘复用即可。
+            if isinstance(rec.get("total_pages"), int):
+                it["total_pages"] = rec["total_pages"]
+            elif it.get("pages"):
+                it["total_pages"] = len(it["pages"])
             # 失败标记只在**完全没有对齐结果**时才对外报。
             # 历史缺陷: 一旦某次全失败写过 align_failed, 之后即便对齐成功、pages 已有内容,
             # 下拉框仍显示「未对齐·直播可能未转播」—— 用户会以为功能坏了。
@@ -2854,6 +2861,9 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         entry = dict(matches["align"].get(match_key) or {})
         entry.update({"date": date, "file": file, "bv": bv,
                       "title": info.get("title") or entry.get("title") or ""})
+        # 记下 B 站当时实际有几个分P。前端据此显示「已对齐 1/2」并把缺的那页原因
+        # 挂到悬停提示上 —— 否则用户看到"已对齐"却少一局, 会以为程序漏了。
+        entry["total_pages"] = len(pages_meta) or len(page_results)
         # 本次有分P 成功 -> 清掉历史失败标记。否则一旦某次全失败写入过 align_failed,
         # 之后即使对齐成功, 下拉框也会永远显示「未对齐·直播可能未转播」。
         for k in ("align_failed", "align_error", "align_failed_at"):
@@ -2921,6 +2931,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                         "confidence": round(r["confidence"], 3)}
                 item["pages"] = item_pages
                 item["offset_sec"] = page_results[int(first_pg)]["offset_sec"]
+                item["total_pages"] = len(pages_meta) or len(page_results)
 
     if not await asyncio.to_thread(update_matches, _mut):
         raise ApiError("matches.json 写入失败")

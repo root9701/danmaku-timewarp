@@ -374,11 +374,19 @@
           //   已对齐   -> 显示分P 数
           var nPages = (m.pages && typeof m.pages === 'object')
             ? Object.keys(m.pages).length : 0;
+          // total_pages: B 站当前实际有几个分P(服务端 matchlist 现取)。
+          // 两者不一致 = 有分P 没对齐(常见: 赛前评论在直播开播前没录到, 或对齐被拒),
+          // 必须如实标出来 —— 否则用户看到"已对齐"却少了一局, 会以为程序漏了。
+          var totPages = (typeof m.total_pages === 'number') ? m.total_pages : 0;
+          var nErr = (m.page_errors && typeof m.page_errors === 'object')
+            ? Object.keys(m.page_errors).length : 0;
           var tag = '';
           if (!m.bv) {
             tag = '（缺 BV）';
           } else if (m.align_failed) {
             tag = '（未对齐 · 直播可能未转播）';
+          } else if (nPages && totPages && nPages < totPages) {
+            tag = '（已对齐 ' + nPages + '/' + totPages + ' 个分P）';
           } else if (nPages > 1) {
             tag = '（已对齐 ' + nPages + ' 个分P）';
           } else if (nPages === 1) {
@@ -387,7 +395,15 @@
             tag = '（未对齐）';
           }
           o.textContent = m.title + tag;
-          o.title = m.align_error || '';
+          // 悬停给出具体原因: 哪几页没对齐、为什么
+          var tips = [];
+          if (m.align_error) { tips.push(m.align_error); }
+          if (m.page_errors) {
+            Object.keys(m.page_errors).forEach(function (k) {
+              tips.push('P' + k + ' 未对齐: ' + m.page_errors[k]);
+            });
+          }
+          o.title = tips.join('\n');
           selMatch.appendChild(o);
         });
         selMatch.selectedIndex = 1;

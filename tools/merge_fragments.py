@@ -237,8 +237,24 @@ def execute(plan, apply):
     for it in items:
         afp_list.extend(it["afps"])
     afp_name = None
+    afp_params = {"hop": 0.4, "win": 0.4}
     if afp_list:
         afp_name = merge_afp(afp_list, dst, room)
+        # 参数从**合并后的文件自己的 hdr** 读, 不写死: 指纹参数已从 0.2 改成 0.4,
+        # 写死会让 manifest 与真实指纹不符(下游按 manifest 解读就拉伸时间轴)。
+        try:
+            with _open_text(dst / afp_name) as f:
+                for _ in range(5):
+                    ln = f.readline()
+                    if not ln:
+                        break
+                    _o = json.loads(ln)
+                    if _o.get("ty") == "hdr":
+                        afp_params = {"hop": float(_o.get("hop") or 0.4),
+                                      "win": float(_o.get("win") or 0.4)}
+                        break
+        except (OSError, ValueError):
+            pass
     # ---- 3. meta: 取最完整的那份改名 ----
     meta_name = None
     metas = []
@@ -271,7 +287,8 @@ def execute(plan, apply):
         "dm_count": total_dm,
         "sc_count": 0,
         "files": sorted(moved),
-        "afp": ({"file": afp_name, "hop": 0.2, "win": 0.4} if afp_name else None),
+        "afp": ({"file": afp_name, "hop": afp_params["hop"],
+                 "win": afp_params["win"]} if afp_name else None),
         "meta": meta_name,
         "collector_version": "merged",
         "ended_by": "latest_end",

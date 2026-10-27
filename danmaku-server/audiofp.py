@@ -17,7 +17,8 @@ afp 文件读取（服务端用，与采集端契约一致）：
 read_afp(path) -> {"conns": [{c, t0_ms, frames, n}], "params": {...}}
     path 为 .afp.jsonl 或其 gzip 压缩 .afp.jsonl.gz（按后缀/魔数透明识别）。
     JSONL 每行一个对象，四种行：
-      {"ty":"hdr","v":1,"sr":16000,"hop":0.2,"win":0.4,"bands":33}
+      {"ty":"hdr","v":1,"sr":16000,"hop":0.4,"win":0.4,"bands":33}
+      (旧数据是 hop=0.2, 读取方必须用本行的值, 不能套当前默认值)
       {"ty":"conn","c":0,"t0_ms":<毫秒墙钟,该连接段首样本对应的墙钟>}
       {"ty":"fp","c":0,"ts":<毫秒墙钟,本批首帧>,"n":<帧数>,"fp":"<base64>"}
       {"ty":"end","c":0,"reason":"reconnect|stop|error"}
@@ -116,7 +117,7 @@ def band_bin_edges(sr, nfft, n_bands=N_BANDS, f_lo=F_LO, f_hi=F_HI):
 # ----------------------------------------------------------------------------
 # 指纹
 # ----------------------------------------------------------------------------
-def fingerprint(samples, sr, hop_sec=0.2, win_sec=0.4):
+def fingerprint(samples, sr, hop_sec=0.4, win_sec=0.4):
     """计算频带能量指纹。
 
     返回 (N, 33) float32，N = 1 + (len-win)//hop。

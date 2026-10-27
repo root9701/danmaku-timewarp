@@ -50,7 +50,7 @@ data/
 | 文件 | 内容 |
 |---|---|
 | `{room}_s{HHMM}.jsonl.gz` | 整点切片，每行一条 JSON：`ts`(毫秒墙钟) / `un` / `t` / `ty`=dm\|sc |
-| `{room}.afp.jsonl` | 音频指纹，0.2s/帧 × 33 频带，整晚约 7MB，不落任何音频 |
+| `{room}.afp.jsonl` | 音频指纹，0.4s/帧 × 33 频带，整晚约 3.5MB，不落任何音频 |
 | `{room}.meta.json` | 统计摘要：条数/重连/切片清单/结束原因等 |
 | `manifest.json` | 契约文件：房间/起止时间/条数/文件清单/afp 参数 |
 

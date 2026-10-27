@@ -208,6 +208,66 @@ def test_segmented_mapping_no_drift() -> None:
     check("单标量确实会漂移(>100s)", abs(drift) > 100, f"漂移 {drift:.1f}s")
 
 
+def test_hop_change_contract() -> None:
+    """指纹 hop 的约定 —— 改动它会同时影响体积与对齐成功率, 必须显式约束。
+
+    这几条不是"测试实现细节", 而是踩过的坑:
+      - hop != win 就会有音频从未被任何帧覆盖 -> 定位能力下降(实测 hop>win 后
+        0.8 档开始失败)。所以要求 hop <= win。
+      - win 不能随 hop 放大: 窗中心由 hop 决定, 放大 win 会让两端算出的指纹
+        不再逐 bit 等价(实测 max 差 0.03)。
+      - 历史 afp(hop=0.2) 必须仍能被读出来并正确折算时长 —— 它不可再生。
+    """
+    import server
+    import live_audiofp
+
+    check("hop 不大于 win(否则有音频被跳过)",
+          live_audiofp.HOP_SEC <= live_audiofp.WIN_SEC + 1e-9,
+          f"hop={live_audiofp.HOP_SEC} win={live_audiofp.WIN_SEC}")
+    check("win 固定 0.4(不随 hop 放大)", abs(live_audiofp.WIN_SEC - 0.4) < 1e-9,
+          f"win={live_audiofp.WIN_SEC}")
+
+    # 两端在**当前**参数下必须逐 bit 等价
+    x = make_audio(4.0, seed=21)
+    a = audiofp.fingerprint(x, 16000, live_audiofp.HOP_SEC, live_audiofp.WIN_SEC)
+    b = live_audiofp.fingerprint(x, 16000, live_audiofp.HOP_SEC, live_audiofp.WIN_SEC)
+    check("两端逐 bit 等价(当前 hop)", np.array_equal(a, b),
+          f"max|diff|={float(np.abs(a - b).max()) if a.shape == b.shape else 'N/A'}")
+
+    # 历史指纹仍可读, 且 hop 取自文件而不是代码默认值
+    import tempfile
+    import json
+    import base64
+    with tempfile.TemporaryDirectory(prefix="hop_") as td:
+        p = Path(td) / "old.afp.jsonl"
+        n = 120
+        q = audiofp.quantize(np.tile(
+            (np.arange(33, dtype=np.float32) / 33.0 - 0.5), (n, 1)))
+        lines = [
+            {"ty": "hdr", "v": 1, "sr": 16000, "hop": 0.2, "win": 0.4, "bands": 33},
+            {"ty": "conn", "c": 0, "t0_ms": 1792942382304},
+            {"ty": "fp", "c": 0, "ts": 1792942382304, "n": n,
+             "fp": base64.b64encode(q.tobytes()).decode("ascii")},
+        ]
+        p.write_text("\n".join(json.dumps(o) for o in lines) + "\n", encoding="utf-8")
+        d = audiofp.read_afp(p)
+        got_hop = float(d["params"]["hop"])
+        check("旧文件 hop 读回 0.2(不是代码默认值)", got_hop == 0.2, f"得到 {got_hop}")
+        check("帧数按文件 hop 折算时长", abs(d["conns"][0]["n"] * got_hop - 24.0) < 1e-6,
+              f"{d['conns'][0]['n'] * got_hop}s")
+
+        # 参数不一致的两份不得合并(混了会静默拉伸时间轴)
+        p2 = Path(td) / "new.afp.jsonl"
+        lines[0]["hop"] = 0.4
+        p2.write_text("\n".join(json.dumps(o) for o in lines) + "\n", encoding="utf-8")
+        mixed = server.read_afp_merged([p2, p])
+        check("异参 afp 不合并(只留主文件)", len(mixed["conns"]) == 1,
+              f"实际 {len(mixed['conns'])} 段")
+        same = server.read_afp_merged([p2, p2])
+        check("同参 afp 正常合并", len(same["conns"]) == 2,
+              f"实际 {len(same['conns'])} 段")
+
+
 def main() -> int:
     print("对齐算法回归")
     for fn in (test_align_recovers_offset,
@@ -217,7 +277,8 @@ def main() -> int:
                test_min_match_seconds_guard,
                test_random_level_consensus_rejected,
                test_segmented_mapping_no_drift,
-               test_config_overrides_take_effect):
+               test_config_overrides_take_effect,
+               test_hop_change_contract):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

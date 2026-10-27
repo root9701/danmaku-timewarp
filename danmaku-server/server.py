@@ -122,7 +122,9 @@ BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 AFP_CACHE_DIR = Path(os.environ.get("AFP_CACHE", "").strip()
                      or (Path(tempfile.gettempdir()) / "danmaku_afp_cache"))
 AUTO_MIN_CONFIDENCE = float(_cfg("align", "min_confidence", default=2.0))
-AUTO_MIN_CONN_FRAMES = 50   # 连接段指纹至少 50 帧(约 10s @hop0.2)才参与对齐
+# 连接段最短时长(**按秒定义, 不按帧**): 帧数会随 hop 变化, 写死帧数等于让判据
+# 跟着 hop 漂移 —— hop 从 0.2 调到 0.4 时, "50 帧" 会从 10 秒悄悄变成 20 秒。
+AUTO_MIN_CONN_SEC = 10.0
 AUTO_VOTE_SEGMENTS = int(_cfg("align", "vote_segments", default=8))
 #   对齐时把回放切成几段去做投票。切成短段比整段对齐可靠: 长篇里混进一段直播没播的
 #   内容, 整窗得分就被拉平。实测同一局比赛, 全长对齐 conf=1.01(判为不匹配),
@@ -2129,7 +2131,7 @@ def _afp_duration_sec(date: str, file: str) -> float:
         afp = read_afp_merged(paths)
     except Exception:
         return 0.0
-    hop = float((afp.get("params") or {}).get("hop") or 0.2)
+    hop = float((afp.get("params") or {}).get("hop") or 0.4)
     total = 0
     for c in afp.get("conns") or []:
         try:
@@ -2490,12 +2492,28 @@ def find_afp_paths(date: str, file: str) -> list:
 
 
 def read_afp_merged(paths: list) -> dict:
-    """多份 afp(主+归档)合并: 各文件段号都从 0 起, 跨文件统一重编全局段号。"""
+    """多份 afp(主+归档)合并: 各文件段号都从 0 起, 跨文件统一重编全局段号。
+
+    **只合并参数相同的文件。** 帧的物理含义由 hdr 的 hop/win/bands 决定: 同一个
+    n(帧数) 在 hop=0.2 时是 2 秒、hop=0.4 时是 4 秒。把两代指纹混在一起, 时间轴会被
+    整体压缩/拉伸, 结果是"对齐到错误位置但看起来一切正常" —— 比直接报错危险得多。
+    这种情况真实存在: 主文件由本次会话写入(新 hop), 归档 _runN 可能是旧版采集器留下的
+    (旧 hop)。参数不一致的归档宁可丢弃, 让本次对齐只用同代数据。
+    """
     conns, params = [], None
     for p in paths:
         d = audiofp.read_afp(p)
+        fp = d["params"] or {}
         if params is None:
-            params = d["params"]
+            params = d["params"]          # 第一个文件定基准(主文件排在最前)
+        else:
+            keys = ("sr", "hop", "win", "bands")
+            bad = [k for k in keys if k in fp and k in params and fp[k] != params[k]]
+            if bad:
+                print(f"[afp] 跳过参数不一致的归档 {getattr(p, 'name', p)}: "
+                      + ", ".join(f"{k}={fp[k]}≠{params[k]}" for k in bad),
+                      flush=True)
+                continue
         for seg in d["conns"]:
             seg = dict(seg)
             seg["c"] = len(conns)  # 全局重编, 避免跨文件撞号
@@ -2618,7 +2636,7 @@ def _save_fp_cache(cache: Path, fp, hop: float, win: float) -> None:
             pass
 
 
-async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0.2,
+async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0.4,
                                  win_sec: float = 0.4, local_audio=None):
     """取回放({bv} P{page})的音频指纹(带磁盘缓存, 避免长视频反复拉流)。
 
@@ -2719,12 +2737,14 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
     因此候选按时间升序, 取第一个通过的。
     """
     ref_frames = int(fp_replay.shape[0])
-    if ref_frames < AUTO_MIN_CONN_FRAMES:
+    # 帧数下限由"秒"换算: hop 变了帧数阈值也要跟着变, 否则判据会随 hop 漂移
+    min_conn_frames = max(1, int(round(AUTO_MIN_CONN_SEC / hop)))
+    if ref_frames < min_conn_frames:
         raise ApiError("该分P 指纹过短, 无法对齐")
 
     # 片长: 目标 3 分钟, 但不短于 min_match_sec, 也不超过回放的 1/3
     seg_secs = min(180.0, fp_replay.shape[0] * hop / 3.0)
-    seg_frames = max(int(seg_secs / hop), AUTO_MIN_CONN_FRAMES)
+    seg_frames = max(int(seg_secs / hop), min_conn_frames)
     if seg_frames >= ref_frames:
         # 回放太短(本身不到 3 分钟): 整段当一个样本
         starts = [0]
@@ -2839,7 +2859,15 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         """票数与票质的综合分: 各票置信度之和(低分票几乎不加分)。"""
         return sum(c[1])
 
-    strong_conf = max(6.0, min_conf * 3)
+    # 强票门槛必须**随 hop 缩放**: conf 是"主峰/次峰比", 它对帧的重叠程度敏感 ——
+    # hop 越大, 相邻帧越不相似, 主峰越钝, conf 系统性下降(实测真实比赛 hop=0.2 -> 0.4
+    # 时 conf 从 7.2~11.9 降到 3.9~5.5, 约 -45%)。若门槛仍写死 6.0/7.0, 那两条
+    # "部分段落能对上"的救援逻辑就会失效: 实测把直播音频削到 30% 时, hop=0.2 靠
+    # 2 张强票能救回, hop=0.4 会误判为"找不到位置"。
+    # 用 0.2 作为基准尺度, 按 0.2/hop 折算 —— hop=0.2 时系数为 1, 行为完全不变。
+    hop_scale = max(0.4, min(1.0, 0.2 / max(hop, 1e-6)))
+    strong_conf = max(6.0, min_conf * 3) * hop_scale
+    very_strong_conf = 7.0 * hop_scale
     solid = []
     why = {}
     for c in clusters:
@@ -2862,7 +2890,7 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
             reasons.append("多段一致")
         if n_strong >= 2:
             reasons.append("%d 张强票" % n_strong)
-        if max_conf >= 7.0 and n_vote >= 2:
+        if max_conf >= very_strong_conf and n_vote >= 2:
             reasons.append("强票+同向")
         if n_vote == n_seg and max_conf >= min_conf:
             reasons.append("全票一致")
@@ -3007,12 +3035,15 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         raise ApiError("该日无音频指纹数据(采集端未启用或版本旧)")
     afp = await asyncio.to_thread(read_afp_merged, afp_paths)
     params = afp["params"]
-    hop = float(params.get("hop") or 0.2)
+    # hop 是**文件里写的**(不是当前代码的默认值): 旧数据是 0.2 新数据是 0.4,
+    # 读取侧必须按各文件自己的 hdr 解释帧, 否则历史指纹会被整体拉伸。
+    hop = float(params.get("hop") or 0.4)
     win = float(params.get("win") or 0.4)
-    conns = [c for c in afp["conns"] if c["n"] >= AUTO_MIN_CONN_FRAMES]
+    min_conn_frames = max(1, int(round(AUTO_MIN_CONN_SEC / hop)))
+    conns = [c for c in afp["conns"] if c["n"] >= min_conn_frames]
     if not conns:
-        raise ApiError(f"音频指纹无有效连接段(每段至少 {AUTO_MIN_CONN_FRAMES} 帧"
-                       f"≈{AUTO_MIN_CONN_FRAMES * hop:.0f}s, 全部段过短)")
+        raise ApiError(f"音频指纹无有效连接段(每段至少 {AUTO_MIN_CONN_SEC:.0f}s"
+                       f"≈{min_conn_frames} 帧, 全部段过短)")
 
     # anchor 与 handle_match_get 同源: 聚合数据首行 ts 优先, meta 兜底
     anchor_ms = first_ts_from_data(date, file)

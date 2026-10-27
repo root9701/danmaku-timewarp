@@ -1127,11 +1127,11 @@ class Recorder:
                 int(self.record_end.timestamp() * 1000) if self.record_end else None)
             # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
             # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
-            # 导入失败时退回 0.2/0.4(与 live_audiofp 当前值一致)。
+            # 导入失败时退回当前默认值(与 live_audiofp 的 HOP_SEC/WIN_SEC 一致)
             try:
                 from live_audiofp import HOP_SEC as _HOP, WIN_SEC as _WIN
             except Exception:
-                _HOP, _WIN = 0.2, 0.4
+                _HOP, _WIN = 0.4, 0.4
             mf = {
                 "schema_version": 1,
                 "room": self.room_id,

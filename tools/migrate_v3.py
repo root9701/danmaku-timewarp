@@ -38,6 +38,27 @@ def _open_text(p: Path):
     return open(p, "rt", encoding="utf-8", errors="replace")
 
 
+def _afp_params(p: Path) -> dict:
+    """从 afp 文件首行 hdr 读出 hop/win。
+
+    不写死常量: 指纹参数改过(hop 0.2 -> 0.4), 迁移脚本若把旧数据标成新参数,
+    下游按 manifest 解读就会把时间轴拉伸一倍 —— 而且不会报错。
+    """
+    try:
+        with _open_text(p) as f:
+            for _ in range(5):                    # hdr 在第一行; 容忍前后空行
+                ln = f.readline()
+                if not ln:
+                    break
+                o = json.loads(ln)
+                if o.get("ty") == "hdr":
+                    return {"hop": float(o.get("hop") or 0.4),
+                            "win": float(o.get("win") or 0.4)}
+    except (OSError, ValueError):
+        pass
+    return {"hop": 0.4, "win": 0.4}
+
+
 def dm_files(d: Path):
     """目录内的弹幕数据片(排除 afp/meta)。"""
     out = []
@@ -365,7 +386,10 @@ def _write_manifest(d: Path, is_test: bool):
         "dm_count": n_dm,
         "sc_count": (meta or {}).get("sc_count", 0),
         "files": [p.name for p in files],
-        "afp": ({"file": afps[0].name, "hop": 0.2, "win": 0.4} if afps else None),
+        "afp": ({"file": afps[0].name,
+                 # 参数从指纹文件自己的 hdr 读, 不写死(hop 已从 0.2 改为 0.4,
+                 # 写死会让旧数据被标成新参数, 下游按 manifest 解读就拉伸了时间轴)
+                 **_afp_params(afps[0])} if afps else None),
         "meta": (sorted(d.glob("*.meta.json"))[0].name
                  if list(d.glob("*.meta.json")) else None),
         "collector_version": "migrated",

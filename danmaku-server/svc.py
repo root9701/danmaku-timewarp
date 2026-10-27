@@ -14,6 +14,7 @@
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -39,6 +40,48 @@ def _detached():
     return (0x00000008 | 0x00000200) if os.name == "nt" else 0
 
 
+_PS_PROC_CACHE = {"ts": 0.0, "data": None}
+
+
+def _ps_processes():
+    """用 PowerShell CIM 一次性取全部进程的 (PID, 父PID, 路径, 命令行)。
+
+    为什么不用 wmic: 新版 Windows 已移除 wmic(实测 Get-Command wmic 找不到),
+    以前依赖它的函数全部静默返回 None, 导致 PID 校验和端口诊断都失效。
+    结果缓存 2 秒, 避免启动/停止流程里反复调用 powershell 拖慢速度。
+    """
+    import time as _t
+    now = _t.time()
+    if _PS_PROC_CACHE["data"] is not None and now - _PS_PROC_CACHE["ts"] < 2.0:
+        return _PS_PROC_CACHE["data"]
+    data = {}
+    try:
+        ps = ("Get-CimInstance Win32_Process | "
+              "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | "
+              "ConvertTo-Csv -NoTypeInformation")
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=25,
+            creationflags=_no_window()).stdout
+        import csv as _csv
+        import io as _io
+        for row in _csv.DictReader(_io.StringIO(out)):
+            try:
+                pid = int(row["ProcessId"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            data[pid] = {
+                "ppid": int(row.get("ParentProcessId") or 0),
+                "exe": (row.get("ExecutablePath") or "").strip(),
+                "cmd": (row.get("CommandLine") or "").strip(),
+            }
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _PS_PROC_CACHE["data"] = data
+    _PS_PROC_CACHE["ts"] = now
+    return data
+
+
 def _is_alive(pid: int) -> bool:
     if os.name == "nt":
         try:
@@ -56,19 +99,9 @@ def _is_alive(pid: int) -> bool:
 
 
 def _cmdline(pid: int):
-    if os.name != "nt":
-        return None
-    try:
-        out = subprocess.run(
-            ["wmic", "process", "where", "ProcessId=%d" % pid, "get", "CommandLine", "/value"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=_no_window()).stdout
-        for line in out.splitlines():
-            if line.startswith("CommandLine="):
-                return line[len("CommandLine="):]
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return None
+    """取进程命令行(用于校验该 PID 确实是我们的脚本)。取不到返回 None。"""
+    info = _ps_processes().get(pid)
+    return info["cmd"] if info and info["cmd"] else None
 
 
 def _port_open(port: int) -> bool:
@@ -78,6 +111,66 @@ def _port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
     finally:
         s.close()
+
+
+
+def port_owner(port: int):
+    """查出是谁在监听指定端口。返回 (pid, 可执行文件路径), 查不到返回 (None, None)。
+
+    用途: 端口被占时告诉用户"是哪个程序占着", 而不是只报一句"已被占用"。
+    """
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=_no_window()).stdout
+    except (OSError, subprocess.SubprocessError):
+        return (None, None)
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[3] != "LISTENING":
+            continue
+        m = re.search(r":(\d+)$", parts[1])
+        if not m or int(m.group(1)) != int(port):
+            continue
+        try:
+            pid = int(parts[4])
+        except ValueError:
+            continue
+        if pid <= 0:
+            continue
+        return (pid, _exe_of(pid))
+    return (None, None)
+
+
+def _exe_of(pid: int):
+    """取进程可执行文件路径(用于告诉用户"端口被哪个程序占着")。"""
+    info = _ps_processes().get(pid)
+    return info["exe"] if info and info["exe"] else None
+
+
+def _is_child_of(child: int, parent: int) -> bool:
+    """判断 child 是否是 parent 的（直接或间接）子进程。
+
+    Windows 上 .venv\\Scripts\\python.exe 只是个启动器, 会立刻派生一个真正的
+    解释器子进程来跑脚本; 监听端口的实际是那个子进程。所以校验端口占用者时
+    不能只比 PID, 还要认子进程。
+    """
+    procs = _ps_processes()
+    if not procs:
+        return True          # 查不到就不阻断(宁可放过也不错杀)
+    cur, depth = child, 0
+    while depth < 8:
+        info = procs.get(cur)
+        if not info:
+            return False
+        ppid = info["ppid"]
+        if ppid == parent:
+            return True
+        if ppid <= 0 or ppid == cur:
+            return False
+        cur = ppid
+        depth += 1
+    return False
 
 
 def read_pid():
@@ -149,8 +242,15 @@ def start(lan: bool = False) -> int:
         print("  请先按 README 准备 .venv 虚拟环境")
         return 1
     if _port_open(PORT):
-        print("  端口 %d 已被占用, 无法启动" % PORT)
-        print("  查占用: netstat -ano | findstr :%d" % PORT)
+        owner_pid, owner_exe = port_owner(PORT)
+        print("  端口 %d 已被占用, 无法启动。" % PORT)
+        if owner_pid:
+            print("    占用者: PID %d" % owner_pid)
+            print("    程序:   %s" % (owner_exe or "(查不到路径)"))
+            print("    处理:   先关掉它, 或在任务管理器里按 PID 结束")
+        else:
+            print("    查不到占用进程（可能需要管理员权限）")
+            print("    自查: netstat -ano | findstr :%d" % PORT)
         return 1
     LOG_DIR.mkdir(exist_ok=True)
     env = os.environ.copy()
@@ -177,6 +277,13 @@ def start(lan: bool = False) -> int:
     deadline = time.time() + 25
     while time.time() < deadline:
         if _port_open(PORT):
+            # 确认端口确实是**我们刚起的**进程占的, 而不是别的程序抢了端口
+            owner_pid, _ = port_owner(PORT)
+            if owner_pid and owner_pid not in (proc.pid,) and not _is_child_of(owner_pid, proc.pid):
+                print(" 异常")
+                print("    端口被 PID %d 占用, 不是本次启动的进程(PID %d)" % (owner_pid, proc.pid))
+                print("    可能上一个实例还没退干净, 请先运行 stop")
+                return 1
             print(" 就绪")
             break
         if proc.poll() is not None:
@@ -245,7 +352,19 @@ def status() -> int:
         if not exposed:
             print("  局域网:     未开启（需要手机访问请用 svc.py lan 启动）")
     else:
-        print("  弹幕回放台: 未运行")
+        # PID 文件可能丢了(手工启动/上次没清干净), 但端口上可能真有服务在跑。
+        # 只说"未运行"会让用户以为没开, 实际页面却打得开 —— 必须说清楚。
+        owner_pid, owner_exe = port_owner(PORT) if _port_open(PORT) else (None, None)
+        if owner_pid:
+            print("  弹幕回放台: 运行中(非本脚本启动)")
+            print("  占用进程:   PID %d" % owner_pid)
+            if owner_exe:
+                print("  程序:       %s" % owner_exe)
+            print("  本机访问:   http://127.0.0.1:%d" % PORT)
+            print("  提示:       本脚本没记录它的 PID, 无法用 svc.py stop 停止;")
+            print("              需要停请到任务管理器结束 PID %d" % owner_pid)
+        else:
+            print("  弹幕回放台: 未运行")
     print("=" * 56)
     return 0
 

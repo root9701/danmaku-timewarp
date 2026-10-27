@@ -37,7 +37,22 @@ def _no_window():
 
 
 def _detached():
-    return (0x00000008 | 0x00000200) if os.name == "nt" else 0
+    """子进程的创建标志: 不弹窗 + 脱离父终端独立运行。
+
+    **不要用 DETACHED_PROCESS(0x8)**: 它的语义是"不继承父控制台", 结果 Windows
+    会给子进程新开一个控制台窗口 —— 用户点一次启动就看到两个黑窗(一个 bat 的,
+    一个新弹出的)。踩过这个坑。
+
+    改用 CREATE_NO_WINDOW(0x08000000) | CREATE_NEW_PROCESS_GROUP(0x200):
+      - 完全不创建控制台窗口
+      - 进程独立于父终端, 关掉 bat 窗口不影响
+      - 独立进程组, taskkill /T 能整组结束
+    """
+    if os.name != "nt":
+        return 0
+    CREATE_NO_WINDOW = 0x08000000
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    return CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
 
 
 _PS_PROC_CACHE = {"ts": 0.0, "data": None}

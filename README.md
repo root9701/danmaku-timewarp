@@ -57,6 +57,27 @@ lol延时直播/
 
 ## 快速开始
 
+### 第 0 步：环境准备（只做一次）
+
+| 需要什么 | 说明 |
+|---|---|
+| **Windows 10/11** | 启动脚本是 `.bat`，暂不支持 macOS/Linux |
+| **Python 3.12+** | 从 [python.org](https://www.python.org/downloads/) 下载，安装时**务必勾选 `Add python.exe to PATH`** |
+
+然后：
+
+```powershell
+git clone https://github.com/root9701/danmaku-timewarp.git
+cd danmaku-timewarp
+```
+
+**虚拟环境不用手动建**——第一次双击启动脚本时，它会自动创建 `.venv` 并安装依赖（约 1~3 分钟，只在首次发生）。装好后窗口会继续启动服务。
+
+> 装依赖卡住多半是网络问题，可用国内镜像：
+> `danmaku-server\.venv\Scripts\python.exe -m pip install -r danmaku-server\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
+
+### 第 1 步：开始用
+
 **每晚睡前**：双击 `danmaku-collector/启动采集.bat`，窗口可最小化，别关。
 
 **次日早上**：双击 `danmaku-server/启动回放台.bat`（想在 iPad 上看用 `启动回放台_局域网.bat`）

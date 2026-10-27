@@ -1,11 +1,10 @@
 @echo off
 title 弹幕回放台 - 本机访问（关闭本窗口即停止）
 cd /d "%~dp0"
-if not exist "%~dp0.venv\Scripts\python.exe" (
-    echo [错误] 未找到 .venv\Scripts\python.exe，请先完成环境准备（见 README.md）。
-    pause
-    exit /b 1
-)
+rem 首次运行自动建 .venv 并装依赖(约 1-3 分钟, 只发生一次)。
+rem 失败时脚本已打印原因并 pause, 这里直接退出, 不重复报错。
+call "%~dp0_ensure_venv.bat" "%~dp0" 
+if errorlevel 1 exit /b 1
 echo ==============================================
 echo   弹幕回放台 · 仅本机可访问
 echo   关闭本窗口 = 停止服务

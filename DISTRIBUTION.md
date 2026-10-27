@@ -22,20 +22,31 @@ git clone → 双击启动脚本 → 打开网页 → 选场次 → 看
 
 ## 三步开始
 
+### 1. 准备 Python
+
+只需 **Python 3.12+**（[python.org](https://www.python.org/downloads/) 下载，安装时勾选 `Add python.exe to PATH`）。
+
+### 2. 拿到数据与代码
+
 ```powershell
-git clone <本仓库地址> lol延时直播
-cd lol延时直播
-# 首次: 装依赖（版本已精确锁定，装出来与作者环境一致）
-danmaku-server\.venv\Scripts\python.exe -m pip install -r danmaku-server\requirements.txt
+git clone https://github.com/root9701/danmaku-timewarp.git
+cd danmaku-timewarp
 ```
 
-然后双击 `danmaku-server\启动回放台.bat`，浏览器会自动打开 `127.0.0.1:8789`。
+### 3. 双击启动
+
+双击 `danmaku-server\启动回放台.bat`。**首次运行会自动创建虚拟环境并安装依赖**（约 1~3 分钟，仅一次），完成后浏览器自动打开 `127.0.0.1:8789`。
+
+> 依赖装不上多半是网络问题，用国内镜像：
+> `danmaku-server\.venv\Scripts\python.exe -m pip install -r danmaku-server\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
 
 之后每次更新：
 
 ```powershell
 git pull          # 只拉新增的弹幕与指纹(每晚约 17 MB), 不会重下历史
 ```
+
+> 装了新依赖或改了代码时，重启启动脚本即可；只更新数据不用重启。
 
 ---
 

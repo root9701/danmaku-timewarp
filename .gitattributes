@@ -1,0 +1,11 @@
+# bat/cmd 必须是 CRLF 换行 + 无 BOM, 否则 cmd 解析出错(实测纯 LF 会导致
+# "中文乱码 + 把多行当成一条命令"), 这里显式固定, 避免不同工具写文件时搞坏。
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 源码统一 LF(Windows 上的 Python 也能正常读)
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf

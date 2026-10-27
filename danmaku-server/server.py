@@ -2854,6 +2854,31 @@ def _lan_ips() -> list:
     return [ip for ip in ips if not ip.startswith("169.254.")]
 
 
+def _print_qr(url: str) -> None:
+    """在终端打印二维码(局域网模式下给手机扫)。
+
+    两个关键点(之前都踩过):
+      1. **反色**: 终端里 '█' 显示的是前景色, 深色主题下前景是白, 直接画会把
+         黑白反掉, 手机扫不出来。所以用 '  '(空格, 背景色=深)表示二维码的黑模块,
+         '██'(实心, 前景色=白)表示白模块 —— 视觉上就是白底黑码。
+      2. **静区 4 格**: 标准要求四周留 4 个模块的空白, 少了扫描器找不到边界。
+    """
+    try:
+        import qrcode
+    except ImportError:
+        print("  (未安装 qrcode 库, 无法显示二维码; 手动输入上面的网址即可)")
+        print("   安装: .venv\\Scripts\\python.exe -m pip install qrcode")
+        return
+    qr = qrcode.QRCode(border=4, box_size=1,
+                       error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(url)
+    qr.make(fit=True)
+    dark, light = "  ", "██"
+    for row in qr.get_matrix():
+        print("  " + "".join(dark if c else light for c in row))
+    print()
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2863,13 +2888,19 @@ def main() -> None:
     print("=" * 60)
     print("  弹幕延时直播 · 本地服务器")
     print(f"  本机访问:     http://127.0.0.1:{PORT}")
-    if HOST not in ("127.0.0.1", "localhost"):
-        for ip in _lan_ips():
-            print(f"  局域网访问:   http://{ip}:{PORT}")
+    lan = HOST not in ("127.0.0.1", "localhost")
+    ips = _lan_ips() if lan else []
+    for ip in ips:
+        print(f"  局域网访问:   http://{ip}:{PORT}")
     print(f"  采集数据目录: {DATA_DIR}")
     print(f"  B站Cookie:    {'已加载' if load_cookie_header() else '未配置(可选)'}")
-    print("  停止: 按 Ctrl+C")
+    print("  停止: 关闭本窗口, 或按 Ctrl+C")
     print("=" * 60)
+    if lan and ips:
+        print()
+        print("  手机/iPad 扫码访问（和电脑连同一个 WiFi）:")
+        print()
+        _print_qr(f"http://{ips[0]}:{PORT}")
     web.run_app(build_app(), host=HOST, port=PORT, print=None)
 
 

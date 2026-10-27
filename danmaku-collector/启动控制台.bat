@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul
 title 弹幕采集控制台 - 请勿关闭本窗口
 cd /d "%~dp0"
 if not exist "%~dp0.venv\Scripts\python.exe" (

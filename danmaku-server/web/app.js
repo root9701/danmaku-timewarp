@@ -22,8 +22,9 @@
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
   var btnDiscover = $('btn-discover');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
-  var btnOvRefresh = $('btn-ov-refresh');
-  var manualCalib = $('manual-calib');
+  var btnOvRefresh = $('btn-ov-refresh'), btnOvExpand = $('btn-ov-expand');
+  var elTopMeta = $('topbar-meta');
+  var btnMore = $('btn-more'), moreBox = $('more-box');
 
   /* ---------------- 全局状态 ---------------- */
   var state = {
@@ -874,8 +875,8 @@
 
   function syncAutoAdvanceBtn() {
     if (!btnAutoAdvance) { return; }
-    // 按钮在"播放设置"卡片里, 标签写状态值, 由父级 <span> 提供名字 —— 不再重复"连播:"前缀
-    btnAutoAdvance.textContent = state.autoAdvance ? '已开启' : '关闭';
+    // 工具条里的按钮自带名字, 文案写成"连播：开/关"
+    btnAutoAdvance.textContent = '连播：' + (state.autoAdvance ? '开' : '关');
     btnAutoAdvance.classList.toggle('on', state.autoAdvance);
     btnAutoAdvance.title = state.autoAdvance
       ? '当前：一场播完自动接下一场（点击关闭）'
@@ -1263,12 +1264,20 @@
   function syncSpoilerBtn() {
     var b = $('btn-spoiler');
     if (!b) { return; }
-    // 按钮在"播放设置"卡片里, 只写状态值; 名字由左侧 <span> 给
-    b.textContent = settings.spoiler ? '已开启' : '已关闭';
+    // 工具条里的按钮自带名字(没有 <span> 标签), 所以文案要写成"防剧透：开/关"
+    b.textContent = '防剧透：' + (settings.spoiler ? '开' : '关');
     b.classList.toggle('on', !!settings.spoiler);
     b.title = settings.spoiler
       ? '防剧透已开启：隐藏时间标记与分P 色块（点击关闭）'
       : '防剧透已关闭：显示时间标记与分P 色块（点击开启）';
+    // 防剧透开着时, 展开分P 是没有意义的(展开也画不出来), 直接禁用并说明,
+    // 否则用户点"展开分P"什么都不会发生, 看起来像按钮坏了。
+    if (btnOvExpand) {
+      btnOvExpand.disabled = !!settings.spoiler;
+      btnOvExpand.title = settings.spoiler
+        ? '防剧透开启中，分P 明细已隐藏。关闭防剧透后可展开。'
+        : '展开/收起分P 行';
+    }
   }
   function setSpoiler(on) {
     settings.spoiler = !!on;
@@ -1477,7 +1486,10 @@
     layout: [], laneCount: 1,        // 轨道打包结果
     markers: [],                     // 事件标记(一血/大龙/水晶/GG), 防剧透可关
   };
-  var OV_COLORS = ['#4c8dff', '#3fb96f', '#ffb020', '#a35cff', '#ff7a59', '#20c4d9', '#e05c9a'];
+  // 极简风格的场次配色: 一个蓝点缀 + 多级灰。为什么不用彩虹:
+  // 4 场用 4 个不同色相会让页面第一眼变成"彩色标签墙", 违背极简的前提。
+  // 这里靠"蓝 → 亮灰 → 中灰 → 深灰"的明度阶梯区分, 同时保留一个可点亮的蓝。
+  var OV_COLORS = ['#5b8cff', '#a0a6b0', '#7d8590', '#c3c8d0', '#8a8f98', '#6f757f'];
 
   function ovX(ms) {
     var w = ovCanvas.clientWidth;
@@ -1539,13 +1551,25 @@
   }
 
   function updateOvSummary(j) {
-    var parts = [];
-    parts.push('比赛日 ' + (j.match_date || '?'));
-    parts.push('主轴 ' + fmtCnt(j.span_sec));
-    parts.push('弹幕 ' + (j.dm_count || 0).toLocaleString() + ' 条');
-    if (j.afp_duration_sec) { parts.push('指纹 ' + Math.round(j.afp_duration_sec / 60) + ' 分'); }
-    parts.push((j.tracks || []).length + ' 场');
-    ovSummary.textContent = parts.join('  ·  ');
+    // 顶栏与总览头部共用同一份环境数据, 但**只写短标签**: 这是状态栏, 不是说明。
+    var spanMin = Math.round((j.span_sec || 0) / 60);
+    var nTrack = (j.tracks || []).length;
+    var nPart = (j.tracks || []).reduce(function (a, t) {
+      return a + ((t.parts || []).length);
+    }, 0);
+    var head = [];
+    head.push(j.match_date || '?');
+    head.push('主轴 ' + spanMin + ' 分');
+    head.push(nTrack + ' 场');
+    if (nPart) { head.push(nPart + ' 个分P'); }
+    ovSummary.textContent = head.join(' · ');
+
+    if (elTopMeta) {
+      var meta = [];
+      meta.push(nTrack + ' 场');
+      meta.push((j.dm_count || 0).toLocaleString() + ' 条弹幕');
+      elTopMeta.textContent = meta.join(' · ');
+    }
     buildOvLegend(j.tracks || []);
   }
 
@@ -1558,13 +1582,13 @@
       var nParts = (t.parts || []).length;
       var unaligned = !nParts && !t.offset_sec;
       if (unaligned) {
-        html += '<span style="opacity:.75"><i style="background:#4b5563"></i>' +
-                t.title + '<b style="color:#ff7a59"> 未对齐</b></span>';
+        html += '<span style="opacity:.75"><i style="background:#3a3d43"></i>' +
+                t.title + '<b style="color:#d99a6c"> 未对齐</b></span>';
         return;
       }
       if (!t.bv) {
-        html += '<span style="opacity:.75"><i style="background:#4b5563"></i>' +
-                t.title + '<b style="color:#ff7a59"> 缺BV</b></span>';
+        html += '<span style="opacity:.75"><i style="background:#3a3d43"></i>' +
+                t.title + '<b style="color:#d99a6c"> 缺BV</b></span>';
       }
     });
     ovLegend.innerHTML = html;
@@ -1662,24 +1686,41 @@
     ov.laneCount = Math.max(1, laneEnds.length);
   }
 
+  // 总览的两种状态: 紧凑(钉顶常驻, 只画密度+场次色带) / 展开(多出分P 行与刻度)。
+  // 为什么要有紧凑态: 它钉在页面顶部, 展开态 178px 会长期吃掉画面高度;
+  // 而"切到哪一场"只需要看场次色带, 不需要看见每一局。
+  var ovExpanded = false;
+
+  function setOvExpanded(on) {
+    ovExpanded = !!on;
+    if (btnOvExpand) {
+      btnOvExpand.textContent = ovExpanded ? '收起分P ▴' : '展开分P ▾';
+      btnOvExpand.classList.toggle('on', ovExpanded);
+    }
+    drawOverview();
+  }
+
   function drawOverview() {
     var w = ovCanvas.clientWidth, h = ovCanvas.clientHeight;
     if (w <= 0 || h <= 0) { return; }
     // 防剧透开启时只画"场次色带"(谁 vs 谁), 不画分P 色块(第一局/第二局…) ——
-    // 分P 的个数与名字本身就泄露了"打了几局、有没有被零封"。此时轨道区只剩色带,
-    // 高度也该跟着收回去, 否则色带下方留一片空。
+    // 分P 的个数与名字本身就泄露了"打了几局、有没有被零封"。
     var hideBlocks = !!settings.spoiler;
     var lanes = hideBlocks ? [] : (ov.layout || []);
-    // 有轨道块时把容器加高, 给分P 色块留出空间(否则密度图吃满 118px, 块高度为负画不出)
+    // 高度三档: 紧凑 66 / 只色带 96 / 展开 178。
+    // 注意 hideBlocks 时**也要走 compact**: 防剧透虽然不画分P 行, 但密度与场次色带仍要显示,
+    // 用 band(96px) 反而比紧凑态更高、还多留一行空白。
     var wrapEl = document.getElementById('ov-wrap');
     if (wrapEl) {
-      var wantLanes = lanes.length > 0;
-      if (wantLanes && !wrapEl.classList.contains('has-lanes')) {
-        wrapEl.classList.add('has-lanes');
-        h = ovCanvas.clientHeight;      // 加高后重新取高度
-      } else if (!wantLanes && wrapEl.classList.contains('has-lanes')) {
-        wrapEl.classList.remove('has-lanes');
-        h = ovCanvas.clientHeight;
+      var want;
+      if (!ov.tracks.length && !lanes.length) {
+        want = 'band';                       // 这晚没配赛程: 留一行提示
+      } else {
+        want = (lanes.length > 0 && ovExpanded) ? 'full' : 'compact';
+      }
+      if (wrapEl.getAttribute('data-mode') !== want) {
+        wrapEl.setAttribute('data-mode', want);
+        h = ovCanvas.clientHeight;      // 高度变了, 重新取
       }
     }
     var d = Math.min(window.devicePixelRatio || 1, 2);
@@ -1708,12 +1749,17 @@
     // 这里按"一个像素列聚合多个 bin"来画, 用画布列宽反推,
     // 绝不能每 bin 强画 1px —— 那会让相邻柱互相覆盖, 把密度结构糊成一片(校准图的老毛病)。
     // 聚合取**均值**而非最大值: 最大值会让稀疏时段被单点尖峰拉高, 曲线整体偏胖、丢失低谷。
-    var densTop = 14, densH = Math.round(h * 0.32);
+    //
+    // 几何全部**按模式算**, 不再用"占高度 32%"这种比例:
+    // 紧凑态只有 66px, 按比例算出来的密度区会被压成 14px, 看不出起伏。
+    var full = (wrapEl && wrapEl.getAttribute('data-mode') === 'full');
+    var densTop = full ? 14 : 8;
+    var densH = full ? Math.round(h * 0.34) : Math.max(26, h - 40);
     if (ov.bins.length) {
       var plotW = w - 20;
       var colN = Math.min(ov.bins.length, Math.floor(plotW));
       var per = ov.bins.length / colN;          // 每列聚合多少个 bin
-      g.fillStyle = 'rgba(76,141,255,.62)';
+      g.fillStyle = 'rgba(140,148,160,.46)';
       var colW = plotW / colN;
       for (var c = 0; c < colN; c++) {
         var a = Math.floor(c * per), b2 = Math.max(a + 1, Math.floor((c + 1) * per));
@@ -1725,17 +1771,19 @@
         g.fillRect(10 + c * colW, densTop + densH - bh, Math.max(1, colW - 0.2), bh);
       }
     }
-    // 时间刻度(每小时)
+    // 时间刻度(每小时)。紧凑态只画刻度线, 不写文字 —— 66px 里塞下 8 个时间会糊成一排。
     g.font = '10px sans-serif';
     var tk = new Date(ov.t0);
     tk.setMinutes(0, 0, 0);
     while (tk.getTime() <= ov.t1) {
       var x = ovX(tk.getTime());
       if (x >= 10 && x <= w - 10) {
-        g.fillStyle = 'rgba(255,255,255,.14)';
-        g.fillRect(x, densTop, 1, h - 18);
-        g.fillStyle = '#8b93a3';
-        g.fillText(two(tk.getHours()) + ':00', x - 11, h - 4);
+        g.fillStyle = 'rgba(255,255,255,.10)';
+        g.fillRect(x, densTop, 1, h - (full ? 18 : 10));
+        if (full) {
+          g.fillStyle = '#8a8f98';
+          g.fillText(two(tk.getHours()) + ':00', x - 11, h - 4);
+        }
       }
       tk = new Date(tk.getTime() + 3600000);
     }
@@ -1745,15 +1793,12 @@
     // 事件标记统一放在这条主时间轴上, 既能辅助校准(点它跳转), 也能看清节奏。
     ov.order = [];
     // ---- 下方: 分P块按时间摆进主轴轨道(不重叠的共用一条轨道) ----
-    // 高度按内容收缩: 密度图固定占比, 下面只留"场次色带 + 分P 块"需要的高度。
-    // 原来固定 176px, 只有一行块时下半截全是空的, 显得很空。
-    // 22 = 色带高度(14) + 色带与块之间的间隙(8)。
     var laneTop = densTop + densH + 22;
     var avail = h - laneTop - 18;
     // 没有场次(tracks 为空)时不要画空轨道底纹 —— 那会让人以为"加载失败"。
     // 改为画一行说明, 明确告诉用户"这晚有弹幕但没配赛程", 而不是留一片空白。
-    if (!ov.tracks.length) {
-      g.fillStyle = '#8b93a3'; g.font = '12px sans-serif';
+    if (!ov.tracks.length && full) {
+      g.fillStyle = '#8a8f98'; g.font = '12px sans-serif';
       g.fillText('这晚有弹幕数据，但没有能对上的比赛场次（未配置赛程或缺失 BV）', 12, laneTop + 14);
     }
     var laneN = Math.max(1, ov.laneCount || 1);
@@ -1814,9 +1859,11 @@
     // 一整场(从该场第一个分P 开始到最后一个分P 结束), 队伍名写在色带里,
     // 分P 块落在色带下方 —— 视觉上是"一场比赛包含若干局", 而不是几个并列的色块。
     var bandH = 13;
-    // 色带紧贴在密度图下方, 与分P 块之间留 6px —— 看上去是"标题 + 内容"两层。
-    var bandTop = laneTop - bandH - 6;
+    // 色带位置: 展开态在密度图下方(与分P 块留 6px); 紧凑态直接贴底, 因为那就是它唯一的内容。
+    var bandTop = full ? (laneTop - bandH - 6) : Math.max(densTop + densH + 4, h - bandH - 6);
     ov.tracks.forEach(function (tr) {
+      // 紧凑态也要画色带 —— 那是"切到哪一场"的唯一入口, 比密度图更重要。
+      // 但紧凑态不显示分P 明细, 所以块的起止要靠 tr.blocks 算(块本身不画)。
       if (!tr.blocks || !tr.blocks.length) { return; }
       var bs = ovX(tr.blocks[0].startMs);
       var be = ovX(tr.blocks[tr.blocks.length - 1].startMs +
@@ -1831,20 +1878,20 @@
       g.globalAlpha = 1;
       g.fillStyle = tr.color;
       g.fillRect(bs, bandTop, bw, 2);
-      // 队伍名: 色带够宽就居中写全名, 窄了就把名字压到色带右上方(不截断到不可读)
+      // 队伍名: 色带够宽就写在色带里, 窄了挪到右侧(不截断到不可读)
       g.font = 'bold 10px sans-serif';
       g.textBaseline = 'middle';
       var name = String(tr.title || '');
       var tw = g.measureText(name).width;
       if (tw + 8 <= bw) {
-        g.fillStyle = '#e8ebf2';
+        g.fillStyle = '#eef0f3';
         g.fillText(name, bs + 4, bandTop + bandH / 2 + 0.5);
       } else if (bw > 10) {
-        // 太窄: 名字写在色带左侧外, 左对齐, 并用同色小方块示意它属于这条带
-        g.fillStyle = '#c9d0dc';
+        g.fillStyle = '#b9bfc9';
         g.fillText(name, bs + bw + 4, bandTop + bandH / 2 + 0.5);
       }
       g.textBaseline = 'alphabetic';
+      // 色带可点击: 紧凑态下它就是切场入口(点色带 = 跳该场第一局)
       ov.order.push({ band: true, tr: tr, x0: bs, x1: bs + bw,
                       y: bandTop, h: bandH });
     });
@@ -1864,12 +1911,16 @@
   function ovHit(x, y) {
     for (var i = ov.order.length - 1; i >= 0; i--) {
       var o = ov.order[i];
-      // 场次色带只是标题条, 不参与点击命中(点它没有明确语义:
-      // 是跳到该场第一局? 还是只选中场次? 容易误操作)。命中只认分P 块。
-      if (o.band) { continue; }
       if (x >= o.x0 && x <= o.x1 && y >= o.y && y <= o.y + o.h) { return o; }
     }
     return null;
+  }
+
+  // 色带命中后要跳到"这一场的第一局"。紧凑态只画色带不画分P 块,
+  // 如果不让色带可点, 收起分P 时就没法从总览切场了 —— 所以色带必须可点。
+  function bandFirstBlock(band) {
+    var bs = band.tr && band.tr.blocks;
+    return (bs && bs.length) ? bs[0] : null;
   }
 
   ovCanvas.addEventListener('mousemove', function (e) {
@@ -1880,6 +1931,9 @@
       ovCanvas.style.cursor = 'pointer';
       ovCanvas.title = tr.title + ' · ' + (b.part || ('P' + b.p)) +
         '（' + fmtCnt(Math.round((b.durMs) / 1000)) + '，点击播放这一局）';
+    } else if (hit && hit.band) {
+      ovCanvas.style.cursor = 'pointer';
+      ovCanvas.title = hit.tr.title + '（点击播放这一场）';
     } else {
       ovCanvas.style.cursor = 'crosshair';
       ovCanvas.title = '点击跳到该时刻';
@@ -1892,6 +1946,11 @@
     var x = e.clientX - r.left, y = e.clientY - r.top;
     var hit = ovHit(x, y);
     if (hit && hit.it) { playFromOverview(hit.it.tr, hit.it.b); return; }
+    if (hit && hit.band) {
+      var fb = bandFirstBlock(hit);
+      if (fb) { playFromOverview(hit.tr, fb); return; }
+      playFromOverview(hit.tr, null); return;
+    }
     // 点空白: 跳到该墙钟时刻(分段映射翻译成虚拟轴位置, 落在局间休息时吸附到最近分P)
     if (state.applied) { seekToWallMs(ovMs(x)); }
   });
@@ -1936,14 +1995,30 @@
       if (selDate.value) { loadOverview(selDate.value); loadMatchList(selDate.value); }
     });
   }
+  if (btnOvExpand) {
+    btnOvExpand.addEventListener('click', function () { setOvExpanded(!ovExpanded); });
+  }
+
+  // 「更多」: 展开低频项(BV / 初始偏移 / 手动微调)。
+  if (btnMore && moreBox) {
+    btnMore.addEventListener('click', function () {
+      var open = moreBox.hidden;
+      moreBox.hidden = !open;
+      btnMore.textContent = open ? '收起 ▴' : '更多 ▾';
+    });
+  }
 
 
-  // 手动校准面板默认折叠; 自动校准失败时自动展开, 让兜底入口可见。
+  // 自动校准失败时把「更多」展开, 让手动微调这个兜底入口可见。
+  // 原来这里操作的是 <details>.open, 现在手动微调在「更多」里, 语义改成展开 More。
   function updateManualCalibOpen() {
-    if (!manualCalib) { return; }
+    if (!moreBox || !btnMore) { return; }
     var autoFailed = alignStatus && !alignStatus.hidden &&
                      /失败|不可用|错误/.test(alignStatus.textContent || '');
-    if (autoFailed) { manualCalib.open = true; }
+    if (autoFailed && moreBox.hidden) {
+      moreBox.hidden = false;
+      btnMore.textContent = '收起 ▴';
+    }
   }
 
   // 手动微调: 对所有分P 施加同一个平移量(delta), 然后重算弹幕映射并保存。
@@ -2373,6 +2448,7 @@
     syncMuteIcon();
     syncQualityBtn();
     syncSpoilerBtn();
+    setOvExpanded(false);          // 总览默认紧凑(钉顶, 只显示密度 + 场次色带)
     loadDays();
     requestAnimationFrame(loop);
   }

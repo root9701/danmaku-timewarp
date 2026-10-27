@@ -207,16 +207,16 @@ body {
 
 /* ---------- 总览时间轴（剪辑软件式多轨） ---------- */
 #ov-wrap {
-  position: relative; width: 100%; height: 118px; margin-top: 4px;
+  position: relative; width: 100%; height: 130px; margin-top: 4px;
   background: #0a0c10; border: 1px solid var(--line); border-radius: 8px;
   overflow: hidden;
-  /* 有轨道块时加高(JS 给 .has-lanes 类), 否则密度图会把轨道区挤到没有高度,
-     分P 色块画不出来(实测块全被压成 0 高, 总览点不到任何场次)。
+  /* 高度由 JS 按内容设置(drawOverview 里读 clientHeight 同步 canvas)。
+     有分P 块时约 150px: 密度图 ~60px + 场次色带 14px + 分P 块 20px + 时间刻度。
      注意: 不要加 height 过渡动画 —— drawOverview 会在同一次调用里读取
      clientHeight 来同步 canvas 尺寸, 过渡期间读到的是旧高度, canvas 会一直
      停在旧尺寸, 块仍然画不出来。 */
 }
-#ov-wrap.has-lanes { height: 176px; }
+#ov-wrap.has-lanes { height: 150px; }
 #ov-canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
 .ov-legend {
   display: flex; flex-wrap: wrap; gap: 10px 16px;

@@ -732,6 +732,24 @@
     state.pendingAutoplay = !!autoplay;
     videoEl.src = state.segs[i];
     videoEl.load();
+    // 换分P 时立刻把进度条归位到新分P 的起点。
+    // 不重置的话, 上一分P 播完时进度条停在 100%, 切到下一分P 后
+    // timeupdate 要等首帧才触发, 这段时间里"进度条在末尾、画面却是第二段开头",
+    // 看起来像进度条坏了。这里先画一次, 保证切换瞬间就是对的。
+    syncProgress();
+  }
+  // 按当前分P 刷新进度条与时间标签(时间轴只有一条: 每个分P 各自独立计时)。
+  function syncProgress() {
+    var segLen = state.segLens[state.segIdx] || 0;
+    var segPos = videoEl.currentTime || 0;
+    var pct = segLen > 0 ? Math.min(100, Math.max(0, segPos / segLen * 100)) : 0;
+    progInner.style.width = pct + '%';
+    progThumb.style.left = pct + '%';
+    var label = fmtCnt(Math.floor(segPos)) + ' / ' + fmtCnt(Math.floor(segLen));
+    var pm = currentPageMark();
+    if (pm && pm.part) { label += '  ' + pm.part; }
+    if (effectiveRate() !== 1) { label += '  ' + effectiveRate() + '×'; }
+    timeLabel.textContent = label;
   }
   function seekV(sec) {
     if (!state.segs.length) { videoEl.currentTime = sec; return; }
@@ -1269,20 +1287,22 @@
   }
 
   function buildOvLegend(tracks) {
-    var html = '<span><i class="ov-dot" style="background:rgba(76,141,255,.75)"></i>弹幕密度</span>';
-    tracks.forEach(function (t, i) {
-      var c = OV_COLORS[i % OV_COLORS.length];
-      // 未对齐的场次不分配色块(offset=0 会被误画到时间轴起点, 还会和别的块重叠),
-      // 在图例里明确标出来, 让用户知道"这场没算出来"而不是"画丢了"。
+    // 场次名已经画在时间轴的色带里了, 这里不再重复列一遍(那样又长又不直观)。
+    // 只保留"需要注意"的场次: 未对齐、缺 BV —— 这些在轴上画不出块,
+    // 不说明的话用户会以为"图画丢了"。
+    var html = '';
+    tracks.forEach(function (t) {
       var nParts = (t.parts || []).length;
       var unaligned = !nParts && !t.offset_sec;
       if (unaligned) {
-        html += '<span style="opacity:.5"><i style="background:#4b5563"></i>' +
+        html += '<span style="opacity:.75"><i style="background:#4b5563"></i>' +
                 t.title + '<b style="color:#ff7a59"> 未对齐</b></span>';
         return;
       }
-      html += '<span><i style="background:' + c + '"></i>' + t.title +
-              (t.bv ? '' : '<b style="color:#ff7a59"> 缺BV</b>') + '</span>';
+      if (!t.bv) {
+        html += '<span style="opacity:.75"><i style="background:#4b5563"></i>' +
+                t.title + '<b style="color:#ff7a59"> 缺BV</b></span>';
+      }
     });
     ovLegend.innerHTML = html;
   }
@@ -1333,6 +1353,20 @@
   // 旧实现为了"不重叠"会自动开多条轨道, 但实测相邻分P 之间常有约 1 秒的重叠
   // (对齐误差), 于是 4 个块被拆成 4 条轴 —— 视觉上像 4 条独立的时间线, 很乱。
   // 现在统一放一条轴, 用**颜色区分场次**、用**深浅区分分P**, 重叠时后者压前者即可。
+  // 把 #rrggbb 按比例调暗/调亮。amt<0 变暗, amt>0 变亮。
+  // 用于场次色带: 同一个场次色, 色带用暗一档、分P 块用原色, 层次分明。
+  function shadeColor(hex, amt) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!m) { return hex || '#666'; }
+    var n = parseInt(m[1], 16);
+    var r = (n >> 16) & 255, gg = (n >> 8) & 255, b = n & 255;
+    function f(v) {
+      var x = amt < 0 ? v * (1 + amt) : v + (255 - v) * amt;
+      return Math.max(0, Math.min(255, Math.round(x)));
+    }
+    return 'rgb(' + f(r) + ',' + f(gg) + ',' + f(b) + ')';
+  }
+
   function layoutOverviewLanes() {
     var all = [];
     ov.tracks.forEach(function (tr, ti) {
@@ -1443,7 +1477,10 @@
     // 事件标记统一放在这条主时间轴上, 既能辅助校准(点它跳转), 也能看清节奏。
     ov.order = [];
     // ---- 下方: 分P块按时间摆进主轴轨道(不重叠的共用一条轨道) ----
-    var laneTop = densTop + densH + 10;
+    // 高度按内容收缩: 密度图固定占比, 下面只留"场次色带 + 分P 块"需要的高度。
+    // 原来固定 176px, 只有一行块时下半截全是空的, 显得很空。
+    // 22 = 色带高度(14) + 色带与块之间的间隙(8)。
+    var laneTop = densTop + densH + 22;
     var avail = h - laneTop - 18;
     // 没有场次(tracks 为空)时不要画空轨道底纹 —— 那会让人以为"加载失败"。
     // 改为画一行说明, 明确告诉用户"这晚有弹幕但没配赛程", 而不是留一片空白。
@@ -1489,30 +1526,59 @@
         g.beginPath(); g.moveTo(x0 + 0.5, y); g.lineTo(x0 + 0.5, y + laneH); g.stroke();
       }
       ov.order.push({ it: it, x0: x0, x1: x0 + bwid, y: y, h: laneH });
-      if (bwid > 30) {
+      // 块内文字: 第一行是"第一局/第二局"(分P 名), 第二行给场次名(只在够宽时画)。
+      // 分P 名是用户选块的直接依据, 优先保证它可见。
+      if (bwid > 26) {
         g.fillStyle = '#06121f'; g.font = 'bold 9px sans-serif';
-        // 块内直接写**分P 名称**(如 "第一局"/"赛前评论"), 不再加 "G1·" 序号前缀 ——
-        // 序号对用户没信息量, 而且上传顺序与真实时间顺序常常不一致, 容易误导。
         var label = String(b.part || ('P' + b.p));
         g.fillText(label.slice(0, Math.max(2, Math.floor(bwid / 8))), x0 + 3, y + laneH - 4);
-      } else if (realW < 30) {
-        // 太窄放不下文字: 在色块上方点一个小三角 + 短标签, 让它"看得见"。
-        // 只标前 4 个字, 避免互相重叠。
-        g.fillStyle = tr.color;
-        g.globalAlpha = 0.95;
-        g.beginPath();
-        g.moveTo(x0 + bwid / 2, y - 1);
-        g.lineTo(x0 + bwid / 2 - 3, y - 5);
-        g.lineTo(x0 + bwid / 2 + 3, y - 5);
-        g.closePath();
-        g.fill();
-        g.globalAlpha = 1;
-        g.fillStyle = 'rgba(230,233,239,.85)';
-        g.font = '8px sans-serif';
-        g.textAlign = 'center';
-        g.fillText(String(b.part || ('P' + b.p)).slice(0, 4), x0 + bwid / 2, y - 7);
-        g.textAlign = 'left';
+      } else {
+        // 太窄放不下文字: 用一道更亮的细边标出来, 保证"看得见、点得中",
+        // 但**不加引线标签** —— 短分P 常常紧挨着主块, 标签会互相压住, 反而更乱。
+        // 具体是什么, 由 hover 提示和上方色带说明。
+        g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1;
+        g.strokeRect(x0 + 0.5, y + 0.5, Math.max(1, bwid - 1), laneH - 1);
       }
+    });
+
+    // ---- 场次色带 + 队伍名(画在分P 色块**上方**) ----
+    // 需求: "在比赛的条上面显示谁 vs 谁, 而不是在下面显示"; 用一个统一的色带代表
+    // 一整场(从该场第一个分P 开始到最后一个分P 结束), 队伍名写在色带里,
+    // 分P 块落在色带下方 —— 视觉上是"一场比赛包含若干局", 而不是几个并列的色块。
+    var bandH = 13;
+    // 色带紧贴在密度图下方, 与分P 块之间留 6px —— 看上去是"标题 + 内容"两层。
+    var bandTop = laneTop - bandH - 6;
+    ov.tracks.forEach(function (tr) {
+      if (!tr.blocks || !tr.blocks.length) { return; }
+      var bs = ovX(tr.blocks[0].startMs);
+      var be = ovX(tr.blocks[tr.blocks.length - 1].startMs +
+                   tr.blocks[tr.blocks.length - 1].durMs);
+      if (!(be > bs)) { return; }
+      var bw = Math.max(3, be - bs);
+      // 色带: 实色(略暗)底 + 亮色顶边。半透明在深色背景上几乎看不见,
+      // "谁 vs 谁"就白写了。
+      g.globalAlpha = 0.9;
+      g.fillStyle = shadeColor(tr.color, -0.45);
+      g.fillRect(bs, bandTop, bw, bandH);
+      g.globalAlpha = 1;
+      g.fillStyle = tr.color;
+      g.fillRect(bs, bandTop, bw, 2);
+      // 队伍名: 色带够宽就居中写全名, 窄了就把名字压到色带右上方(不截断到不可读)
+      g.font = 'bold 10px sans-serif';
+      g.textBaseline = 'middle';
+      var name = String(tr.title || '');
+      var tw = g.measureText(name).width;
+      if (tw + 8 <= bw) {
+        g.fillStyle = '#e8ebf2';
+        g.fillText(name, bs + 4, bandTop + bandH / 2 + 0.5);
+      } else if (bw > 10) {
+        // 太窄: 名字写在色带左侧外, 左对齐, 并用同色小方块示意它属于这条带
+        g.fillStyle = '#c9d0dc';
+        g.fillText(name, bs + bw + 4, bandTop + bandH / 2 + 0.5);
+      }
+      g.textBaseline = 'alphabetic';
+      ov.order.push({ band: true, tr: tr, x0: bs, x1: bs + bw,
+                      y: bandTop, h: bandH });
     });
 
     // ---- 当前播放位置(竖直白线) ----
@@ -1530,6 +1596,9 @@
   function ovHit(x, y) {
     for (var i = ov.order.length - 1; i >= 0; i--) {
       var o = ov.order[i];
+      // 场次色带只是标题条, 不参与点击命中(点它没有明确语义:
+      // 是跳到该场第一局? 还是只选中场次? 容易误操作)。命中只认分P 块。
+      if (o.band) { continue; }
       if (x >= o.x0 && x <= o.x1 && y >= o.y && y <= o.y + o.h) { return o; }
     }
     return null;
@@ -1813,22 +1882,25 @@
 
   videoEl.addEventListener('timeupdate', function () {
     if (!isFinite(state.duration) || state.duration <= 0) { return; }
-    var pct = Math.min(100, getV() / state.duration * 100);
-    progInner.style.width = pct + '%';
-    progThumb.style.left = pct + '%';
-    var label = fmtCnt(Math.floor(getV())) + ' / ' + fmtCnt(Math.floor(state.duration));
-    var pm = currentPageMark();
-    if (pm && pm.part) { label += '  ' + pm.part; }
-    if (effectiveRate() !== 1) { label += '  ' + effectiveRate() + '×'; }
-    timeLabel.textContent = label;
+    // 进度条按**当前分P**算, 不按整场总和。
+    // 一场回放通常是多个分P(第一局 2905s + 赛后采访 386s ...), 求和后是第一局的
+    // 1.3 倍 —— 第一局播完时进度条只走到 76%, 看起来"播完了还没走完";
+    // 接着自动切到下一分P 时 getV() 从 2905 跳到 0 附近, 进度条又猛地回退。
+    // 用户要看的是"这一局播了多少", 分母就该是这一局的长度。
+    syncProgress();
     syncTitleForPlayback();
   });
 
   function seekByPointer(e) {
-    if (!isFinite(state.duration) || state.duration <= 0) { return; }
+    // 拖动只在当前分P 内定位(与进度条的分母保持一致)。
+    // 进度条代表"当前分P 的进度", 所以拖动结果也要换算成该分P 内的位置,
+    // 再交给 seekV(它接收的是虚拟轴坐标, 会自行换算到具体分P)。
+    var segLen = state.segLens[state.segIdx] || 0;
+    if (!(segLen > 0)) { return; }
     var rect = prog.getBoundingClientRect();
     var pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    seekV(pct * state.duration);
+    var segStart = state.segStarts[state.segIdx] || 0;
+    seekV(segStart + pct * segLen);
   }
   var progDrag = false;
   prog.addEventListener('pointerdown', function (e) {

@@ -13,7 +13,8 @@ import re
 import sys
 from pathlib import Path
 
-PROJECT = Path(r"D:\工作区\10_项目\浏览器\lol延时直播")
+# 从仓库根推, 不写死绝对路径(换机器/换目录仍可用)
+PROJECT = Path(__file__).resolve().parent.parent
 DATA = PROJECT / "danmaku-collector" / "data"
 MATCHES = PROJECT / "danmaku-server" / "matches.json"
 

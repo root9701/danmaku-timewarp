@@ -20,7 +20,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# 本脚本住 tools/, 目标数据在采集端目录下 —— 从仓库根推, 不依赖 cwd
+ROOT = Path(__file__).resolve().parent.parent / "danmaku-collector"
 DATA_DIR = ROOT / "data"
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

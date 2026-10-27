@@ -122,7 +122,10 @@
       </div>
     </div>
 
-    <!-- 右侧弹幕栏: 顺带承担直播间氛围(在线人数 + 装饰性发送框) -->
+    <!-- 右侧弹幕栏: 顺带承担直播间氛围(在线人数 + 装饰性发送框)
+         外层 .rail-slot 只负责"占一列、没有内在高度", 内层 .rail 绝对定位铺满它,
+         这样弹幕再多也不会把主区撑高(详见 style.css 里 .main 的注释)。 -->
+    <div class="rail-slot">
     <aside id="side" class="rail">
       <div class="rail-head">弹幕 <em id="dm-online"></em></div>
       <div id="sc-banner" hidden></div>
@@ -132,6 +135,7 @@
         <button type="button" disabled>发送</button>
       </div>
     </aside>
+    </div>
   </main>
 
   <!--

@@ -104,9 +104,22 @@ button, input, select { font-family: inherit; }
   margin-right: 5px; vertical-align: -1px;
 }
 
-/* ---------- 主区 ---------- */
-.main { display: flex; gap: 12px; padding: 14px 18px 0; align-items: stretch; }
-.stage-col { flex: 1; min-width: 0; }
+/* ---------- 主区 ----------
+   为什么用 grid + 槽位, 而不是 flex:
+   原先 `.main{display:flex; align-items:stretch}` 让行高等于**最高的子项**。
+   弹幕列表有内容时它的固有高度可以上万像素(实测 60 条 → 6779px), 于是整个主区被撑到
+   6873px, 播放器却只有 539px —— 画面下方空出一大片黑, 弹幕栏也不滚动(整页被拉长)。
+   这里让侧栏槽位**没有内在高度**(唯一子元素是绝对定位), 行高就只由播放器的
+   aspect-ratio 决定; 侧栏再绝对定位铺满槽位, 高度自然与播放器等齐。 */
+.main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 292px;
+  gap: 12px;
+  padding: 14px 18px 0;
+  align-items: stretch;
+}
+.stage-col { min-width: 0; }
+.rail-slot { position: relative; min-width: 0; }
 
 /* ---------- 播放器 ---------- */
 .player-wrap {
@@ -277,7 +290,8 @@ button, input, select { font-family: inherit; }
 
 /* ---------- 右侧弹幕栏 ---------- */
 .rail {
-  flex: 0 0 292px;
+  /* 绝对定位铺满 slot: 高度由播放器决定, 与弹幕条数无关 */
+  position: absolute; inset: 0;
   display: flex; flex-direction: column; min-height: 0;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden;
@@ -298,7 +312,9 @@ button, input, select { font-family: inherit; }
 }
 .sc-line { color: #e6b98e; }
 #dm-list {
-  flex: 1; overflow-y: auto; padding: 6px 13px;
+  /* min-height:0 必写: flex 子项的默认 min-height 是 auto, 不清零的话
+     "flex:1 + overflow:auto" 不会收缩, 内容会把容器撑到内容高度(滚动条永不出现)。 */
+  flex: 1; min-height: 0; overflow-y: auto; padding: 6px 13px;
   font-size: 13px; line-height: 1.95;
 }
 #dm-list::-webkit-scrollbar { width: 6px; }
@@ -397,10 +413,10 @@ button, input, select { font-family: inherit; }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1100px) {
-  .main { flex-direction: column; }
-  .rail { flex: none; width: 100%; height: 260px; }
+  /* 单列: 侧栏回到正常流, 给它一个固定高度; 槽位不再需要绝对定位 */
+  .main { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 0; }
+  .rail-slot { height: 260px; }
   .toolbar { margin: 12px; }
-  .main { padding: 12px 12px 0; }
   #topbar { padding: 10px 12px; }
   .dock-head { padding: 8px 12px 6px; }
   .dock-body { padding: 0 12px 8px; }

@@ -98,3 +98,8 @@ danmaku-server/config.json
 # 演化方向与未实施决策：只在本机保留，不随仓库分发
 演化方向.md
 
+
+# 本机项目状态快照生成器与截图：只在本机用(依赖不入库的 matches.json)，
+# 别人 clone 下来跑不出有意义的结果。
+docs/
+

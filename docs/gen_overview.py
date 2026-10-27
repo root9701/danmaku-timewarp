@@ -367,9 +367,13 @@ ul.tight li b{color:var(--tx)}
         <tr><td><code>danmaku-collector/启动控制台.bat</code></td><td>网页控制台 8787</td>
           <td>改配置 / 看进度 / 手动启停</td></tr>
         <tr><td><code>danmaku-server/启动回放台.bat</code></td><td>本机播放 127.0.0.1:8789</td>
-          <td>只有本机能访问</td></tr>
+          <td>只有本机能访问，不显示二维码</td></tr>
         <tr><td><code>danmaku-server/启动回放台_局域网.bat</code></td><td>局域网播放 0.0.0.0:8789</td>
           <td>平板/手机同 WiFi 可看，启动时打印二维码</td></tr>
+        <tr><td><code>danmaku-server/退出回放台.bat</code></td><td>停止回放台</td>
+          <td>按端口 8789 精确找进程，不误伤其它 python</td></tr>
+        <tr><td><code>danmaku-collector/退出控制台.bat</code></td><td>停止采集控制台</td>
+          <td>连带采集任务一起停（按端口 8787 定位）</td></tr>
       </tbody>
     </table>
   </div>

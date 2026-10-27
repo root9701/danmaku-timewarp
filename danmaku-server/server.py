@@ -3157,24 +3157,55 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, OSError):
         pass
+    # 监听地址来源: 环境变量 DANMAKU_HOST > config.json 的 host > 默认 127.0.0.1。
+    # 这里把**实际生效值**和来源都打出来 —— 曾经出现过: config.json 存了 0.0.0.0,
+    # 而「启动回放台.bat」标题写"仅本机", 结果实际绑定 0.0.0.0 并打印二维码,
+    # 用户看到的标题和实际行为自相矛盾, 排查时无从下手。
+    host_src = ("环境变量 DANMAKU_HOST" if os.environ.get("DANMAKU_HOST", "").strip()
+                else ("config.json 的 host" if str(_cfg("host", default="")).strip()
+                      else "默认值"))
+    lan = HOST not in ("127.0.0.1", "localhost")
+    ips = _lan_ips() if lan else []
     print()
     print("=" * 60)
     print("  弹幕延时直播 · 本地服务器")
     print(f"  本机访问:     http://127.0.0.1:{PORT}")
-    lan = HOST not in ("127.0.0.1", "localhost")
-    ips = _lan_ips() if lan else []
     for ip in ips:
         print(f"  局域网访问:   http://{ip}:{PORT}")
+    print(f"  监听地址:     {HOST}:{PORT}  (来自{host_src})")
     print(f"  采集数据目录: {DATA_DIR}")
     print(f"  B站Cookie:    {'已加载' if load_cookie_header() else '未配置(可选)'}")
     print("  停止: 关闭本窗口, 或按 Ctrl+C")
     print("=" * 60)
+    if not lan:
+        print("  仅本机可访问。要让手机/iPad 看, 请用「启动回放台_局域网.bat」。")
+    elif not ips:
+        print("  [注意] 已绑定 0.0.0.0, 但没探测到局域网 IP(未连 WiFi?), 手机可能连不上。")
     if lan and ips:
         print()
         print("  手机/iPad 扫码访问（和电脑连同一个 WiFi）:")
         print()
         _print_qr(f"http://{ips[0]}:{PORT}")
-    web.run_app(build_app(), host=HOST, port=PORT, print=None)
+    try:
+        web.run_app(build_app(), host=HOST, port=PORT, print=None)
+    except OSError as e:
+        # 端口被占用是最常见的启动失败(比如上次的窗口没关、或另一个 bat 还开着)。
+        # 默认的 aiohttp 异常是 20 行 traceback, 用户看不出该怎么办, 这里给可执行的指引。
+        if getattr(e, "errno", None) in (48, 10048) or "10048" in str(e):
+            print()
+            print("=" * 60)
+            print(f"  [启动失败] 端口 {PORT} 已被占用")
+            print("=" * 60)
+            print("  多半是已经有一个回放台在运行了。可以:")
+            print(f"    1. 回去找那个旧窗口, 直接关掉它; 或")
+            print(f"    2. 双击「退出回放台.bat」一键清理; 或")
+            print(f"    3. 命令行查是谁占的: netstat -ano | findstr :{PORT}")
+            print()
+            print("  如果你就想同时开两个, 改 config.json 的 port 再启动。")
+            print("=" * 60)
+        else:
+            print(f"\n  [启动失败] {e}\n")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

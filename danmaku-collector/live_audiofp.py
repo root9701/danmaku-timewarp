@@ -2,10 +2,9 @@
 """live_audiofp.py — 弹幕采集器音频指纹 sidecar（自包含模块）。
 
 为夜间弹幕采集附带记录直播音频指纹(.afp.jsonl), 供次日把弹幕时间轴对齐到官方回放:
-  - 指纹算法复制自 D:\\工作区\\tmp\\alignproto\\audiofp.py(量化前逐 bit 等价):
+  - 指纹算法与播放端 danmaku-server/audiofp.py **逐 bit 等价**(两侧同名函数必须同步修改):
     分帧 -> 汉明窗 FFT -> 33 个对数频带能量 -> log10 -> 每帧 L2 归一化;
-  - 拉流复刻 D:\\工作区\\tmp\\livepull\\fetch_live_url.py 的 web_v2 路径
-    (buvid3 预热 + 浏览器 UA/Referer, 两步取最低 qn 的 flv);
+  - 拉流走 web_v2 路径(buvid3 预热 + 浏览器 UA/Referer, 两步取最低 qn 的 flv);
   - ffmpeg(imageio-ffmpeg 自带二进制) -vn 解码为 16kHz 单声道 s16le PCM, 增量算指纹。
 
 afp 文件契约(UTF-8 JSONL, 与弹幕数据同目录同基础名):

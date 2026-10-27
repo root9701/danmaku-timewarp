@@ -1,3 +1,18 @@
-aiohttp>=3.9
-numpy>=1.24
-imageio-ffmpeg>=0.4
+# 弹幕回放台依赖
+#
+# 版本**精确锁定**(==)而不是 >=:
+#   1. numpy 1.x -> 2.x 有破坏性 API 变更(如 np.float_ 移除)。校准算法大量使用
+#      FFT 与数组运算, 版本漂移可能让它**静默算错**而不是报错 —— 这是最危险的失败方式。
+#   2. imageio-ffmpeg 自带 ffmpeg 二进制, 版本间抽音频的行为可能不同, 而整个音频
+#      指纹流程都依赖它。锁死才能保证用户算出的指纹与作者一致。
+#   3. 用户环境与作者环境完全一致 -> 出问题时可复现, 不必先猜"是不是版本差异"。
+#
+# 升级方式: 改这里的版本号 -> 在本机 venv 里 pip install -r 验证通过后再提交,
+# 不要只改数字。改完必须跑 tests/run_all.py 与 tools/quality_gate.py。
+aiohttp==3.14.5
+numpy==2.5.4
+imageio-ffmpeg==0.6.0
+
+# 可选但已纳入锁定: 缺了不致命, 但有它体验完整
+qrcode==8.2          # 局域网模式终端二维码(server.py 里有 import 失败降级)
+tzdata==2026.5       # Windows 上 zoneinfo 需要它, 否则赛程时区解析抛异常

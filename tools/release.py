@@ -96,15 +96,42 @@ def check_version_shape():
 
 
 def check_tag_available(allow_existing=False):
-    """本地与远端都不能已有同名 tag —— 覆盖 tag 会让已下载的用户对不上号。"""
+    """本地与远端都不能已有同名 tag —— 覆盖 tag 会让已下载的用户对不上号。
+
+    唯一的例外: 本地有 tag 但**远端没有**。那说明上次发布卡在"打完 tag、
+    还没推"这一步(断网/代理), 此时 tag 指向的正是当前提交, 重试应当允许 ——
+    否则用户只能手动 `git tag -d` 才能继续, 而删 tag 正是最容易被误做成
+    "覆盖已发布版本"的动作。
+    """
     ok, out = _git("tag", "--list", TAG)
-    if ok and out.strip() and not allow_existing:
-        raise StepFailed(
-            f"本地已有 tag {TAG}。发布过的版本不能重发:\n"
-            f"  要么升 VERSION(改行为/接口), 要么删掉误打的 tag: git tag -d {TAG}")
+    if not ok:
+        raise StepFailed(f"查本地 tag 失败:\n{out}")
+    local_has = bool(out.strip())
     ok, out = _git("ls-remote", "--tags", GH_REMOTE, f"refs/tags/{TAG}")
-    if ok and TAG in out:
-        raise StepFailed(f"远端已有 tag {TAG}, 不能覆盖。先升 VERSION 再发。")
+    if not ok:
+        raise StepFailed(
+            f"查远端 tag 失败(网络?):\n{out}\n"
+            "  无法确认远端是否已有同名 tag 时不能继续 —— 覆盖已发布的 tag 会"
+            "让已下载的用户对不上号。")
+    remote_has = TAG in out
+
+    if remote_has and not allow_existing:
+        raise StepFailed(
+            f"远端已有 tag {TAG}, 不能覆盖。先升 VERSION 再发。\n"
+            f"  （发布过的版本不能重发: 用户手里那版会与 tag 指向的内容对不上）")
+    if local_has and not remote_has:
+        # 上次推到一半。确认它确实指向当前 HEAD, 才能放心复用。
+        ok, head = _git("rev-parse", "HEAD")
+        ok2, tag_commit = _git("rev-list", "-n", "1", TAG)
+        if not (ok and ok2 and head.strip() == tag_commit.strip()):
+            raise StepFailed(
+                f"本地 tag {TAG} 指向的不是当前提交, 且远端还没有这个 tag。\n"
+                f"  这通常意味着上次发布在不同的提交上中断了。先确认:\n"
+                f"    git log --oneline -3\n"
+                f"    git rev-parse {TAG}^0\n"
+                f"  确认后可删掉重打: git tag -d {TAG}")
+        say(f"  ! 本地已有 tag {TAG} 但远端没有(上次未推成功), 将复用")
+        return
     say(f"  ✓ tag {TAG} 未被占用")
 
 
@@ -163,6 +190,35 @@ def build(kind):
         raise StepFailed(f"打完却没找到 {z.name}")
     say(f"  ✓ {z.name}  {z.stat().st_size / 1024 / 1024:.1f} MB")
     return z
+
+
+def commit_index(dry_run):
+    """把重生成的清单提交掉。**漏这一步就等于没发布新数据。**
+
+    为什么必须单独提交: publish() 只做 `git push`, 而**未提交的工作区改动不会被
+    推送**。若清单只在工作区被改写, tag 指向的提交里仍是旧清单 —— 用户端
+    「检查更新」拉到的旧清单会认为"没有新数据", 而作者以为发过了。
+    这正是本脚本要防的那类"看起来发成功了、其实没有"的事故。
+    """
+    ok, dirty = _git("status", "--porcelain", "data-index.json")
+    if not ok:
+        raise StepFailed(f"查清单状态失败:\n{dirty}")
+    if not dirty.strip():
+        say("  ✓ 清单无变化")
+        return
+    if dry_run:
+        say("  [dry-run] 将要提交 data-index.json")
+        return
+    ok, out = _git("add", "data-index.json")
+    if not ok:
+        raise StepFailed(f"git add 清单失败:\n{out}")
+    ok, out = _git("commit", "-m",
+                   f"chore(数据): 重生成 data-index.json（{VERSION}）",
+                   "-m", "发布前由 tools/release.py --index 重生成。\n"
+                         "提交它, 否则 tag 指向的提交里仍是旧清单, 用户端拉不到新数据。")
+    if not ok:
+        raise StepFailed(f"提交清单失败:\n{out}")
+    say("  ✓ 已提交 data-index.json")
 
 
 def _free_port():
@@ -250,10 +306,14 @@ def publish(zips, dry_run):
         for z in zips:
             say(f"    - {z.name}")
         return
-    ok, out = _git("tag", "-a", TAG, "-m", f"弹幕时光机 {VERSION}")
-    if not ok:
-        raise StepFailed(f"打 tag 失败:\n{out}")
-    say(f"  ✓ 已打 tag {TAG}")
+    ok, out = _git("tag", "--list", TAG)
+    if ok and out.strip():
+        say(f"  ✓ 复用已存在的本地 tag {TAG}")
+    else:
+        ok, out = _git("tag", "-a", TAG, "-m", f"弹幕时光机 {VERSION}")
+        if not ok:
+            raise StepFailed(f"打 tag 失败:\n{out}")
+        say(f"  ✓ 已打 tag {TAG}")
     ok, out = _git("push", GH_REMOTE, "main", "--follow-tags", timeout=600)
     if not ok:
         raise StepFailed(
@@ -309,12 +369,9 @@ def main():
         if not args.skip_tests:
             run_tests()
         refresh_index()
-        # 重生成清单后工作区可能变脏(数据没变就不会)。这不算错误, 但要让用户知道
-        # 它会不会跟着这次提交出去。
-        ok, dirty = _git("status", "--porcelain")
-        if dirty.strip():
-            say("  ! 清单有变化, 记得随本次发布一起提交: "
-                + ", ".join(x.split()[-1] for x in dirty.strip().splitlines()[:5]))
+        # 清单重生成后**必须提交**, 而且要放在端到端实测通过之后 ——
+        # 实测失败时不该在历史里留下一个"为坏版本准备的清单"提交。
+        # 所以提交动作挪到 [4] 之后, 见下方。
 
         say("\n[3/{}] {}".format(len(steps), steps[2]))
         zips = [build(k) for k in KINDS]
@@ -322,6 +379,16 @@ def main():
         say("\n[4/{}] {}".format(len(steps), steps[3]))
         for k, z in zip(KINDS, zips):
             e2e(k, z)
+
+        # 两个包都实测通过, 才把清单落进历史。此时工作区必须干净 ——
+        # 发布要推的是一个完整、可复现的状态。
+        say("")
+        commit_index(args.dry_run)
+        ok, dirty = _git("status", "--porcelain")
+        if dirty.strip() and not args.dry_run:
+            raise StepFailed(
+                "发布前工作区仍有未提交改动:\n"
+                + "\n".join("  " + ln for ln in dirty.strip().splitlines()[:10]))
 
         if args.publish:
             say("\n[5/{}] {}".format(len(steps), steps[4]))

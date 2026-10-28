@@ -1,4 +1,4 @@
-"""弹幕延时直播 · 本地回放服务器 (danmaku-server/server.py)
+"""弹幕时光机 · 本地回放服务器 (danmaku-server/server.py)
 
 托管前端静态页 web/; 弹幕回放 API: /api/days /api/danmaku /api/match(GET/POST);
 B站视频对接: /api/playurl(取 mp4 直链) /api/stream(直链 403 时的反代兜底)。
@@ -3529,7 +3529,7 @@ def main() -> None:
     ips = _lan_ips() if lan else []
     print()
     print("=" * 60)
-    print("  弹幕延时直播 · 本地服务器")
+    print("  弹幕时光机 · 本地服务器")
     print(f"  本机访问:     http://127.0.0.1:{PORT}")
     for ip in ips:
         print(f"  局域网访问:   http://{ip}:{PORT}")

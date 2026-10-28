@@ -16,6 +16,16 @@
 └────────────────────────────┘      └────────────────────────────┘
 ```
 
+## 效果
+
+![播放界面](assets/player.jpg)
+
+一个页面同时给三样东西：**顶部是整晚的弹幕密度曲线**（哪一局什么时候打，一眼看得见），
+**中间是回放画面 + 弹幕飞过**，**右侧是弹幕列表**。下方是选场次与 offset 控制。
+
+> 上面这张是实际运行截图（HLE vs IG 第一局，弹幕已按指纹解出的 offset 对齐）。
+> 占位图，作者会替换成更好的版本。
+
 ## 原理
 
 直播弹幕的时间 = 真实墙钟；官方回放视频是另起一条时间轴。两者只差一个**固定的 offset**。
@@ -208,7 +218,7 @@ Riot esports API 取当日比赛块 → 生成场次草稿 → B站搜索官方�
 **端口被占用**时给出可执行提示（而不是一大段 traceback）。**局域网访问需防火墙放行**，管理员 PowerShell 执行一次：
 
 ```powershell
-New-NetFirewallRule -DisplayName "弹幕回放台" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
 ```
 
 并检查有无针对 python.exe 的入站拦截规则（有则删除）：

@@ -131,7 +131,7 @@ BP/解说段天然不独特（低到 1.1），但不代表位置错。实测 T1 
 
 ```powershell
 # 放行端口
-New-NetFirewallRule -DisplayName "弹幕回放台" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
 
 # 检查是否有拦 python.exe 的规则(有则删除, 否则任何 Python 服务都不通)
 Get-NetFirewallRule -Direction Inbound -Action Block | Where-Object { $_.DisplayName -eq "python.exe" }

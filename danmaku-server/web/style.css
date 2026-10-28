@@ -60,6 +60,12 @@ button, input, select { font-family: inherit; }
   color: var(--text-faint); font-variant-numeric: tabular-nums;
   font-size: 12px; white-space: nowrap;
 }
+/* 程序版本: 放在最右侧、最小号、最暗 —— 它的作用是"想查时查得到",
+   不该跟场次名/时钟抢注意力。窄屏直接隐藏(见文末媒体查询)。 */
+#app-version {
+  color: var(--text-faint); font-size: 11px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; opacity: .7;
+}
 
 /* ---------- 置顶总览 ---------- */
 .dock {
@@ -408,6 +414,8 @@ button, input, select { font-family: inherit; }
 }
 .align-status.ok { color: var(--ok); }
 .align-status.err { color: #d98a8a; }
+/* warn: 数据已更新但程序有新版本 —— 不是错误, 但要用户注意 */
+.align-status.warn { color: #d9b06c; }
 .align-status[hidden] { display: none; }
 
 /* ---------- toast ---------- */
@@ -436,4 +444,6 @@ button, input, select { font-family: inherit; }
   #btn-row { gap: 4px; }
   #rng-vol { width: 52px; }
   .topbar-meta { display: none; }
+  /* 窄屏优先保住场次名与时钟; 版本号可在「检查更新」的结果里看到 */
+  #app-version { display: none; }
 }

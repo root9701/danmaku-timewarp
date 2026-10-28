@@ -34,7 +34,11 @@ from urllib.parse import urlencode
 import aiohttp
 import brotli
 
-VERSION = "0.1.0"
+import version as _version
+
+# 版本号只在仓库根的 VERSION 文件里定义一次(见 version.py), 这里不写死。
+# 之前写死 "0.1.0" 而实际数据里记的是 "migrated"/"merged", 已经和现实脱节。
+VERSION = _version.read()
 SCRIPT_DIR = Path(__file__).resolve().parent
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/124.0.0.0 Safari/537.36")

@@ -33,6 +33,7 @@
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
   var btnDiscover = $('btn-discover');
   var btnUpdate = $('btn-update'), updateStatus = $('update-status');
+  var elAppVersion = $('app-version');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
   var btnOvRefresh = $('btn-ov-refresh'), btnOvExpand = $('btn-ov-expand');
   var elTopMeta = $('topbar-meta');
@@ -2145,13 +2146,24 @@
     btnUpdate.textContent = '检查中…';
     setUpdateStatus('正在检查远端数据…', '');
 
+    var appNotice = '';   // 程序有新版本时的提示, 数据更新完成后一起显示
+
     getJson('/api/update/check').then(function (j) {
       if (!j || !j.ok) {
         throw new Error(j && j.error ? j.error : '检查失败');
       }
+      // ---- 程序版本: 只提示, 绝不自动覆盖代码 ----
+      // 为什么不做自动更新: 覆盖代码要处理"半途中断 / 用户改过文件 / 新代码要新依赖"
+      // 三种情况, 任何一种没做好都会让程序起不来 —— 那比"用户多留一版旧程序"严重得多。
+      // 给一条命令让用户自己决定, 已经解决了"不知道有新版"这个主要问题。
+      if (j.app_update) {
+        appNotice = '；程序有新版本 v' + j.remote_app_version + '（当前 v' +
+          j.app_version + '），在仓库目录执行 git pull 后重启即可更新';
+      }
       if (!j.need) {
-        setUpdateStatus('已是最新（本地 ' + (j.local_days || []).length +
-          ' 天，远端最新 ' + (j.remote_latest || '?') + '）', 'ok');
+        setUpdateStatus('数据已是最新（本地 ' + (j.local_days || []).length +
+          ' 天，远端最新 ' + (j.remote_latest || '?') + '）' + appNotice,
+          appNotice ? 'warn' : 'ok');
         return null;
       }
       var days = (j.new_days || []).join('、');
@@ -2166,9 +2178,10 @@
       if (!j.ok) { throw new Error(j.error || '下载失败'); }
       if (j.verify_problems && j.verify_problems.length) {
         setUpdateStatus(j.message + '；但校验发现 ' + j.verify_problems.length +
-          ' 个问题：' + j.verify_problems.slice(0, 3).join('；'), 'err');
+          ' 个问题：' + j.verify_problems.slice(0, 3).join('；') + appNotice, 'err');
       } else {
-        setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），已刷新日期列表', 'ok');
+        setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），已刷新日期列表' + appNotice,
+          appNotice ? 'warn' : 'ok');
       }
       if ((j.updated || []).length) { reloadDays(); }
     }).catch(function (e) {
@@ -2545,6 +2558,17 @@
   window.addEventListener('resize', function () { drawOverview(); });
 
   /* ---------------- 启动 ---------------- */
+  // 版本号: 只报本地版本(不联网)。拿不到就留空 —— 不显示 "v0.0.0" 那种假版本,
+  // 那会让用户以为程序坏了。查远端版本是「检查更新」的事。
+  function loadAppVersion() {
+    if (!elAppVersion) { return; }
+    getJson('/api/version').then(function (j) {
+      if (j && j.ok && j.version) {
+        elAppVersion.textContent = 'v' + j.version;
+      }
+    }).catch(function () { /* 版本显示失败不该影响任何功能 */ });
+  }
+
   function init() {
     applySettings();
     // 防剧透开关初值来自持久化设置(默认开)
@@ -2554,6 +2578,7 @@
     syncQualityBtn();
     syncSpoilerBtn();
     setOvExpanded(false);          // 总览默认紧凑(钉顶, 只显示密度 + 场次色带)
+    loadAppVersion();
     loadDays();
     requestAnimationFrame(loop);
   }

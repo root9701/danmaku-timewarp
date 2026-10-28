@@ -180,6 +180,7 @@ UTF-8 JSONL，四种行：
 | `GET /api/markers?bv=` | B站 看点（一血/大龙/推塔…）换算到整条虚拟时间轴 |
 | `GET /api/stream?url=` | 反代 B站 CDN（白名单域名 + 解析后 IP 校验） |
 | `POST /api/autocalign` | 自动校准，`page=0` 表示全部分P |
+| `GET /api/version` | 当前程序版本（只读本地 `VERSION` 文件，**不联网**） |
 | `GET /api/update/check` | 拉远端 `data-index.json`，比对本地，返回待下载清单（不落盘） |
 | `POST /api/update/pull` | 按清单增量下载数据文件，原子落盘到 `data/` |
 

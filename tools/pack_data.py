@@ -31,6 +31,21 @@ ALIGN = ROOT / "danmaku-server" / "align"
 DIST = ROOT / "dist"
 
 
+def _app_version() -> str:
+    """程序版本, 来自仓库根的 VERSION(唯一源)。读不到返回空串。
+
+    这里**不 import 各端的 version.py**: 本脚本是发布工具, 只该依赖根目录的
+    那一个文件。读不到时给空串而不是 "0.0.0", 让清单里能看出"生成时没有版本信息",
+    而不是伪造一个版本号骗用户。
+    """
+    p = ROOT / "VERSION"
+    try:
+        txt = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return (txt.splitlines()[0].strip() if txt else "")
+
+
 def iter_sessions():
     """遍历正式会话目录; 跳过 _test 与隐藏目录。"""
     if not DATA.is_dir():
@@ -200,6 +215,9 @@ def write_index() -> int:
 
     idx = {
         "schema_version": 1,
+        # 程序版本: 用户端用它判断"我的代码是不是旧的"。
+        # 老清单没有这个字段 —— 读端必须容忍缺失(当作未知), 不能报错。
+        "app_version": _app_version(),
         "generated_at": None,       # 由调用方填, 便于人眼判断新鲜度
         "latest": max(days) if days else None,
         "days": {k: days[k] for k in sorted(days)},

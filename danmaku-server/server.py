@@ -44,6 +44,11 @@ from urllib.parse import quote, urlparse
 import aiohttp
 from aiohttp import web
 
+# 程序版本(唯一源是仓库根的 VERSION 文件, 见 version.py)
+import version as appversion
+
+APP_VERSION = appversion.read()
+
 # 数据增量更新(缺库不致命: 只是"检查更新"按钮不可用, 其余功能不受影响)
 try:
     import dataupdate            # 本目录 dataupdate.py
@@ -3293,15 +3298,34 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             "elapsed_sec": round(elapsed, 1), "message": message}
 
 
+async def handle_version(request: web.Request) -> web.Response:
+    """程序版本。前端顶栏右上角显示它, 用户据此判断自己是不是旧版。
+
+    **不联网**: 这里只报本地版本。查远端版本是「检查更新」的事 —— 放在启动路径上
+    会让双击脚本后多等几秒(网络差时更久), 而用户多数时候并不需要知道。
+    """
+    return api_ok(version=APP_VERSION)
+
+
 async def handle_update_check(request: web.Request) -> web.Response:
-    """查有没有新数据。不发下载, 只比对清单。"""
+    """查有没有新数据 / 新程序版本。不发下载, 只比对清单。
+
+    **数据更新与程序更新是两件事**, 必须分开报告:
+      - 数据: 每晚新增, 由本接口自动下载(dataupdate 只写 data/)。
+      - 程序: 代码变了, 本接口**只提示不下载**。自动覆盖代码的风险(半途中断、
+        覆盖用户改动、新代码要新依赖)远大于收益, 让它给一条命令让用户自己决定。
+    """
     if not HAS_DATAUPDATE:
         raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
     try:
         info = await asyncio.to_thread(dataupdate.check, DATA_DIR)
     except dataupdate.UpdateError as e:
         raise ApiError(str(e))
-    return api_ok(**info)
+    # 程序版本比较放在这里(服务端同时知道本地与远端), 前端只负责展示。
+    remote_app = info.pop("remote_app_version", None)
+    app_update = bool(remote_app) and appversion.is_newer(remote_app, APP_VERSION)
+    return api_ok(**info, app_version=APP_VERSION,
+                  remote_app_version=remote_app, app_update=app_update)
 
 
 async def handle_update_pull(request: web.Request) -> web.Response:
@@ -3462,6 +3486,7 @@ def build_app() -> web.Application:
     r.add_post("/api/autocalign", handle_autocalign)
     r.add_get("/api/update/check", handle_update_check)
     r.add_post("/api/update/pull", handle_update_pull)
+    r.add_get("/api/version", handle_version)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册
     return app
 

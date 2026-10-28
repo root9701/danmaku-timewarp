@@ -201,12 +201,17 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
 
 
 def check(data_dir: Path) -> dict:
-    """比对远端清单与本地, 返回可展示给用户的摘要(不下载)。"""
+    """比对远端清单与本地, 返回可展示给用户的摘要(不下载)。
+
+    `remote_app_version` 是**作者发布时的程序版本**(来自清单的 app_version 字段)。
+    老清单没有这个字段 -> 返回 None, 调用方必须容忍(当作"未知"), 不能报错。
+    """
     idx = fetch_index()
     have = local_days(data_dir)
     todo = plan(idx, have)
     return {
         "remote_latest": idx.get("latest"),
+        "remote_app_version": idx.get("app_version") or None,
         "local_days": sorted(have),
         "new_days": [d for d, _ in todo],
         "new_bytes": sum(int(e.get("bytes") or 0) for _, e in todo),

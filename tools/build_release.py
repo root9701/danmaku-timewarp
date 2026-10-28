@@ -49,6 +49,15 @@ FULL_ONLY = ("numpy", "numpy.libs", "imageio_ffmpeg")
 STDLIB_SKIP = ("test", "idlelib", "tkinter", "venv", "ensurepip", "pydoc_data",
                "site-packages", "__pycache__", "lib2to3", "turtledemo")
 
+# DLLs/ 是整块复制的, 不在 STDLIB_SKIP 的作用范围里 —— 于是排掉了 tkinter 却
+# 留下了它的**运行时**(tcl86t + tk86t, 3.3MB)。那只在 import tkinter 时才被加载,
+# 而本站是纯 HTTP 服务, 没有任何一行用到 tk。其余几个同理:
+#   _testcapi.pyd  CPython 自己的测试扩展
+#   _tkinter.pyd   tkinter 的 C 扩展(与上面两个成对)
+# libs/python312.lib 是**链接期**的导入库, 运行时完全不读, 直接不复制整个 libs/。
+# 合计约 3.9MB —— 不值得为它冒险, 但也不该白送。
+DLLS_SKIP = ("tcl86t.dll", "tk86t.dll", "_tkinter.pyd", "_testcapi.pyd")
+
 # 启动脚本(UTF-8 无 BOM + CRLF, 由 .gitattributes 固定 *.bat 为 CRLF)
 LAUNCH_BAT = """@echo off
 title 弹幕时光机 - 本机访问（关闭本窗口即停止）
@@ -60,6 +69,11 @@ echo ==============================================
 echo.
 rem 用包内自带的解释器, 不依赖系统装了 Python。
 rem 显式覆盖 host: 用户可能从局域网模式切回来, 不自造 0.0.0.0。
+rem PYTHONNOUSERSITE: 便携解释器默认仍会读 %APPDATA%\\Python\\Python312\\site-packages,
+rem 且**排在包内 site-packages 之前**(实测: imageio_ffmpeg 从 AppData 加载, 包里那份被盖掉)。
+rem 用户机器上若装过别的 Python 包, 可能出现"包里的依赖明明在却报错/版本不对",
+rem 而换台机器又好了 —— 这种问题最难查。彻底不读用户级目录。
+set PYTHONNOUSERSITE=1
 set DANMAKU_HOST=127.0.0.1
 set PYTHONIOENCODING=utf-8
 "%~dp0python\\python.exe" "%~dp0danmaku-server\\server.py"
@@ -82,6 +96,7 @@ echo   手机/iPad 和电脑连同一个 WiFi，扫下方二维码
 echo   关闭本窗口 = 停止服务
 echo ==============================================
 echo.
+set PYTHONNOUSERSITE=1
 set DANMAKU_HOST=0.0.0.0
 set PYTHONIOENCODING=utf-8
 "%~dp0python\\python.exe" "%~dp0danmaku-server\\server.py"
@@ -116,13 +131,15 @@ def copy_python(dst: Path) -> None:
         shutil.copy2(f, out / f.name)
     for f in base.glob("*.dll"):
         shutil.copy2(f, out / f.name)
-    for sub in ("DLLs", "Lib", "libs"):
+    # libs/ 不复制: 里面只有 python3xx.lib(链接期导入库), 运行时用不到。
+    for sub in ("DLLs", "Lib"):
         src = base / sub
         if not src.is_dir():
             continue
+        skip = STDLIB_SKIP + (DLLS_SKIP if sub == "DLLs" else ())
         shutil.copytree(
             src, out / sub,
-            ignore=shutil.ignore_patterns(*STDLIB_SKIP),
+            ignore=shutil.ignore_patterns(*skip),
             dirs_exist_ok=True)
 
 
@@ -142,9 +159,13 @@ def copy_deps(dst: Path, full: bool) -> list:
     dst_sp = dst / "python" / "Lib" / "site-packages"
     dst_sp.mkdir(parents=True, exist_ok=True)
 
+    # typing_extensions 是 aiohttp 的**必需**运行时依赖, 且在 site-packages 里是
+    # 单个 .py 文件而不是目录 —— 早先凭"目录列表"挑依赖时漏了它, 只因作者机器上
+    # 用户级 site-packages 恰好也装了同名包才没暴露。换台机器就是
+    # ModuleNotFoundError: No module named 'typing_extensions', 服务直接起不来。
     wanted = ["aiohttp", "aiohappyeyeballs", "aiosignal", "attr", "attrs",
               "frozenlist", "idna", "multidict", "propcache", "yarl",
-              "tzdata", "qrcode", "colorama"]
+              "typing_extensions", "tzdata", "qrcode", "colorama"]
     if full:
         wanted += list(FULL_ONLY)
 
@@ -178,6 +199,19 @@ def copy_deps(dst: Path, full: bool) -> list:
     return copied
 
 
+def _isolated_env() -> dict:
+    """冒烟/依赖检查用的环境: 掐断用户级 site-packages 与 PATH 里的 PYTHONHOME 干扰。
+
+    这几个变量必须清: 作者机器上若设过 PYTHONHOME / PYTHONPATH, 便携解释器会去读
+    系统那份标准库 —— 测出来全绿, 到用户机器上就 ImportError。
+    """
+    env = dict(os.environ)
+    env["PYTHONNOUSERSITE"] = "1"
+    for k in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(k, None)
+    return env
+
+
 def _check_deps(dst: Path, full: bool) -> list:
     """用**包里那份解释器**核对依赖, 而不是靠"文件看起来复制了"。
 
@@ -197,7 +231,7 @@ def _check_deps(dst: Path, full: bool) -> list:
         mods += ["numpy", "imageio_ffmpeg"]
     code = "import " + ", ".join(mods) + "\nprint('deps-ok')\n"
     r = subprocess.run([str(py), "-c", code], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", env=_isolated_env())
     if r.returncode != 0:
         return [f"导入失败({','.join(mods)}): {r.stderr.strip()[:200]}"]
     return []
@@ -322,10 +356,19 @@ def verify(dst: Path, full: bool) -> bool:
         f"assert server.HAS_AUDIOFP is {expect}, "
         f"'HAS_AUDIOFP 应为 {expect}, 实际 %r' % (server.HAS_AUDIOFP,)\n"
         "assert server.HAS_DATAUPDATE is True, 'dataupdate 不可用'\n"
+        # 依赖必须来自**包内**。便携解释器默认仍会读 %APPDATA%\\Python\\Python312\\site-packages
+        # 且排在包内目录之前 —— 作者机器上装着同名包, 测出来就是"借了系统那份"的假通过。
+        # 启动脚本已设 PYTHONNOUSERSITE=1 掐断, 这里按同样条件跑并显式断言。
+        f"pkg_sp = {str(dst / 'python' / 'Lib' / 'site-packages')!r}\n"
+        "for mod in ('aiohttp',):\n"
+        "    f = getattr(__import__(mod), '__file__', '') or ''\n"
+        "    assert f.startswith(pkg_sp), f'{mod} 未从包内加载: {f}'\n"
+        "print('  deps-from-pkg-ok')\n"
         "print('  asserts-ok')\n"
     )
     r = subprocess.run([str(py), "-c", code], capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
+                       text=True, encoding="utf-8", errors="replace",
+                       env=_isolated_env())
     print(r.stdout.rstrip() or f"  ✗ 无输出, stderr={r.stderr[:300]}")
     return r.returncode == 0
 

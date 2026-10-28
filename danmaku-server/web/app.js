@@ -2146,8 +2146,12 @@
       getJson('/api/update/progress').then(function (p) {
         if (!p || !p.ok) { return; }
         if (!p.running) { return; }          // 结束后由主流程收尾
+        // total 刚进入下载时还是 0（后端尚未拿到今天要下几个文件），此时说"0/0 天"
+        // 会让用户以为出错了。这种情况只报已用时间，不提天数。
         var el = (Date.now() - t0) / 1000;
-        var head = '正在下载 ' + p.done + '/' + p.total + ' 天';
+        var head = p.total > 0
+          ? '正在下载 ' + p.done + '/' + p.total + ' 天'
+          : '正在准备下载';
         if (p.current) { head += '（' + p.current + '）'; }
         var tail = '已用 ' + fmtElapsed(el);
         // 有 total 才能估总量; 没拿到就只说已用时间, 不编造百分比

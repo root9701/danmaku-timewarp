@@ -11,9 +11,9 @@
 </head>
 <body>
 
-  <!-- 顶栏: 品牌 + 当前场次 + 环境数据。不再放大段说明。 -->
+  <!-- 顶栏: 当前场次 + 环境数据。不再放大段说明, 也不放品牌大标语 ——
+       页面本身就是"弹幕时光机", 顶栏那个蓝底标签只占位置、抢视线。 -->
   <header id="topbar">
-    <span class="brand" aria-hidden="true">弹幕时光机</span>
     <h1 id="match-title">待加载</h1>
     <span id="live-badge">回放</span>
     <span class="topbar-sp"></span>
@@ -80,9 +80,10 @@
                 <div class="cpanel-head">弹幕设置</div>
                 <label class="cpanel-row"><span>显示区域</span>
                   <select id="sel-dm-area">
-                    <option value="1" selected>满屏</option>
+                    <option value="1">满屏</option>
                     <option value="0.75">3/4 屏</option>
-                    <option value="0.5">半屏</option>
+                    <option value="0.5" selected>半屏</option>
+                    <option value="0.25">1/4 屏</option>
                   </select>
                 </label>
                 <label class="cpanel-row"><span>不透明度</span>
@@ -90,8 +91,8 @@
                 </label>
                 <label class="cpanel-row"><span>弹幕字号</span>
                   <select id="sel-dm-size">
-                    <option value="20">小</option>
-                    <option value="26" selected>中</option>
+                    <option value="20" selected>小</option>
+                    <option value="26">中</option>
                     <option value="34">大</option>
                   </select>
                 </label>
@@ -106,7 +107,7 @@
                     <option value="0.1">更少</option>
                   </select>
                 </label>
-                <label class="cpanel-chk"><input id="chk-dm-stroke" type="checkbox" checked> 文字描边</label>
+                <label class="cpanel-chk"><input id="chk-dm-stroke" type="checkbox"> 文字描边</label>
                 <div class="cpanel-foot">
                   <button id="btn-dm-toggle" type="button" class="btn btn-sm">弹幕: 开</button>
                   <button id="btn-dm-reset" type="button" class="btn btn-sm btn-ghost">恢复默认</button>
@@ -114,8 +115,16 @@
               </div>
             </span>
             <button id="btn-dm-quick" type="button" class="cbtn" title="显示/隐藏弹幕">弹</button>
-            <button id="btn-mute" type="button" class="cbtn ico" title="静音">🔊</button>
-            <input id="rng-vol" type="range" min="0" max="100" value="100" title="音量">
+            <!-- 音量: 图标 + 悬停时向上弹出的竖向滑块(B站 的做法)。
+                 横条滑块常驻会占掉 72px, 把「弹/音量/全屏」挤到换行;
+                 竖向只有在想调的时候才出现, 平时只留一个图标。 -->
+            <span class="vol-wrap">
+              <button id="btn-mute" type="button" class="cbtn ico" title="静音">🔊</button>
+              <span class="vol-pop">
+                <input id="rng-vol" type="range" min="0" max="100" value="100" title="音量">
+                <b id="vol-num">100</b>
+              </span>
+            </span>
             <button id="btn-fs" type="button" class="cbtn ico" title="全屏（含弹幕层）">⛶</button>
           </div>
         </div>
@@ -146,23 +155,19 @@
   -->
   <section class="panel toolbar">
     <div class="tool-row">
-      <label class="fld"><span>日期</span>
+      <label class="fld fld-date"><span>日期</span>
         <select id="sel-date"></select>
       </label>
-      <label class="fld"><span>场次</span>
+      <label class="fld fld-grow fld-match"><span>场次</span>
         <select id="sel-match"></select>
       </label>
-      <label class="fld"><span>弹幕</span>
+      <label class="fld fld-grow"><span>弹幕</span>
         <select id="sel-file"></select>
       </label>
       <button id="btn-apply" type="button" class="btn btn-primary">播放</button>
       <span class="tool-sep"></span>
-      <button type="button" class="btn btn-accent" id="btn-auto-align"
-              title="用直播音频指纹与官方回放互相关，自动算出 offset">自动校准</button>
-      <span id="align-cur" class="align-cur">offset: --</span>
-      <span class="tool-sep"></span>
       <button id="btn-spoiler" type="button" class="btn btn-toggle" title="隐藏时间标记与分P 色块">防剧透</button>
-      <button id="btn-auto-advance" type="button" class="btn btn-toggle" title="一场播完自动接下一场">连播</button>
+      <button id="btn-auto-advance" type="button" class="btn btn-toggle on" title="一场播完自动接下一场">连播：开</button>
       <span class="tool-sep"></span>
       <button type="button" class="nbtn" id="btn-update"
               title="从 GitHub 拉取作者新采集的日期（只下缺的，不动已有数据）">检查更新</button>
@@ -173,9 +178,11 @@
 
     <div id="update-status" class="align-status" hidden></div>
 
-    <div id="align-status" class="align-status" hidden></div>
-
-    <!-- 低频/兜底项: 默认收起 -->
+    <!-- 低频/兜底项: 默认收起。
+         自动校准放这里是有意的: 它是"数据没对齐时的一次性补救", 一场只需点一次,
+         摆在主行里却是最宽的一个按钮, 会把场次/弹幕下拉框挤成省略号。
+         对齐结果(align-status)跟着进来 —— 否则点完校准还得抬头看主条下方,
+         而那条结果离按钮太远, 容易被当成"没反应"。 -->
     <div id="more-box" class="more-box" hidden>
       <label class="fld"><span>BV 号</span>
         <input id="inp-bv" type="text" placeholder="BV1xx411c7mD" spellcheck="false" autocomplete="off">
@@ -183,10 +190,17 @@
       <label class="fld"><span>初始偏移（秒）</span>
         <input id="inp-offset" type="number" step="1" value="0">
       </label>
+      <!-- 自动校准紧挨在手动微调前面: 两者是同一个动作的两种做法 ——
+           先用它算出 offset, 不满意再用后面的 ±5/±10 手动推。
+           中间隔着 BV/初始偏移会让人以为它们各管一摊。 -->
+      <button type="button" class="nbtn" id="btn-auto-align"
+              title="用直播音频指纹与官方回放互相关，自动算出 offset">自动校准</button>
+      <span id="align-cur" class="align-cur">offset: --</span>
       <span class="fld"><span>手动微调</span></span>
       <span class="nudge" id="manual-calib" title="即时微调弹幕对齐">
         <button type="button" class="nbtn" data-d="-30">-30</button><button type="button" class="nbtn" data-d="-10">-10</button><button type="button" class="nbtn" data-d="-5">-5</button><button type="button" class="nbtn" data-d="5">+5</button><button type="button" class="nbtn" data-d="10">+10</button><button type="button" class="nbtn" data-d="30">+30</button>
       </span>
+      <div id="align-status" class="align-status" hidden></div>
     </div>
   </section>
 

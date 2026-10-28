@@ -28,6 +28,7 @@
   var btnPlay = $('btn-play'), prog = $('prog'), progInner = $('prog-inner');
   var progThumb = $('prog-thumb'), timeLabel = $('time-label');
   var btnMute = $('btn-mute'), rngVol = $('rng-vol'), ctrlBar = $('ctrl-bar');
+  var volNum = $('vol-num');
   var btnRate = $('btn-rate'), speedBadge = $('speed-badge'), btnSkip = $('btn-skip');
   var btnAutoAdvance = $('btn-auto-advance');
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
@@ -45,9 +46,17 @@
   // 而 var 只提升声明、不提升初始化 —— 放在原来的位置(弹幕设置那一块)会让
   // 首次加载读到 undefined, 抛错后场次下拉框直接空掉。
   var settings = {
-    area: 1, opacity: 0.9, size: 26, density: 1,
+    // 默认值取舍(2026-10 按实机观感调整):
+    //   area 0.5  半屏 —— 满屏时弹幕从画面最顶压到最底, 把比赛画面(尤其团战)
+    //             盖掉一大半; 半屏只占上半部, 既能读到弹幕又看得见操作。
+    //   size 20   小 —— 26 号字在 1080p 下一行能占满整屏宽, 两三行就糊成一片。
+    //   stroke false 不描边 —— 描边是给"浅色画面上的白字"兜底的, 但 4px 黑边
+    //             在深色画面里会让字发胖、显脏; 关掉更接近 B站 默认观感。
+    // 注意: 这三项在 index.html 的默认 selected/checked 里也各有一份,
+    // 改这里必须同步改那里, 否则首屏控件显示与实际生效不一致。
+    area: 0.5, opacity: 0.9, size: 20, density: 1,
     speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
-    stroke: true,      // 文字描边
+    stroke: false,     // 文字描边
     spoiler: true      // 防剧透(默认开): 隐藏进度条标记、分P 色块、局数文案
   };
   var state = {
@@ -71,7 +80,9 @@
     boostRate: 0,         // 长按方向键的临时加速倍率(0=未激活)
     lastTapKey: 0, lastTapAt: 0,  // 双击 ←/→ 判定
     pendingOverview: null, // 从总览点选某局后, 待加载完成时定位的目标
-    autoAdvance: false    // 连播: 一场播完自动接下一场
+    // 连播(默认开): 一场播完自动接下一场。看整晚的用户是多数, 而"播完停住"
+    // 会让人以为卡了; 只想看一场的人点一下关掉即可 —— 开启态的按钮上有明确标注。
+    autoAdvance: true
   };
   var daysCache = [];
   var matchListCache = [];
@@ -347,9 +358,6 @@
 
   function fileLabel(f) {
     var s = f.start_ms, e = f.end_ms;
-    var room = '';
-    var mm = /(\d+)$/.exec(f.name || '');
-    if (mm) { room = mm[1]; }
     if (!s || !e) {
       // 只有指纹没有弹幕的会话(采集异常残留): 明确标出来, 别让人误选
       return (f.name || '') + '（无弹幕数据）';
@@ -358,10 +366,11 @@
     var span = sameDay
       ? fmtHm(s) + '–' + fmtHm(e)
       : fmtHm(s) + '–' + fmtYmd(e).slice(5) + ' ' + fmtHm(e);
-    var durH = (e - s) / 3600000;
-    var dur = durH >= 1 ? durH.toFixed(1) + 'h' : Math.max(1, Math.round((e - s) / 60000)) + '分';
-    return fmtYmd(s) + ' ' + span + '（' + dur + '）· ' +
-           fmtDmCount(f.dm_count) + '条 · ' + room +
+    // 不再带日期前缀: 左边的「日期」框已经把范围限死在同一天, 再重复一遍只是
+    // 把下拉框撑宽 —— 这正是工具条被挤到换行的主因(单这一项就 367px)。
+    // 也不写时长: 起止时间(00:59–08:00)本身就能看出多长, 括号里的 7.0h 是重复信息。
+    // 房间号同样不进标签, 排查时看 option 的 title。
+    return span + ' · ' + fmtDmCount(f.dm_count) + '条' +
            (f.is_test ? ' · 测试' : '');
   }
 
@@ -387,7 +396,8 @@
       var o = document.createElement('option');
       o.value = f.name;
       o.textContent = fileLabel(f);
-      // tooltip 保留完整会话名, 便于排查("这个选项到底指向哪个目录")
+      // tooltip 保留完整会话名, 便于排查("这个选项到底指向哪个目录")。
+      // 房间号也从标签移到了这里 —— 标签只留"哪个时间段、多少条"。
       o.title = f.name + (f.start_ms
         ? '\n开始 ' + new Date(f.start_ms).toLocaleString() +
           '\n结束 ' + new Date(f.end_ms).toLocaleString()
@@ -449,9 +459,11 @@
             // 与总览里被我们藏掉的分P 色块是同一个信息, 不在这里藏等于白藏。
             tag = nPages ? '（可播放）' : '（未对齐）';
           } else if (nPages && totPages && nPages < totPages) {
-            tag = '（已对齐 ' + nPages + '/' + totPages + ' 个分P）';
+            // 用「P」而不是「分P」: 这里只是告知对齐进度, 不是解释术语;
+            // 全称会把场次下拉框撑到 175px, 在 1200px 宽的窗口里正好被省略号截断。
+            tag = '（已对齐 ' + nPages + '/' + totPages + 'P）';
           } else if (nPages > 1) {
-            tag = '（已对齐 ' + nPages + ' 个分P）';
+            tag = '（已对齐 ' + nPages + 'P）';
           } else if (nPages === 1) {
             tag = '（已对齐）';
           } else if (!m.offset_sec) {
@@ -593,7 +605,9 @@
     if (ks.length > 1) {
       return ks.map(function (k) { return 'P' + k + '=' + state.pageOffsets[k].toFixed(1); }).join(' ');
     }
-    return String(Math.round(state.offsetSec * 1000) / 1000) + 's';
+    // 1 位小数就够: 指纹对齐的精度是秒级, 再多的位数只是让工具条变宽
+    // (3 位小数比 1 位多占约 12px, 而这一行的宽度已经是紧平衡)。
+    return state.offsetSec.toFixed(1) + 's';
   }
 
   function setup(date, file, dmText, match, play, bv, offset, matchTitle) {
@@ -1351,6 +1365,10 @@
   }
   function setSpoiler(on) {
     settings.spoiler = !!on;
+    // 防剧透开启时「展开分P」会被禁用(见 syncSpoilerBtn), 此时把 ovExpanded 落回
+    // false —— 否则用户在展开态点开防剧透(按钮变灰、行消失), 再关掉防剧透时
+    // 状态仍是 expanded, 但界面停在紧凑态, 点一次"展开"反而收起, 看起来像反了。
+    if (settings.spoiler) { ovExpanded = false; }
     syncSpoilerBtn();
     saveSettings();
     renderProgMarks();
@@ -1374,16 +1392,20 @@
   // 说明: 字体选的是系统黑体, 不提供"选字体"(用户明确说不用), 但**描边可关** ——
   // 白字加 4px 黑边在浅色画面上会糊成一坨, 关掉更清楚。
   // settings 的声明已上移到文件顶部(loadMatchList 要读 settings.spoiler, 见那里的注释)。
-  var DM_DEFAULTS = { area: 1, opacity: 0.9, size: 26, density: 1, speed: 1, stroke: true };
-  var FONT = 'bold 26px "Microsoft YaHei", "PingFang SC", sans-serif';
-  var TRACK_H = 34;
+  // 「恢复默认」用的基准 —— 必须与上面 settings 的初始值一致,
+  // 两处写不一样的默认值, 会让"恢复默认"恢复出一个用户从没见过的状态。
+  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false };
+  // 初始值与 settings 的默认字号一致(20), 免得"加载完成前用 26、之后跳成 20"。
+  // L1429 会按 settings.size 重算, 这里只是首帧的占位。
+  var FONT = 'bold 20px "Microsoft YaHei", "PingFang SC", sans-serif';
+  var TRACK_H = 28;
   var MAX_ONSCREEN = 160;
 
   function applySettings() {
     try {
       var saved = JSON.parse(localStorage.getItem('dm-player-settings') || '{}');
       if (saved && typeof saved === 'object') {
-        if ([1, 0.75, 0.5].indexOf(saved.area) >= 0) { settings.area = saved.area; }
+        if ([1, 0.75, 0.5, 0.25].indexOf(saved.area) >= 0) { settings.area = saved.area; }
         if ([1, 0.5, 0.25, 0.1].indexOf(+saved.density) >= 0) { settings.density = +saved.density; }
         if (isFinite(saved.opacity)) { settings.opacity = Math.min(1, Math.max(0.2, +saved.opacity)); }
         if ([20, 26, 34].indexOf(+saved.size) >= 0) { settings.size = +saved.size; }
@@ -1784,21 +1806,34 @@
     if (w <= 0 || h <= 0) { return; }
     // 防剧透开启时只画"场次色带"(谁 vs 谁), 不画分P 色块(第一局/第二局…) ——
     // 分P 的个数与名字本身就泄露了"打了几局、有没有被零封"。
+    // 紧凑态(66px)同样不画分P 块: 那点高度只够密度图 + 场次色带,
+    // 硬画进去的块会落在画布底边被裁掉, 表现成"色带下面糊了两行字"。
+    // 所以是否画块由**两个**条件共同决定, 不能只看防剧透。
     var hideBlocks = !!settings.spoiler;
-    var lanes = hideBlocks ? [] : (ov.layout || []);
-    // 高度三档: 紧凑 66 / 只色带 96 / 展开 178。
-    // 注意 hideBlocks 时**也要走 compact**: 防剧透虽然不画分P 行, 但密度与场次色带仍要显示,
-    // 用 band(96px) 反而比紧凑态更高、还多留一行空白。
+    var lanes = (hideBlocks || !ovExpanded) ? [] : (ov.layout || []);
+    // 高度三档: 紧凑 66 / 只色带 96 / 展开 = 紧凑高度 + 分P 行(按轨道数算)。
+    // **关键**: 展开只在下方追加分P 行, 密度图与场次色带的几何**完全不变**。
+    // 早先展开后是按 h*0.34 重算密度高度、色带也跟着下移, 结果点「展开分P」时
+    // 上方的图整体被拉高一截, 看起来像两边同时被拽开 —— 而用户要的只是"多一行"。
+    var COMPACT_H = 66, OV_LANE_H = 22, OV_LANE_GAP = 3, OV_LABEL_H = 18;
+    var laneN = Math.max(1, ov.laneCount || 1);
     var wrapEl = document.getElementById('ov-wrap');
     if (wrapEl) {
-      var want;
+      var want, wantH;
       if (!ov.tracks.length && !lanes.length) {
-        want = 'band';                       // 这晚没配赛程: 留一行提示
+        want = 'band'; wantH = 96;           // 这晚没配赛程: 留一行提示
+      } else if (lanes.length > 0 && ovExpanded) {
+        want = 'full';
+        wantH = COMPACT_H + laneN * OV_LANE_H +
+                (laneN - 1) * OV_LANE_GAP + OV_LABEL_H;
       } else {
-        want = (lanes.length > 0 && ovExpanded) ? 'full' : 'compact';
+        want = 'compact'; wantH = COMPACT_H;
       }
       if (wrapEl.getAttribute('data-mode') !== want) {
         wrapEl.setAttribute('data-mode', want);
+      }
+      if (wrapEl.style.height !== wantH + 'px') {
+        wrapEl.style.height = wantH + 'px';
         h = ovCanvas.clientHeight;      // 高度变了, 重新取
       }
     }
@@ -1829,11 +1864,15 @@
     // 绝不能每 bin 强画 1px —— 那会让相邻柱互相覆盖, 把密度结构糊成一片(校准图的老毛病)。
     // 聚合取**均值**而非最大值: 最大值会让稀疏时段被单点尖峰拉高, 曲线整体偏胖、丢失低谷。
     //
-    // 几何全部**按模式算**, 不再用"占高度 32%"这种比例:
-    // 紧凑态只有 66px, 按比例算出来的密度区会被压成 14px, 看不出起伏。
+    // 几何全部**固定在紧凑态**的取值, 展开只决定"下面还有没有一行分P"。
+    // 早先是 full ? 14 : 8 / full ? h*0.34 : ..., 展开会把密度图拉高 ——
+    // 这正是"两边都被拉扯"的来源。现在密度区永远是同一块, 点展开时它纹丝不动。
     var full = (wrapEl && wrapEl.getAttribute('data-mode') === 'full');
-    var densTop = full ? 14 : 8;
-    var densH = full ? Math.round(h * 0.34) : Math.max(26, h - 40);
+    var densTop = 8;
+    var bandH = 13;
+    // 色带与密度图都按紧凑高度(66)算, 与展开后的实际高度无关
+    var densH = Math.max(26, COMPACT_H - 40);
+    var bandTop = densTop + densH + 4;
     if (ov.bins.length) {
       var plotW = w - 20;
       var colN = Math.min(ov.bins.length, Math.floor(plotW));
@@ -1850,7 +1889,8 @@
         g.fillRect(10 + c * colW, densTop + densH - bh, Math.max(1, colW - 0.2), bh);
       }
     }
-    // 时间刻度(每小时)。紧凑态只画刻度线, 不写文字 —— 66px 里塞下 8 个时间会糊成一排。
+    // 时间刻度(每小时)。刻度线贯穿整个总览(含展开后的分P 行), 但**文字只在展开时画**,
+    // 且写在最底部 —— 紧凑态 66px 里塞下 8 个时间会糊成一排。
     g.font = '10px sans-serif';
     var tk = new Date(ov.t0);
     tk.setMinutes(0, 0, 0);
@@ -1858,7 +1898,7 @@
       var x = ovX(tk.getTime());
       if (x >= 10 && x <= w - 10) {
         g.fillStyle = 'rgba(255,255,255,.10)';
-        g.fillRect(x, densTop, 1, h - (full ? 18 : 10));
+        g.fillRect(x, densTop, 1, h - densTop - (full ? OV_LABEL_H : 10));
         if (full) {
           g.fillStyle = '#8a8f98';
           g.fillText(two(tk.getHours()) + ':00', x - 11, h - 4);
@@ -1872,16 +1912,16 @@
     // 事件标记统一放在这条主时间轴上, 既能辅助校准(点它跳转), 也能看清节奏。
     ov.order = [];
     // ---- 下方: 分P块按时间摆进主轴轨道(不重叠的共用一条轨道) ----
-    var laneTop = densTop + densH + 22;
-    var avail = h - laneTop - 18;
+    // 轨道从**紧凑态底边之下**开始 —— 展开只是在原有内容下面追加, 不动上方任何东西。
+    var laneTop = COMPACT_H;
+    var laneGap = OV_LANE_GAP;
+    var laneH = OV_LANE_H;
     // 没有场次(tracks 为空)时不要画空轨道底纹 —— 那会让人以为"加载失败"。
     // 改为画一行说明, 明确告诉用户"这晚有弹幕但没配赛程", 而不是留一片空白。
     if (!ov.tracks.length && full) {
       g.fillStyle = '#8a8f98'; g.font = '12px sans-serif';
       g.fillText('这晚有弹幕数据，但没有能对上的比赛场次（未配置赛程或缺失 BV）', 12, laneTop + 14);
     }
-    var laneN = Math.max(1, ov.laneCount || 1);
-    var laneH = Math.max(10, Math.min(22, Math.floor(avail / laneN) - 3));
     // 注意: 这里**不能**重置 ov.order —— 上面事件标记已经 push 进去了,
     // 再清空会把标记从命中表里抹掉, 表现为"看得见竖线但点不到/hover 无提示"。
 
@@ -1937,9 +1977,7 @@
     // 需求: "在比赛的条上面显示谁 vs 谁, 而不是在下面显示"; 用一个统一的色带代表
     // 一整场(从该场第一个分P 开始到最后一个分P 结束), 队伍名写在色带里,
     // 分P 块落在色带下方 —— 视觉上是"一场比赛包含若干局", 而不是几个并列的色块。
-    var bandH = 13;
-    // 色带位置: 展开态在密度图下方(与分P 块留 6px); 紧凑态直接贴底, 因为那就是它唯一的内容。
-    var bandTop = full ? (laneTop - bandH - 6) : Math.max(densTop + densH + 4, h - bandH - 6);
+    // bandTop 已在上面按紧凑高度算好, 展开时不移动。
     ov.tracks.forEach(function (tr) {
       // 紧凑态也要画色带 —— 那是"切到哪一场"的唯一入口, 比密度图更重要。
       // 但紧凑态不显示分P 明细, 所以块的起止要靠 tr.blocks 算(块本身不画)。
@@ -2414,6 +2452,55 @@
     // 用户点播放键: 失败要给出可操作提示(直链过期 / 被策略拦), 不能静默
     if (videoEl.paused) { startPlay(); } else { videoEl.pause(); }
   });
+
+  /* ---------------- 点击画面播放/暂停(与 B站 一致) ----------------
+     行为约定:
+       单击画面      -> 播放/暂停(失败时给出与按钮相同的提示)
+       双击画面      -> 全屏(桌面惯例; B站 网页端也是双击全屏)
+       单击进度条/控制条 -> 不触发上面的逻辑(否则拖进度反而暂停)
+       双击后夹带的两次 click -> 用定时器吃掉, 不能"暂停→播放"闪一下
+     为什么用 220ms 定时器而不是 dblclick:
+       单击必须在双击判定之前先执行, 否则单击要等两倍间隔才有反应(B站 那种
+       "点了没动静"的手感)。所以先执行单击动作, 若在 220ms 内又来一次点击,
+       说明是双击 —— 把上一次的动作撤销掉, 再走全屏。
+     B站 的做法是单击不撤销、双击只做全屏(即"双击会顺带暂停一次")。
+     这里选择**撤销**: 用户双击是想全屏, 不想顺便改变播放状态。 */
+  var clickTimer = null, lastAction = null;
+  function isCtrlArea(el) {
+    // 控制条、进度条、以及画面上任何弹出菜单都不算"点画面"
+    return !!(el && el.closest && el.closest('#ctrl-bar, .cmenu, #player-mask'));
+  }
+  function togglePlayByClick() {
+    if (!state.applied) { return; }        // 还没选场次, 点画面没有意义
+    if (videoEl.paused) { startPlay(); } else { videoEl.pause(); }
+  }
+  function enterFullscreen() {
+    var wrap = videoEl.closest('.player-wrap');
+    if (document.fullscreenElement) { document.exitFullscreen().catch(noop); }
+    else if (wrap && wrap.requestFullscreen) { wrap.requestFullscreen().catch(noop); }
+  }
+  videoEl.addEventListener('click', function (e) {
+    if (isCtrlArea(e.target)) { return; }
+    if (clickTimer) {
+      // 第二次点击: 撤销刚才那一下播放/暂停, 改走全屏
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      if (lastAction) { lastAction(); }     // 反做回去, 双击不改变播放状态
+      lastAction = null;
+      enterFullscreen();
+      return;
+    }
+    var wasPaused = videoEl.paused;
+    togglePlayByClick();
+    // 记下"怎么反做": 刚才若是在播->暂停, 反做就是再播一次, 反之亦然。
+    lastAction = videoEl.paused === wasPaused ? null
+      : (wasPaused ? function () { videoEl.pause(); }
+                   : function () { startPlay(); });
+    clickTimer = setTimeout(function () { clickTimer = null; lastAction = null; }, 220);
+  });
+  // 鼠标在画面上时给出"可点击"提示: 播放器像一个按钮, 光标要能表达这件事。
+  videoEl.style.cursor = 'pointer';
+
   function syncPlayLabel() {
     // 图标按钮: 暂停时显示 ▶, 播放中显示 ‖。
     // 不用 ❚(U+275A)/⏸ 这类生僻字形 —— Windows 上部分字体缺字会变成豆腐块。
@@ -2469,10 +2556,23 @@
     btnMute.textContent = v ? '🔇' : '🔊';
     btnMute.title = v ? '取消静音' : '静音';
     btnMute.classList.toggle('off', v);
+    // 滑块容器也标上 muted: CSS 靠这个把滑块调暗(见 style.css)
+    var vw = document.querySelector('.vol-wrap');
+    if (vw) { vw.classList.toggle('muted', v); }
+    // 竖向滑块旁边的百分比: 没有数字时, 只能靠滑块高度猜音量。
+    // 静音时显示 0, 而不是上一次的音量 —— 否则"图标是静音、数字是 60"会自相矛盾。
+    var pct = v ? 0 : Math.round(videoEl.volume * 100);
+    if (volNum) { volNum.textContent = pct; }
+    // 滑块位置同步。注意**不要**在静音时把 value 改成 0:
+    // input 的 value 是"用户上次设定的音量", 静音只是 muted, 音量值还在。
+    // 把它改成 0 后再取消静音, 用户就得重新拖一次 —— B站 也不是这么做的。
+    if (!v) { rngVol.value = String(pct); }
   }
   btnMute.addEventListener('click', function () {
     videoEl.muted = !videoEl.muted;
-    if (!videoEl.muted && videoEl.volume === 0) { videoEl.volume = 1; rngVol.value = '100'; }
+    // 取消静音时: 音量确实为 0 才拉回 100, 否则保留用户原来的音量
+    // (静音前是 30% 的话, 取消静音后应该是 30%, 不是 100%)。
+    if (!videoEl.muted && videoEl.volume === 0) { videoEl.volume = 1; }
     syncMuteIcon();
   });
 

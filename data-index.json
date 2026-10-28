@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.0.0",
-  "generated_at": "2026-10-28T03:50:41Z",
+  "generated_at": "2026-10-28T04:51:20Z",
   "latest": "2026-10-27",
   "days": {
     "2026-10-26": {
@@ -24,65 +24,79 @@
       "file_sizes": [
         {
           "name": "data/2026-10-26/7734200/7734200.afp.jsonl",
-          "bytes": 7316313
+          "bytes": 7315759,
+          "sha256": "dc7b0ce471ac9cad4040033b11444fd2c4ce545fae4d73998c0dcf62e492b53b"
         },
         {
           "name": "data/2026-10-26/7734200/7734200.meta.json",
-          "bytes": 2360
+          "bytes": 2360,
+          "sha256": "8567d15d06f1a737e0c6b0228a52c29fb0a625a3b517c5bc7a1731323ea7123e"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0000.jsonl.gz",
-          "bytes": 161674
+          "bytes": 161674,
+          "sha256": "e120901fdc57dfff438f7c6305fc185bf75b572faa9928243513122c55abc981"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0100.jsonl.gz",
-          "bytes": 1257531
+          "bytes": 1257531,
+          "sha256": "ff24f60f336cf5cff3d1eeeead54ddafa55b6a241c6fe7722664ff8478bdf0df"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0200.jsonl.gz",
-          "bytes": 1201073
+          "bytes": 1201073,
+          "sha256": "755a616556d6603b15027a692114230f3212ff3cdfc4cf95cd6036e5446f21b9"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0300.jsonl.gz",
-          "bytes": 355681
+          "bytes": 355681,
+          "sha256": "8e4f46b6924db70e0110395bc004206afd23ac6902bc1bf12432acd39e251456"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0400.jsonl.gz",
-          "bytes": 194640
+          "bytes": 194640,
+          "sha256": "4cd43f3c7d48d5f88600112f2b7614b5a660b57be8c5f093d96f4824f338cc8a"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0500.jsonl.gz",
-          "bytes": 284778
+          "bytes": 284778,
+          "sha256": "013742393e4287cf6b366f6e913d5b87fc66368b7a53bc307d999c67b71fdb74"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0600.jsonl.gz",
-          "bytes": 279111
+          "bytes": 279111,
+          "sha256": "d3e0c275478cd82534595a94bf149c5aa23be1c5223991acf5a425ea07a6c180"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0700.jsonl.gz",
-          "bytes": 227978
+          "bytes": 227978,
+          "sha256": "dfece0aa12074528269ec8da6a1e8390670dce49b68209d22a12ed81533b1db7"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0800.jsonl",
-          "bytes": 154488
+          "bytes": 152458,
+          "sha256": "031351507f33ea81b90f4216f87478c9974e48af226346169a34d0156bdc22ea"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s0845.jsonl.gz",
-          "bytes": 5481
+          "bytes": 5481,
+          "sha256": "a15b037019eafbfe5565eee7f915720460eedf9cf8f2cd87533a393b44013d0e"
         },
         {
           "name": "data/2026-10-26/7734200/7734200_s2332.jsonl.gz",
-          "bytes": 6589
+          "bytes": 6589,
+          "sha256": "bbb681af12c3a83cbc717a8f477808cdd9619afbfd8938e59c144696b7bb47c2"
         },
         {
           "name": "data/2026-10-26/7734200/manifest.json",
-          "bytes": 707
+          "bytes": 707,
+          "sha256": "a77d374ab731f8c3698e88f52aceb15ba2e79d4cd55756018ed5064a3d430ced"
         }
       ],
       "sessions": [
         "data/2026-10-26/7734200"
       ],
-      "bytes": 11448404
+      "bytes": 11445820
     },
     "2026-10-27": {
       "files": [
@@ -100,49 +114,59 @@
       "file_sizes": [
         {
           "name": "data/2026-10-27/7734200/7734200.afp.jsonl",
-          "bytes": 5571468
+          "bytes": 5571045,
+          "sha256": "d2f990c35998514e3af0770547d51b4ba6fc5943733dd1ad32f5ef9d7d548f93"
         },
         {
           "name": "data/2026-10-27/7734200/7734200.meta.json",
-          "bytes": 220854
+          "bytes": 220854,
+          "sha256": "8bf3c72c2e56ca7e5da8dd7d935128426415fafd8d3c0250f84b70c754c3784f"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0100.jsonl.gz",
-          "bytes": 1009997
+          "bytes": 1009997,
+          "sha256": "5750b074a2f426eac6c52a80576514be020db0dfa0c97e3458f05ff3cfb15ebc"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0200.jsonl.gz",
-          "bytes": 976962
+          "bytes": 976962,
+          "sha256": "6561033c3bea7b23534f5cd49f54a5dd569f8433392c26f7b514a9773f917534"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0300.jsonl.gz",
-          "bytes": 205425
+          "bytes": 205425,
+          "sha256": "c57e831a611a2884c2663d90432ca3a3903e572d117ce64a299a0d2a622a0962"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0400.jsonl.gz",
-          "bytes": 290107
+          "bytes": 290107,
+          "sha256": "3b9fa0fc7ccf958efb1957da059354b2d63e7131e3ffc49a3dfe7cfd13d31f06"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0500.jsonl.gz",
-          "bytes": 795510
+          "bytes": 795510,
+          "sha256": "8e1fa93ad9d9c4b4cfaf3d0b2ae440e305bfafc657f5bffdc3503d82a3f4e6bc"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0600.jsonl.gz",
-          "bytes": 1205260
+          "bytes": 1205260,
+          "sha256": "299152fbf25972edc0dce54768cb49312a16060acd13aa49007ac58fc66ff630"
         },
         {
           "name": "data/2026-10-27/7734200/7734200_s0700.jsonl.gz",
-          "bytes": 280458
+          "bytes": 280458,
+          "sha256": "e79f59bd6a38e6216a1a80caea232e2701662356726af85bbf4abe47d13f3f27"
         },
         {
           "name": "data/2026-10-27/7734200/manifest.json",
-          "bytes": 828
+          "bytes": 828,
+          "sha256": "157f37b18a436fc31fb6a939907000a39577296fc20dbf1fa458b09fc2b7ae77"
         }
       ],
       "sessions": [
         "data/2026-10-27/7734200"
       ],
-      "bytes": 10556869
+      "bytes": 10556446
     }
   }
 }

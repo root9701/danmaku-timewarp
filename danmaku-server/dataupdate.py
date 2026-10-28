@@ -6,7 +6,7 @@
   绝大多数用户只想要"能看", 不想碰命令行。
 
 设计约束:
-  1. **只用标准库**(urllib)。用户已经要装 Python, 不该再为更新功能多装依赖。
+  1. **只用标准库**(urllib)。用户已经要装 Python, 不该为更新功能多装依赖。
   2. **只下载缺失的日期**。全量 21MB 现在还能接受, 但一届 Worlds 约 300MB ——
      每晚都下全量是不可持续的。比对清单后只拉新的那几天。
   3. **原子落盘**: 先写 .part 再 rename。中途断网不会留下半个文件, 否则
@@ -18,97 +18,45 @@
 安全:
   - 下载地址拼自固定的 owner/repo/branch, 不接受用户输入任意 URL。
   - 同时校验清单里的相对路径(拒绝 .. 与绝对路径), 防路径穿越。
+  - **第三方镜像下载必须校验 sha256**: 见 srcfetch.py(通道选择与校验都在那)。
+
+分工:
+  本模块管"下到哪"(比对清单、原子落盘、防穿越), srcfetch 管"从哪下"
+  (多镜像降级、代理策略、sha256 校验)。拆开是为了两块各自可测:
+  "镜像返回坏内容"这种情形在线上极难复现, 单独成层才写得进回归。
 """
 import gzip
+import hashlib
 import json
 import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-# 数据源: 只允许从这里取。改这里等于改分发渠道。
-GH_OWNER = "root9701"
-GH_REPO = "danmaku-timewarp"
-GH_BRANCH = "main"
-RAW_BASE = f"https://raw.githubusercontent.com/{GH_OWNER}/{GH_REPO}/{GH_BRANCH}"
-INDEX_NAME = "data-index.json"
+import srcfetch
 
-UA = "danmaku-timewarp-updater/1"
-# 连接超时与读取超时分开: 挂死的现场通常是"连上了但不返回", 读取超时才有用。
-# 30 秒整体超时在直连被阻断时会等满, 前端表现为长时间无响应 —— 用户以为程序卡了。
-TIMEOUT = 20
-_MAX_ATTEMPTS = 2
+# 数据源: 只允许从这里取。改这里等于改分发渠道。
+RAW_BASE = srcfetch.RAW_BASE
+INDEX_NAME = "data-index.json"
 
 
 class UpdateError(Exception):
     """更新失败, 消息可直接展示给用户。"""
 
 
-def _proxies() -> dict:
-    """当前生效的代理配置。
+def _fetch(url: str, sha256: str = "", want_bytes=None) -> bytes:
+    """下载并校验, 把 srcfetch 的异常翻译成本模块的 UpdateError。
 
-    为什么需要这个:
-      Python 的 urllib 默认用 getproxies(), 它**只读环境变量**。而 Windows 上
-      用户常见的做法是在系统设置里配代理(Clash/V2Ray 之类), 那是注册表 +
-      WinINet 的配置, urllib 读不到 —— 于是程序直连 GitHub, 在需要代理的网络
-      环境下会 RemoteDisconnected 或长时间挂起。
-
-    为什么不能写死走代理:
-      用户的代理是**按需开启**的。代理没开时硬走它, 反而全部失败。
-      所以这里读"当前是否有系统代理", 有就用, 没有就直连。
-
-    为什么必须显式带 no 列表:
-      ProxyHandler 只认字典里的 no 项。丢了它, localhost / 127.0.0.1 的请求
-      也会被送去代理 —— 而本机服务(回归测试的假数据源、局域网回放)不该走代理,
-      且多数代理对本地地址的处理并不一致, 表现为时通时不通。
+    保留这个薄封装而不是让调用方直接用 srcfetch:
+    调用方(server.py)只捕获 dataupdate.UpdateError, 不该知道底下有几个模块。
     """
     try:
-        reg = urllib.request.getproxies_registry() or {}
-    except Exception:
-        reg = {}
-    src = reg or {k: v for k, v in urllib.request.getproxies().items() if k != "no"}
-    if not src:
-        return {}
-    no = reg.get("no") or ",".join(
-        ["127.0.0.1", "localhost", "::1"])
-    return {**src, "no": no}
-
-
-def _get(url: str) -> bytes:
-    """下载一个 URL。
-
-    代理策略: 先按系统代理配置试, 失败再直连试一次。
-    这样"代理开着"和"代理关着"两种状态都能工作, 不需要用户改配置。
-    """
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    proxies = _proxies()
-    # 依次尝试: 走代理 -> 直连。代理没配时第一个就是直连, 不会重复。
-    plans = [proxies, {}] if proxies else [{}]
-    last = None
-    for plan in plans[: (_MAX_ATTEMPTS if proxies else 1)]:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler(plan))
-        try:
-            with opener.open(req, timeout=TIMEOUT) as r:
-                return r.read()
-        except urllib.error.HTTPError as e:
-            # HTTP 错误是服务器明确答复, 换路径也没用, 直接抛
-            if e.code == 404:
-                raise UpdateError(
-                    f"远端还没有数据清单(404)。作者可能尚未发布，或仓库名有变：{url}"
-                ) from e
-            raise UpdateError(f"下载失败 HTTP {e.code}: {url}") from e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last = e
-            continue                     # 这条路径不通, 试下一条
-    hint = ("；若你平时需要开代理才能访问 GitHub，请确认代理已启动"
-            if proxies else "")
-    raise UpdateError(
-        f"连不上数据源：{last.__class__.__name__}{hint}") from last
+        return srcfetch.fetch(url, sha256=sha256, want_bytes=want_bytes)
+    except srcfetch.FetchError as e:
+        raise UpdateError(str(e)) from e
 
 
 def fetch_index() -> dict:
     """拉取远端数据清单。清单由 tools/pack_data.py --index 生成。"""
-    raw = _get(f"{RAW_BASE}/{INDEX_NAME}")
+    raw = _fetch(f"{RAW_BASE}/{INDEX_NAME}")
     try:
         idx = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
@@ -162,10 +110,38 @@ def _safe_rel(rel: str) -> str:
     return rel
 
 
+def _file_meta(entry: dict, rel: str) -> tuple:
+    """从清单里取该文件的 (字节数, sha256)。缺失的字段返回 None。
+
+    为什么要容忍缺失: 老清单(没有 sha256 的那版)在用户机器上可能还留着。
+    读老清单不能报错, 退化到"只校验大小"——比不校验好, 也比直接拒绝更新好。
+    """
+    want = sha = None
+    for f in entry.get("file_sizes") or []:
+        if f.get("name") == rel:
+            want = int(f.get("bytes") or 0)
+            sha = (f.get("sha256") or "").strip().lower() or None
+            break
+    return want, sha
+
+
+def _sha256_file(p: Path) -> str:
+    """流式算文件哈希, 不把整个文件读进内存(afp 单个可到 10MB)。"""
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     """下载一天的会话文件。返回写入字节数。
 
-    幂等: 已存在且大小一致的文件跳过 —— 同一天重复跑不会重复下。
+    幂等: 已存在且**大小与哈希都对得上**的文件跳过 —— 同一天重复跑不会重复下。
+
+    为什么已有文件也要算哈希: 上次下载中途断网会留下截断文件, 或上次下的是被
+    镜像污染的版本。既然要保证不可再生的数据正确, 就只认哈希 —— 代价是每个
+    已有文件多读一遍, 21MB 约 0.1 秒。
     """
     files = entry.get("files") or []
     if not files:
@@ -175,17 +151,13 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     for rel in files:
         rel = _safe_rel(rel)
         dst = root / rel
-        want = None
-        for f in entry.get("file_sizes") or []:
-            if f.get("name") == rel:
-                want = int(f.get("bytes") or 0)
-                break
-        if dst.is_file() and (want is None or dst.stat().st_size == want):
-            continue                # 已有且大小对得上, 不重下
-        url = f"{RAW_BASE}/{rel}"
-        blob = _get(url)
-        if want is not None and len(blob) != want:
-            raise UpdateError(f"{rel} 大小不符(期望 {want}, 实际 {len(blob)})")
+        want, sha = _file_meta(entry, rel)
+        if dst.is_file():
+            size_ok = (want is None or dst.stat().st_size == want)
+            hash_ok = (not sha) or _sha256_file(dst) == sha
+            if size_ok and hash_ok:
+                continue            # 已有且校验通过, 不重下
+        blob = _fetch(f"{RAW_BASE}/{rel}", sha256=sha or "", want_bytes=want)
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".part")
         try:

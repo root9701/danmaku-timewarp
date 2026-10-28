@@ -21,6 +21,7 @@
   - align/ 里引用的每一场比赛, 若带 BV, 必须在 lists 里能查到对应条目
 """
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -44,6 +45,15 @@ def _app_version() -> str:
     except OSError:
         return ""
     return (txt.splitlines()[0].strip() if txt else "")
+
+
+def _sha256(p: Path) -> str:
+    """流式算文件哈希。不整个读进内存: 单个 afp 可到 10MB, 将来还会更大。"""
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def iter_sessions():
@@ -191,8 +201,14 @@ def write_index() -> int:
     """生成 data-index.json —— 用户端「检查更新」就靠它判断该拉哪几天。
 
     清单只描述正式会话(data/{日期}/{房间}/), 不含 _test。
-    每个日期记下完整文件列表与逐文件字节数: 字节数既用于显示"要下多少",
-    也用于下载后校验完整性(截断的响应能被发现)。
+    每个日期记下完整文件列表与逐文件**字节数 + sha256**:
+
+      字节数 —— 用于显示"要下多少", 也用于抓截断的响应。
+      sha256 —— 用户端可能从**第三方公共镜像**下载(官方 raw 在国内被限速,
+                实测 7MB 要 30 秒以上), 那些镜像不受我们控制。只比字节数发现不了
+                等长篡改, 而数据不可再生 —— 等长的坏文件比下载失败严重得多。
+
+    哈希是流式算的, 21MB 约 0.1 秒, 不构成发布负担。
     """
     days = {}
     for day, sess in iter_sessions():
@@ -203,7 +219,8 @@ def write_index() -> int:
                 continue
             rel = f.relative_to(ROOT).as_posix()
             files.append(rel)
-            sizes.append({"name": rel, "bytes": f.stat().st_size})
+            sizes.append({"name": rel, "bytes": f.stat().st_size,
+                          "sha256": _sha256(f)})
             total += f.stat().st_size
         days.setdefault(day, {"files": [], "file_sizes": [],
                               "sessions": [], "bytes": 0})

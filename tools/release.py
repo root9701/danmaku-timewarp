@@ -125,6 +125,43 @@ def _git(*args, timeout=120):
     return _run(["git", *args], timeout=timeout)
 
 
+def _git_token() -> str:
+    """从 git 的凭据存储里取出 GitHub token, 给 gh 用。
+
+    为什么这么做: 用户已经用 git 推送过, 凭据(repo scope)就躺在
+    credential manager 里。而 `gh auth login` 要**交互式**走一遍设备码流程,
+    在国内还要额外给 gh 配代理 —— 明明手上已经有一个能用的 token, 却让人
+    重做一遍授权, 是纯粹的重复劳动。
+    取不到就返回空串(那种情况才需要 gh auth login)。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n",
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60, env=_tool_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("password="):
+            return line[len("password="):].strip()
+    return ""
+
+
+def _gh_env() -> dict:
+    """gh 的运行环境: 补代理 + 尽量补 token。
+
+    显式传 GH_TOKEN 的好处: 不必要求用户 `gh auth login`。git 里那份凭据
+    与 gh 用的是同一个 GitHub 账号, 权限也够(需要 repo 与 workflow)。
+    """
+    env = _tool_env()
+    if not (env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")):
+        tok = _git_token()
+        if tok:
+            env["GH_TOKEN"] = tok
+    return env
+
+
 def _py(*args, timeout=1800):
     return _run([sys.executable, *args], timeout=timeout)
 
@@ -244,13 +281,19 @@ def check_gh():
     ok, out = _run([gh, "--version"], timeout=60)
     if not ok:
         raise StepFailed(f"gh 存在但跑不起来: {gh}\n{out[:300]}")
-    ok, out = _run([gh, "auth", "status"], timeout=60)
+    env = _gh_env()
+    ok, out = _run([gh, "auth", "status"], env=env, timeout=60)
     if not ok:
         raise StepFailed(
-            "gh 没登录, 传不了包。先执行:\n  gh auth login\n"
-            "（交互式, 需要你本人在终端里点完；脚本不代做）"
+            "gh 没有可用凭据, 传不了包。两种解法(任选):\n"
+            "  A. 直接用 git 里那份: 本脚本已尝试过, 但没取到。先确认\n"
+            "     `git credential fill` 能返回 password(说明推送凭据还在)\n"
+            "  B. 走 gh 自己的登录(交互式, 需要你本人在终端里点完):"
             + _proxy_hint())
-    say(f"  ✓ gh 已登录 ({gh})")
+    if env.get("GH_TOKEN") and "GH_TOKEN" in out:
+        say("  ✓ gh 可用（凭据复用自 git, 无需单独登录）")
+    else:
+        say(f"  ✓ gh 已登录 ({gh})")
     return gh
 
 
@@ -435,7 +478,7 @@ def publish(zips, dry_run):
     gh = _find_gh() or "gh"
     ok, out = _run([gh, "release", "create", TAG, *[str(z) for z in zips],
                     "--repo", GH_REPO, "--title", f"弹幕时光机 {VERSION}",
-                    "--notes", notes], timeout=3600)
+                    "--notes", notes], timeout=3600, env=_gh_env())
     if not ok:
         raise StepFailed(
             f"建 Release 失败(代码与 tag 已推上去):\n{out}\n"

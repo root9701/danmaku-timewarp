@@ -108,11 +108,16 @@ lol延时直播/
 
 ## 平台与已知限制
 
-- **仅 Windows**（启动脚本是 `.bat`）。采集端可拷到手机 Termux 跑，播放端未做跨平台适配。
-- 需要 Python 3.12+。依赖版本已在 `requirements.txt` 精确锁定。
-- 视频不落地，播放时直连 B 站 CDN，因此**需要联网**，且受 B 站地区限制。
-- 只对「B 站官方账号上传的回放」自动搜索 BV；其他来源需手动填。
-- 数据里的弹幕保留**原始用户昵称**，未做匿名化（见下方「数据来源与免责声明」）。
+| 项 | 说明 |
+|---|---|
+| 平台 | **仅 Windows**（启动脚本为 `.bat`）。采集端可单独部署到手机 Termux，播放端未做跨平台适配 |
+| Python | 需 3.12+，依赖版本已在 `requirements.txt` 精确锁定 |
+| 网络 | 视频不落地，播放时直连 B 站 CDN，**需要联网**且受 B 站地区限制 |
+| 回放来源 | 仅对「B 站官方账号上传的回放」自动搜索 BV，其他来源需手动填写 |
+| 昵称 | 弹幕保留**原始用户昵称**，未做匿名化（详见下方免责声明） |
+
+对齐失败、分P 缺失、音轨更换等技术边界见
+[`danmaku-server/README.md`](danmaku-server/README.md#已知边界)。
 
 ## 数据来源与免责声明
 
@@ -130,35 +135,22 @@ lol延时直播/
 
 ## 快速开始
 
-两种使用方式，环境要求不同：
+两种使用方式，详细步骤各有专文：
 
 ```mermaid
 flowchart TD
     A{"使用方式"} -->|"查看已有比赛"| B["路径 A：直接播放<br/>无需 B 站账号，无需挂机"]
     A -->|"录制新比赛"| C["路径 B：自行采集<br/>需在比赛时段开机运行"]
-    B --> B1["git clone"]
-    B1 --> B2["双击 启动回放台.bat"]
-    B2 --> B3["选择日期与场次 → 播放"]
-    C --> C1["安装 Python 3.12+"]
-    C1 --> C2["双击 启动采集.bat"]
-    C2 --> C3["次日 双击 启动回放台.bat<br/>→ 自动校准"]
+    B --> B1["见 DISTRIBUTION.md"]
+    C --> C1["见下方 + danmaku-collector/README.md"]
     style B fill:#204a2a,stroke:#4a8
 ```
 
-### 路径 A：查看已有比赛
+### 路径 A：查看已有比赛 → [`DISTRIBUTION.md`](DISTRIBUTION.md)
 
-```powershell
-git clone https://github.com/root9701/danmaku-timewarp.git
-cd danmaku-timewarp
-```
+包含环境要求、clone 命令、启动方式、数据更新与常见问题。**无需 Python 基础之外的前置知识。**
 
-双击 `danmaku-server/启动回放台.bat`，浏览器打开 <http://127.0.0.1:8789>。
-
-首次启动会自动创建 `.venv` 并安装依赖（约 1~3 分钟，仅一次）。
-
-数据无需 `git pull`，在面板点击「检查更新」即可，通过公共镜像下载。
-
-### 路径 B：录制新比赛
+### 路径 B：录制新比赛 → 下方 + [`danmaku-collector/README.md`](danmaku-collector/README.md)
 
 环境要求：**Windows 10/11 + Python 3.12+**。安装时须勾选 `Add python.exe to PATH`
 （[python.org](https://www.python.org/downloads/)）。
@@ -171,47 +163,42 @@ cd danmaku-timewarp
 
 官方回放通常在中午前后上传完整。若某场次暂无 BV，中午点击「刷新赛程」补齐。
 
-> 依赖安装缓慢可用国内镜像：
-> `danmaku-server\.venv\Scripts\python.exe -m pip install -r danmaku-server\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
-
 ## 配置（换赛事 / 换房间 / 换时区）
 
-两端各有自己的 `config.json`，**都不进版本库**，改完重启生效。删掉也能用内置默认值启动，均有 `config.example.json` 可抄。
+两端各有自己的 `config.json`，**都不进版本库**，改完重启生效。
+删掉也能用内置默认值启动，均有 `config.example.json` 可抄。
+
+字段的**权威说明**在两端 README：
+[采集端](danmaku-collector/README.md#configjson) / [播放端](danmaku-server/README.md)。
+
+下表列出最常改的几项。
 
 ### 采集端 `danmaku-collector/config.json`
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `rooms` | `[]` | 要采集的直播间房间号，可多个。**必填**，留空启动即报错 |
+| `rooms` | `[]` | 直播间房间号，可多个。**必填**，留空启动即报错 |
 | `earliest_start` | `"now"` | `now` / `HH:MM`（下一次出现）/ `+30m` |
 | `latest_end` | `"09:00"` | 自动停止时刻，空串表示不停 |
-| `poll_interval_sec` | `60` | 轮询间隔，最小 5 |
-| `audio_fp` | `true` | 是否采音频指纹。**强烈建议开**——直播流过后就没了，事后无法补 |
-| `slice_minutes` | `60` | 弹幕切片间隔，`0` = 整晚一个文件 |
+| `audio_fp` | `true` | 是否采音频指纹。**强烈建议开启**——直播流过后无法补采 |
 
 ### 播放端 `danmaku-server/config.json`
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `port` | `8789` | 网页端口 |
-| `host` | `127.0.0.1` | 监听地址。`0.0.0.0` = 局域网可访问（无鉴权，只在可信网络用） |
-| `discover.enabled` | `true` | 是否允许自动发现赛程；设 `false` 后 `/api/discover` 直接报错 |
+| `host` | `127.0.0.1` | 监听地址。`0.0.0.0` = 局域网可访问（无鉴权，仅在可信网络使用） |
 | `discover.league_id` | Worlds | 抓哪个赛事，见下表 |
 | `discover.timezone` | `Asia/Shanghai` | IANA 时区名。**Windows 需先 `pip install tzdata`** |
-| `discover.window_start` / `window_end` | `01:00` / `09:00` | 赛程过滤窗口；结束早于开始表示跨零点 |
-| `bili.official_mid` | `50329118` | B站官方回放账号 |
-| `align.min_confidence` | `2.0` | 对齐置信度下限 |
-| `align.vote_segments` | `8` | 多段投票切成几段 |
-| `align.vote_tolerance_sec` | `30` | 投票容差（秒） |
 
-常用 `league_id` 与环境变量见下表。
+### 赛区与环境变量
 
-| 赛事 | `league_id` |  | 环境变量 | 作用 |
-|---|---|---|---|---|
-| Worlds | `98767975604431411` |  | `DANMAKU_CONFIG` | 配置路径 |
-| LPL | `98767991299243165` |  | `DANMAKU_DATA` | 数据目录 |
-| LCK | `98767991310872058` |  | `DANMAKU_HOST` | 监听地址 |
-| LEC | `98767991302996019` |  | `RIOT_API_KEY` / `AFP_CACHE` | 覆盖社区 key / 指纹缓存目录 |
+| 赛事 | `league_id` | 环境变量 | 作用 |
+|---|---|---|---|
+| Worlds | `98767975604431411` | `DANMAKU_CONFIG` | 配置路径 |
+| LPL | `98767991299243165` | `DANMAKU_DATA` | 数据目录 |
+| LCK | `98767991310872058` | `DANMAKU_HOST` | 监听地址 |
+| LEC | `98767991302996019` | `RIOT_API_KEY` / `AFP_CACHE` | 覆盖社区 key / 指纹缓存目录 |
 
 **换赛区示例**——录 LPL（北京时间晚上开赛）：
 
@@ -228,91 +215,65 @@ cd danmaku-timewarp
 
 ### 1. 采集
 
-| 环节 | 实现 |
-|---|---|
-| 状态机 | 等待定时 → 轮询开播 → 录制 → 下播等待重开 → 到点收尾 |
-| 弹幕协议 | B 站 WebSocket，APP 签名 token + buvid3 预热；断线指数退避重连 |
-| 切片 | `{room}_s{HHMM}.jsonl`，每片完成即 gzip |
-| 防覆盖 | 同日重复运行归档为 `_runN` 后缀，弹幕/指纹/meta 共用序号 |
-| 收尾 | gzip + 写 `meta.json` + `manifest.json`（契约见 `SCHEMA.md`） |
+状态机：等待定时 → 轮询开播 → 录制 → 下播等待重开 → 到点收尾。
+弹幕按整点切片 gzip，同时还原算音频指纹。实现细节见
+[`danmaku-collector/README.md`](danmaku-collector/README.md)。
 
 ### 2. 音频指纹自动校准
 
 直播弹幕使用墙钟，回放视频使用独立时间轴，两者相差一个固定 offset。
+采集时同步解码直播音频计算指纹（33 频带，0.4s/帧，不保存音频）；
+随后与官方回放音频做互相关，解出 offset。
 
-采集时同步拉取最低清晰度直播流，仅解码音频计算指纹（33 频带，0.4s/帧，整晚约 3.5MB，CPU < 3%，不保存音频）。随后对官方回放音频计算同类指纹并做互相关，解出 offset。
+三条关键规则：
 
-**逐分P 独立对齐**：官方回放按「第一局 / 第二局 / 赛前评论 / 赛后采访」拆分，每个分P 各有独立 offset。分P 数量由程序从 B 站接口读取，不写死。
+| 规则 | 原因 |
+|---|---|
+| 逐分P 独立对齐 | 回放按局拆分且剪掉局间休息，单一标量从第二局起偏移 200 秒以上 |
+| 以投票一致性判定，不依赖单段置信度 | 单段置信度只反映该段音频独特性，BP/解说段天然低至 1.1 |
+| 多个自洽位置取最早者 | 早晨重播的音频与回放一致，最早那次才是正在直播的 |
 
-**以投票一致性判定，不依赖单段置信度**：将每个分P 切成 8 段（每段约 3 分钟）分别定位，按 30 秒容差聚类投票。单段置信度只反映该段音频的独特性，BP/解说段落天然低至 1.1，但不代表定位错误。采信条件见 `模块设计/对齐.md`。
-
-**赛程窗口**：直播间早晨可能重播前几场，音频与回放一致，投票同样命中。因此按赛程开始时间限定区间（提前 90 分钟 ~ 整场结束 +30 分钟），区间外拒绝并提示「疑似重播」。多个自洽位置取**最早**者。
+算法细节与采信条件见 [`模块设计/对齐.md`](模块设计/对齐.md)，
+实现与实测数据见 [`danmaku-server/README.md`](danmaku-server/README.md#自动校准算法)。
 
 ### 2b. 播放时的分段映射
 
-播放器将各分P 首尾相接拼成虚拟轴。官方回放剪掉了局间休息，因此每个分P 使用**各自的 offset** 映射；采用单一标量时实测偏差超过 200 秒。公式与取舍见 `SCHEMA.md` §4.4。
+播放器将各分P 首尾相接拼成虚拟轴。因回放剪掉局间休息，每个分P 使用**各自的 offset** 映射。
+公式见 `SCHEMA.md` §4.4。
 
 ### 3. 赛事日与赛程发现
 
-**赛事日 = 会话结束时刻所在日期。** 跨零点的场次（23:33 开始、次日 08:59 结束）归入结束当天。目录名确定后不再变更。
+**赛事日 = 会话结束时刻所在日期。** 跨零点的场次（23:33 开始、次日 08:59 结束）归入结束当天。
+目录名确定后不再变更。
 
-流程：Riot esports API 取当日比赛 → 生成场次草稿 → B 站搜索官方账号回放标题匹配两队名 → 回填 BV。回放未上传时留空，后续刷新补齐。写回规则：**只填空位，不覆盖已有 BV / offset**。
+流程：Riot esports API 取当日比赛 → 生成场次草稿 → B 站搜索官方账号回放标题匹配两队名 → 回填 BV。
+回放未上传时留空，后续刷新补齐。写回规则：**只填空位，不覆盖已有 BV / offset**。
 
 ### 4. 手动微调
 
-自动校准不适用时，展开「手动微调」以 ±30 / 10 / 5 秒逐档校正，即时生效并持久化。
+自动校准不适用时，以 ±30 / 10 / 5 秒逐档校正，即时生效并持久化。
 
 ## 日常运维
 
-两端启停脚本位于各自目录，互不影响。
+启停脚本位于各自目录，均为前台运行，关窗即停，不留后台进程。
 
-| 采集端 `danmaku-collector/` | 作用 |
-|---|---|
-| `启动采集.bat` | 前台运行，窗口输出实时进度。关闭窗口即停止采集 |
-| `启动控制台.bat` | 网页控制台（8787），可修改配置、查看进度、手动启停 |
-| `退出控制台.bat` | 停止控制台及采集任务 |
+| 端 | 脚本 | 详见 |
+|---|---|---|
+| 采集端 | `启动采集.bat` / `启动控制台.bat` / `退出控制台.bat` | [`danmaku-collector/README.md`](danmaku-collector/README.md) |
+| 播放端 | `启动回放台.bat` / `启动回放台_局域网.bat` / `退出回放台.bat` | [`danmaku-server/README.md`](danmaku-server/README.md) |
 
-| 播放端 `danmaku-server/` | 作用 |
-|---|---|
-| `启动回放台.bat` | 前台运行，**仅本机**可访问。关闭窗口即停止服务 |
-| `启动回放台_局域网.bat` | 前台运行，局域网可访问，窗口内显示二维码 |
-| `退出回放台.bat` | 停止回放台（按端口 8789 定位进程，不影响其他 python 进程） |
+播放端同时支持**仅本机**（`127.0.0.1`）与**局域网**（`0.0.0.0` + 二维码）两种模式，
+监听地址由启动脚本显式设置，不受 `config.json` 覆盖。局域网访问需放行防火墙端口 8789，
+具体命令见 [`danmaku-server/README.md`](danmaku-server/README.md#局域网访问)。
 
-所有启动脚本均为前台运行，关窗即停，不留后台进程。窗口丢失时，双击对应的 `退出*.bat`。
-
-**两种模式的监听地址互斥**：`启动回放台.bat` 显式设置 `DANMAKU_HOST=127.0.0.1`，
-即使 `config.json` 中为 `0.0.0.0` 也只绑定本机、不显示二维码；局域网脚本才绑定 `0.0.0.0`。
-启动时窗口会打印「监听地址: xxx (来自环境变量/config.json/默认值)」。
-
-**端口被占用**时输出可操作提示，而非完整 traceback。
-
-**局域网访问需放行防火墙**，管理员 PowerShell 执行一次：
-
-```powershell
-New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
-```
-
-并检查是否存在针对 python.exe 的入站拦截规则：
-
-```powershell
-Get-NetFirewallRule -Direction Inbound -Action Block | Where-Object { $_.DisplayName -eq "python.exe" }
-```
+> 本服务无登录鉴权，局域网模式仅限可信网络。
 
 ## 开发
 
-```powershell
-# 语法检查
-python -c "import ast;ast.parse(open('danmaku-server/server.py',encoding='utf-8').read())"
-node --check danmaku-server\web\app.js
+改动前阅读 `业务约束.md`（禁区、质检命令、豁免口径）与 `架构总览.md`（模块、依赖方向、架构债）。
+修改数据字段前须阅读 `SCHEMA.md`。
 
-# 质量闸门（函数 60 行 / 文件 400 行 / 复杂度 15 / 死代码 0），退出码 0 = 通过
-python tools\quality_gate.py
-
-# 全量回归
-danmaku-server\.venv\Scripts\python.exe tests\run_all.py
-```
-
-改动前阅读 `业务约束.md`（禁区与质检）与 `架构总览.md`（模块与架构债）。修改数据字段前须阅读 `SCHEMA.md`。
+**质检命令以 `业务约束.md` §质检与冒烟 为准**，本文不复制（复制必然漂移）。
 
 ## 手机备份节点（可选）
 
@@ -324,14 +285,3 @@ PC 与手机同时采集同一房间，数据独立落盘，单节点故障不�
 | 保活 | `termux-wake-lock` + Doze 白名单；vivo 的 ABE 后台管理需手工豁免 |
 | 管理 | `phone_ctl.py status\|start\|stop\|log\|pull\|test` |
 | 已知限制 | Termux 的 Python 与 numpy 存在 ABI 兼容问题，指纹可能降级（弹幕不受影响） |
-
-## 已知边界
-
-| 情况 | 表现 |
-|---|---|
-| 直播仅覆盖部分内容 | 该分P 只有部分片段可对齐，其余回放内容无法播放 |
-| 分P 早于直播开播（如赛前评论） | 该分P 报「匹配不到」，其他分P 正常 |
-| 早晨重播前几场 | 按赛程窗口拒绝并提示「疑似重播」，不会误采纳 |
-| 官方回放更换音轨 | 自动校准拒绝，需手动微调 |
-| 采集时关闭 `audio_fp` | 该晚永久无法自动对齐（指纹无法事后补采） |
-| 同一天多次运行 | 自动归档为 `_runN`，数据不丢失但拆分为多个会话 |

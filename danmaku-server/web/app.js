@@ -2213,7 +2213,12 @@
     if (cls === 'err') { updateManualCalibOpen(); }
   }
 
-  /* ---------------- 检查更新: 从 GitHub 增量拉数据 ---------------- */
+  /* ---------------- 拉取弹幕: 从 GitHub 增量下载作者新采集的日期 ---------------- */
+
+  // 按钮文案只在 index.html 里写一份, 这里读回来 —— 两处各写一份迟早会走样。
+  // 叫「检查更新」会让人以为连程序一起更新, 而程序**只提示不覆盖**(见下方注释),
+  // 名不副实会让用户点完以为升级了, 下次看到旧版本号才察觉被误导。
+  var UPDATE_LABEL = (btnUpdate.textContent || '').trim() || '拉取弹幕';
 
   function setUpdateStatus(msg, cls) {
     updateStatus.hidden = !msg;
@@ -2274,14 +2279,14 @@
     if (updateBusy) { return; }
     updateBusy = true;
     btnUpdate.disabled = true;
-    btnUpdate.textContent = '检查中…';
-    setUpdateStatus('正在检查远端数据…', '');
+    btnUpdate.textContent = '核对中…';
+    setUpdateStatus('正在核对远端已有的弹幕日期…', '');
 
     var appNotice = '';   // 程序有新版本时的提示, 数据更新完成后一起显示
 
     getJson('/api/update/check').then(function (j) {
       if (!j || !j.ok) {
-        throw new Error(j && j.error ? j.error : '检查失败');
+        throw new Error(j && j.error ? j.error : '核对失败');
       }
       // ---- 程序版本: 只提示, 绝不自动覆盖代码 ----
       // 为什么不做自动更新: 覆盖代码要处理"半途中断 / 用户改过文件 / 新代码要新依赖"
@@ -2291,23 +2296,29 @@
       // 提示里**不能只说 git pull**: 便携包用户手里没有 git, 也没有仓库目录,
       // 照做不到的提示等于没提示。所以给的是发布页地址, 两种安装方式都能用
       // (clone 的人在页面上也能看到最新代码)。
+      //
+      // 措辞要点: 这条按钮叫「拉取弹幕」, 只搬数据。所以必须写明"弹幕已取,
+      // 程序本身没动" —— 否则用户会以为程序也一起升级了, 下次看到旧版本号
+      // 反而会怀疑是更新坏了。
       if (j.app_update) {
-        appNotice = '；程序有新版本 v' + j.remote_app_version + '（当前 v' +
-          j.app_version + '）。便携版请到 ' + (j.release_url || '发布页') +
-          ' 下载新版；clone 的用户在这个目录执行 git pull 后重启';
+        appNotice = '；另有新版程序 v' + j.remote_app_version + '（当前 v' +
+          j.app_version + '），程序文件不会自动替换：便携版到 ' +
+          (j.release_url || '发布页') + ' 下载新版解压覆盖；' +
+          'clone 的在本目录执行 git pull 后重启';
       } else if (j.app_update_error) {
         // 查不到远端版本时**必须说出来**。静默当作"已是最新"会让用户
-        // 永远等不到更新提示, 却以为自己已经最新 —— 比不检查更糟。
-        appNotice = '；没查到程序版本（' + j.app_update_error + '），程序是否需要更新未知';
+        // 永远等不到更新提示, 却以为自己已经最新 —— 比不查更糟。
+        appNotice = '；程序版本没查到（' + j.app_update_error +
+          '），是否有新版未知';
       }
       if (!j.need) {
-        setUpdateStatus('数据已是最新（本地 ' + (j.local_days || []).length +
+        setUpdateStatus('弹幕已是最新（本地 ' + (j.local_days || []).length +
           ' 天，远端最新 ' + (j.remote_latest || '?') + '）' + appNotice,
           appNotice ? 'warn' : 'ok');
         return null;
       }
       var days = (j.new_days || []).join('、');
-      setUpdateStatus('发现 ' + j.need + ' 天新数据（' + fmtMB(j.new_bytes) +
+      setUpdateStatus('远端有 ' + j.need + ' 天新弹幕（' + fmtMB(j.new_bytes) +
         '）：' + days + '。开始下载…', '');
       btnUpdate.textContent = '下载中…';
       // 21MB 并发下载约 40 秒。没有进度的话，界面只有一个静止的"下载中…"，
@@ -2323,17 +2334,17 @@
         setUpdateStatus(j.message + '；但校验发现 ' + j.verify_problems.length +
           ' 个问题：' + j.verify_problems.slice(0, 3).join('；') + appNotice, 'err');
       } else {
-        setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），已刷新日期列表' + appNotice,
+        setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），日期列表已刷新' + appNotice,
           appNotice ? 'warn' : 'ok');
       }
       if ((j.updated || []).length) { reloadDays(); }
     }).catch(function (e) {
-      setUpdateStatus('更新失败：' + (e && e.message ? e.message : '未知错误'), 'err');
+      setUpdateStatus('拉取失败：' + (e && e.message ? e.message : '未知错误'), 'err');
     }).then(function () {
       stopUpdatePolling();
       updateBusy = false;
       btnUpdate.disabled = false;
-      btnUpdate.textContent = '检查更新';
+      btnUpdate.textContent = UPDATE_LABEL;
     });
   });
 
@@ -2818,7 +2829,7 @@
 
   /* ---------------- 启动 ---------------- */
   // 版本号: 只报本地版本(不联网)。拿不到就留空 —— 不显示 "v0.0.0" 那种假版本,
-  // 那会让用户以为程序坏了。查远端版本是「检查更新」的事。
+  // 那会让用户以为程序坏了。查远端版本是「拉取弹幕」顺带做的事。
   function loadAppVersion() {
     if (!elAppVersion) { return; }
     getJson('/api/version').then(function (j) {

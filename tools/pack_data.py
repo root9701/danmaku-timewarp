@@ -198,7 +198,7 @@ def strip_afp() -> int:
 
 
 def write_index() -> int:
-    """生成 data-index.json —— 用户端「检查更新」就靠它判断该拉哪几天。
+    """生成 data-index.json —— 用户端「拉取弹幕」就靠它判断该拉哪几天。
 
     清单只描述正式会话(data/{日期}/{房间}/), 不含 _test。
     每个日期记下完整文件列表与逐文件**字节数 + sha256**:

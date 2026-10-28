@@ -565,6 +565,6 @@ button, input, select { font-family: inherit; }
 @media (max-width: 620px) {
   #btn-row { gap: 4px; }
   .topbar-meta { display: none; }
-  /* 窄屏优先保住场次名与时钟; 版本号可在「检查更新」的结果里看到 */
+  /* 窄屏优先保住场次名与时钟; 版本号可在「拉取弹幕」的结果里看到 */
   #app-version { display: none; }
 }

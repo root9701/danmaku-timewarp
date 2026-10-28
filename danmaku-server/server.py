@@ -50,7 +50,7 @@ import version as appversion
 
 APP_VERSION = appversion.read()
 
-# 数据增量更新(缺库不致命: 只是"检查更新"按钮不可用, 其余功能不受影响)
+# 数据增量更新(缺库不致命: 只是"拉取弹幕"按钮不可用, 其余功能不受影响)
 try:
     import dataupdate            # 本目录 dataupdate.py
     HAS_DATAUPDATE = True
@@ -3330,7 +3330,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
 async def handle_version(request: web.Request) -> web.Response:
     """程序版本。前端顶栏右上角显示它, 用户据此判断自己是不是旧版。
 
-    **不联网**: 这里只报本地版本。查远端版本是「检查更新」的事 —— 放在启动路径上
+    **不联网**: 这里只报本地版本。查远端版本是「拉取弹幕」的事 —— 放在启动路径上
     会让双击脚本后多等几秒(网络差时更久), 而用户多数时候并不需要知道。
     """
     return api_ok(version=APP_VERSION)

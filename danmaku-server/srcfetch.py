@@ -317,7 +317,7 @@ def fetch(url: str, sha256: str = "", want_bytes=None,
 #   API 未认证时限 **60 次/小时, 按 IP 计**, 而且**不是**共享给所有用户的频次 ——
 #   国内大量用户处在运营商 NAT 后面, 出口 IP 是几百人共用的, 60 次很容易被同 IP
 #   的别人吃光(实测本机就吃到 403 rate limit exceeded, X-RateLimit-Remaining: 0)。
-#   此时"检查更新"会一直报"没查到程序版本" —— 功能形同废弃。
+#   此时"拉取弹幕"会一直报"没查到程序版本" —— 功能形同废弃。
 #   releases.atom 是 github.com 主站上的一个普通静态 feed: 无频次限制、无鉴权、
 #   走的是与仓库页面同一条通路(本项目实测 raw 被限速而主站正常)。
 #

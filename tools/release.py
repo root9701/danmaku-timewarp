@@ -58,9 +58,19 @@ def say(msg=""):
 
 
 def _run(cmd, cwd=None, env=None, timeout=1800):
-    """跑一条命令, 返回 (ok, 合并输出)。**不抛异常** —— 由调用方决定怎么报。"""
-    r = subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", env=env, timeout=timeout)
+    """跑一条命令, 返回 (ok, 合并输出)。**不抛异常** —— 由调用方决定怎么报。
+
+    找不到可执行文件时返回 (False, 说明) 而不是让 FileNotFoundError 冒出去:
+    发布脚本的每处失败都该给出"下一步做什么", 而不是一段 traceback。
+    """
+    try:
+        r = subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           env=env, timeout=timeout)
+    except FileNotFoundError:
+        return False, f"找不到可执行文件: {cmd[0]}（不在 PATH 里?）"
+    except subprocess.TimeoutExpired:
+        return False, f"命令超时({timeout}s): {' '.join(map(str, cmd[:3]))}"
     out = (r.stdout or "") + (r.stderr or "")
     return r.returncode == 0, out.strip()
 
@@ -135,20 +145,46 @@ def check_tag_available(allow_existing=False):
     say(f"  ✓ tag {TAG} 未被占用")
 
 
+def _find_gh():
+    """定位 gh 可执行文件。
+
+    为什么要自己找: winget 安装后写的是**机器级 PATH**, 而已经打开的终端/进程
+    （包括刚装完就在这个会话里跑脚本）不会自动刷新环境变量。此时 `gh` 明明装了,
+    subprocess 却报 WinError 2 —— 报错信息会把人引向"没装", 而不是"重启一下终端"。
+    """
+    exe = shutil.which("gh")
+    if exe:
+        return exe
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432"),
+                 r"C:\Program Files", r"C:\Program Files (x86)"):
+        if not base:
+            continue
+        p = Path(base) / "GitHub CLI" / "gh.exe"
+        if p.is_file():
+            return str(p)
+    return ""
+
+
 def check_gh():
     """--publish 需要 gh 且已登录。失败要早报, 而不是打完包才发现传不了。"""
-    ok, out = _run(["gh", "--version"], timeout=60)
-    if not ok:
+    gh = _find_gh()
+    if not gh:
         raise StepFailed(
-            "--publish 需要 GitHub CLI(gh), 当前不可用。\n"
+            "--publish 需要 GitHub CLI(gh), 当前找不到。\n"
             "  安装: winget install --id GitHub.cli -e\n"
+            "  装完**新开一个终端**再跑（PATH 是安装时写入的，旧终端不会刷新）\n"
             "  登录: gh auth login\n"
             "  只想在本机出包就别加 --publish")
-    ok, out = _run(["gh", "auth", "status"], timeout=60)
+    ok, out = _run([gh, "--version"], timeout=60)
+    if not ok:
+        raise StepFailed(f"gh 存在但跑不起来: {gh}\n{out[:300]}")
+    ok, out = _run([gh, "auth", "status"], timeout=60)
     if not ok:
         raise StepFailed(
-            "gh 没登录, 传不了包。先执行:\n  gh auth login")
-    say("  ✓ gh 已登录")
+            "gh 没登录, 传不了包。先执行:\n  gh auth login\n"
+            "（交互式, 需要你本人在终端里点完；脚本不代做）")
+    say(f"  ✓ gh 已登录 ({gh})")
+    return gh
 
 
 # ---------------- 2. 质量与数据 ----------------
@@ -329,7 +365,8 @@ def publish(zips, dry_run):
         "两个包都不含比赛数据。解压后双击「启动弹幕时光机.bat」，"
         "首次点底栏「检查更新」下载数据。"
     )
-    ok, out = _run(["gh", "release", "create", TAG, *[str(z) for z in zips],
+    gh = _find_gh() or "gh"
+    ok, out = _run([gh, "release", "create", TAG, *[str(z) for z in zips],
                     "--repo", GH_REPO, "--title", f"弹幕时光机 {VERSION}",
                     "--notes", notes], timeout=3600)
     if not ok:

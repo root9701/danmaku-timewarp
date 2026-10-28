@@ -3594,18 +3594,11 @@ def _print_qr(url: str) -> None:
     print()
 
 
-def main() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, OSError):
-        pass
-    # 监听地址来源: 环境变量 DANMAKU_HOST > config.json 的 host > 默认 127.0.0.1。
-    # 这里把**实际生效值**和来源都打出来 —— 曾经出现过: config.json 存了 0.0.0.0,
-    # 而「启动回放台.bat」标题写"仅本机", 结果实际绑定 0.0.0.0 并打印二维码,
-    # 用户看到的标题和实际行为自相矛盾, 排查时无从下手。
-    host_src = ("环境变量 DANMAKU_HOST" if os.environ.get("DANMAKU_HOST", "").strip()
-                else ("config.json 的 host" if str(_cfg("host", default="")).strip()
-                      else "默认值"))
+def _print_banner(host_src: str) -> None:
+    """启动横幅: 访问地址、监听来源、局域网二维码与防火墙排障。
+
+    单独成函数是为了让 main() 只表达"启动流程"(闸门要求函数 <= 60 行)。
+    """
     lan = HOST not in ("127.0.0.1", "localhost")
     ips = _lan_ips() if lan else []
     print()
@@ -3621,13 +3614,41 @@ def main() -> None:
     print("=" * 60)
     if not lan:
         print("  仅本机可访问。要让手机/iPad 看, 请改用同目录下的「..._局域网.bat」启动。")
-    elif not ips:
+        return
+    if not ips:
         print("  [注意] 已绑定 0.0.0.0, 但没探测到局域网 IP(未连 WiFi?), 手机可能连不上。")
-    if lan and ips:
-        print()
-        print("  手机/iPad 扫码访问（和电脑连同一个 WiFi）:")
-        print()
-        _print_qr(f"http://{ips[0]}:{PORT}")
+        return
+    print()
+    print("  手机/iPad 扫码访问（和电脑连同一个 WiFi）:")
+    print()
+    _print_qr(f"http://{ips[0]}:{PORT}")
+    # 局域网失败最常见的原因不是网络, 而是 Windows 防火墙没放行 ——
+    # 症状是"手机上转圈/打不开", 用户不知道该改什么。首次绑定 0.0.0.0 时
+    # 系统一般会弹「是否允许访问」, 点了取消或没弹窗就永久不通。
+    # 放在二维码之后而不是之前: 先让人看到访问地址, 再给排障入口。
+    print()
+    print("  手机打不开这个地址？多半是 Windows 防火墙没放行。")
+    print("  管理员 PowerShell 执行一次（之后不用再执行）:")
+    print()
+    print(f'    New-NetFirewallRule -DisplayName "弹幕时光机" '
+          f'-Direction Inbound -Protocol TCP -LocalPort {PORT} '
+          f'-Action Allow -Profile Private')
+    print()
+
+
+def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+    # 监听地址来源: 环境变量 DANMAKU_HOST > config.json 的 host > 默认 127.0.0.1。
+    # 这里把**实际生效值**和来源都打出来 —— 曾经出现过: config.json 存了 0.0.0.0,
+    # 而「启动回放台.bat」标题写"仅本机", 结果实际绑定 0.0.0.0 并打印二维码,
+    # 用户看到的标题和实际行为自相矛盾, 排查时无从下手。
+    host_src = ("环境变量 DANMAKU_HOST" if os.environ.get("DANMAKU_HOST", "").strip()
+                else ("config.json 的 host" if str(_cfg("host", default="")).strip()
+                      else "默认值"))
+    _print_banner(host_src)
     try:
         web.run_app(build_app(), host=HOST, port=PORT, print=None)
     except OSError as e:

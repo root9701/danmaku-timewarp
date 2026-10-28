@@ -244,7 +244,12 @@ def write_notice(dst: Path, full: bool) -> None:
 用手机 / iPad 看
 ----------------
 双击「启动弹幕时光机_局域网.bat」，窗口里会显示二维码，手机和电脑
-连同一个 WiFi，扫码即可。首次可能需要放行 Windows 防火墙。
+连同一个 WiFi，扫码即可。
+
+手机打不开的话，多半是 Windows 防火墙没放行。用【管理员】PowerShell
+执行一次（只需一次）：
+
+  New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
 
 （只在本机看就用「启动弹幕时光机.bat」，它不开放局域网。）
 

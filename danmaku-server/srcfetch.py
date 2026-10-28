@@ -26,6 +26,7 @@ import io
 import json
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 import zlib
 
 # 数据源: 只允许从这里取。改这里等于改分发渠道。
@@ -302,3 +303,62 @@ def fetch(url: str, sha256: str = "", want_bytes=None,
             f"{'; '.join(bad_data)}") from last
     detail = "; ".join(net_fail) if net_fail else str(last)
     raise FetchError(f"连不上任何下载通道：{detail}") from last
+
+
+# ---- 程序版本: 读 GitHub Releases, 不读 data-index.json ----
+#
+# 为什么程序版本要读 Release 而不是清单里的 app_version:
+#   清单是**数据发布**的产物, 只在作者跑 pack_data.py --index 时更新。
+#   只改代码、不重新生成清单的提交, 用户永远收不到"有新版本"的提示 ——
+#   于是"程序版本号"实际上被数据发布的节奏绑架了。
+#   Release 的 tag 是**专门为程序发布**打的一次标记, 意图明确。
+#
+# 为什么读 releases.atom 而不是 api.github.com:
+#   API 未认证时限 **60 次/小时, 按 IP 计**, 而且**不是**共享给所有用户的频次 ——
+#   国内大量用户处在运营商 NAT 后面, 出口 IP 是几百人共用的, 60 次很容易被同 IP
+#   的别人吃光(实测本机就吃到 403 rate limit exceeded, X-RateLimit-Remaining: 0)。
+#   此时"检查更新"会一直报"没查到程序版本" —— 功能形同废弃。
+#   releases.atom 是 github.com 主站上的一个普通静态 feed: 无频次限制、无鉴权、
+#   走的是与仓库页面同一条通路(本项目实测 raw 被限速而主站正常)。
+#
+# 为什么不用 /releases/latest 的 302:
+#   它也能用, 但要自己解析 Location 头; 没有 Release 时会跳回 /releases,
+#   两种页面得靠正则分辨 —— 比解析 XML 更脆。
+RELEASES_ATOM = f"https://github.com/{GH_OWNER}/{GH_REPO}/releases.atom"
+
+
+def latest_release_tag() -> str:
+    """远端最新 Release 的 tag(去掉可能的 v 前缀), 如 "1.2.0"。
+
+    失败一律抛 FetchError, **不返回 None** —— 调用方必须能区分"确实没有新版"
+    与"没查到", 后者不该显示成"已是最新"。
+    """
+    raw = get_once(RELEASES_ATOM, timeout=TIMEOUT)
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise FetchError(f"发布信息格式不对: {e}") from e
+    ns = "{http://www.w3.org/2005/Atom}"
+    entry = root.find(f"{ns}entry")
+    if entry is None:
+        # feed 能拉到但没有 entry = 作者还没发过 Release。这是"正常但无数据",
+        # 与网络失败要分开报, 否则用户会一直以为是自己网络问题。
+        raise FetchError("远端还没有发布过版本（Releases 为空）")
+    # **从 link 取 tag, 不从 title 取**: 同一页面里 title 是 Release 的标题
+    # (作者可能写成"弹幕时光机 1.2.0"), 只有 link 末尾那一段必定是 tag 名。
+    tag = ""
+    for ln in entry.findall(f"{ns}link"):
+        href = ln.get("href") or ""
+        if "/releases/tag/" in href:
+            tag = href.split("/releases/tag/", 1)[1].strip("/")
+            break
+    if not tag:
+        tag = (entry.findtext(f"{ns}title") or "").strip()
+    if not tag:
+        raise FetchError("发布信息里没有 tag 名")
+    return tag[1:] if tag[:1] in ("v", "V") else tag
+
+
+def release_page_url() -> str:
+    """给用户去下载的页面地址。便携版用户没有 git, 只能走这里。"""
+    return f"https://github.com/{GH_OWNER}/{GH_REPO}/releases/latest"

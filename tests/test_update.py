@@ -300,6 +300,51 @@ def main() -> int:
         finally:
             srcfetch.get_once = saved_once
             srcfetch.mirrors = saved_m
+
+        # ---- 程序版本: 从 Releases 的 atom feed 解析 tag ----
+        # 为什么不测真实 GitHub: 断网/限流会让回归变红, 而红的原因与代码无关
+        # (实测 api.github.com 未认证 60 次/小时按 IP 计, 本机就被吃到 403,
+        #  这正是改用 atom 的理由)。这里给固定 XML, 只验解析规则。
+        def _atom(inner: str) -> bytes:
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<feed xmlns="http://www.w3.org/2005/Atom">'
+                '<title>Release notes from repo</title>'
+                f"{inner}</feed>"
+            ).encode("utf-8")
+
+        def _tag_of(blob: bytes) -> str:
+            saved_get = srcfetch.get_once
+            try:
+                srcfetch.get_once = lambda url, timeout=None: blob
+                return srcfetch.latest_release_tag()
+            finally:
+                srcfetch.get_once = saved_get
+
+        entry = ('<entry><title>弹幕时光机 1.2.0</title>'
+                 '<link href="https://github.com/o/r/releases/tag/v1.2.0"/></entry>')
+        check("atom: 取到 tag 并去掉 v 前缀", _tag_of(_atom(entry)) == "1.2.0")
+
+        entry2 = ('<entry><title>x</title>'
+                  '<link href="https://github.com/o/r/releases/tag/2.0.1"/></entry>')
+        check("atom: 无 v 前缀原样返回", _tag_of(_atom(entry2)) == "2.0.1")
+
+        # 标题里的版本可能被作者写成任何样子, 只有 link 末段必定是 tag。
+        # 这条用"标题与 tag 故意不一致"来证明取的是 link 而不是标题。
+        entry3 = ('<entry><title>弹幕时光机 9.9.9</title>'
+                  '<link href="https://github.com/o/r/releases/tag/v1.3.0"/></entry>')
+        check("atom: 以 link 里的 tag 为准(不是标题)", _tag_of(_atom(entry3)) == "1.3.0")
+
+        # 没有 entry = 还没发过 Release。必须报错而不是返回空串 ——
+        # 返回空串会被上层当成"版本未知", 进而显示成"已是最新"。
+        try:
+            _tag_of(_atom(""))
+            check("atom: 空 feed 要报错", False, "竟然没报错")
+        except srcfetch.FetchError as e:
+            check("atom: 空 feed 报「还没发布过」", "还没有发布" in str(e), str(e)[:60])
+
+        check("Release 页面地址可给用户", 
+              srcfetch.release_page_url().endswith("/releases/latest"))
     finally:
         if httpd:
             httpd.shutdown()

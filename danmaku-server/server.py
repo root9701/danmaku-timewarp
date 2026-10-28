@@ -59,6 +59,15 @@ except ImportError as e:        # 理论上不会发生(它只用标准库)
     HAS_DATAUPDATE = False
     _UPDATE_IMPORT_ERR = str(e)
 
+# 远端程序版本(读 GitHub Releases)。与 dataupdate 同一份 srcfetch, 但单独 import:
+# 少了它只影响"有没有新版本"这一条提示, 数据更新照常。
+try:
+    import srcfetch
+    HAS_SRCFETCH = True
+except ImportError:             # 理论上不会发生(它只用标准库)
+    srcfetch = None             # type: ignore[assignment]
+    HAS_SRCFETCH = False
+
 # 音频指纹自动对齐依赖(缺库不致命, /api/autocalign 会返回明确错误)
 try:
     import numpy as np          # noqa: F401
@@ -3334,6 +3343,14 @@ async def handle_update_check(request: web.Request) -> web.Response:
       - 数据: 每晚新增, 由本接口自动下载(dataupdate 只写 data/)。
       - 程序: 代码变了, 本接口**只提示不下载**。自动覆盖代码的风险(半途中断、
         覆盖用户改动、新代码要新依赖)远大于收益, 让它给一条命令让用户自己决定。
+
+    程序版本改读 **GitHub Releases**(不是清单里的 app_version): 清单只在作者
+    重新生成数据索引时才更新, 只改代码的提交会让"有新版本"这个提示永远不出现。
+    Release 的 tag 是专门为程序发布打的。
+
+    两路查询**互不拖累**: Release 查不到(限速/断网/还没发过)不该让数据更新
+    也失败, 反之亦然。所以程序版本单独 try, 失败时返回 available=False 并
+    带上原因, 前端据此决定要不要提"有新版本"。
     """
     if not HAS_DATAUPDATE:
         raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
@@ -3341,11 +3358,23 @@ async def handle_update_check(request: web.Request) -> web.Response:
         info = await asyncio.to_thread(dataupdate.check, DATA_DIR)
     except dataupdate.UpdateError as e:
         raise ApiError(str(e))
-    # 程序版本比较放在这里(服务端同时知道本地与远端), 前端只负责展示。
-    remote_app = info.pop("remote_app_version", None)
+    info.pop("remote_app_version", None)      # 旧字段, 改读 Release 后不再使用
+
+    # 程序版本: 独立查询, 失败只降级不报错。
+    remote_app, app_err = None, ""
+    if HAS_SRCFETCH:
+        try:
+            remote_app = await asyncio.to_thread(srcfetch.latest_release_tag)
+        except Exception as e:               # noqa: BLE001 —— 任何失败都只降级
+            app_err = str(e)[:120]
+    else:
+        app_err = "版本检查模块不可用"
     app_update = bool(remote_app) and appversion.is_newer(remote_app, APP_VERSION)
     return api_ok(**info, app_version=APP_VERSION,
-                  remote_app_version=remote_app, app_update=app_update)
+                  remote_app_version=remote_app, app_update=app_update,
+                  app_update_error=app_err,
+                  release_url=srcfetch.release_page_url() if HAS_SRCFETCH
+                  else f"https://github.com/root9701/danmaku-timewarp/releases/latest")
 
 
 # 更新进度: 一次更新期间只有一组值, 前端轮询 /api/update/progress 读它。

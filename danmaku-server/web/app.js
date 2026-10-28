@@ -1889,20 +1889,40 @@
         g.fillRect(10 + c * colW, densTop + densH - bh, Math.max(1, colW - 0.2), bh);
       }
     }
-    // 时间刻度(每小时)。刻度线贯穿整个总览(含展开后的分P 行), 但**文字只在展开时画**,
-    // 且写在最底部 —— 紧凑态 66px 里塞下 8 个时间会糊成一排。
-    g.font = '10px sans-serif';
+    // 时间刻度(每小时)。刻度线贯穿整个总览(含展开后的分P 行)。
+    // 文字两种状态都画, 但**紧凑态用小一号**:
+    //   紧凑态底部余量: 66 - (8 密度顶 + 26 密度高 + 4 间距 + 13 色带) = 15px。
+    //   9px 字塞得下, 但没有呼吸位 —— 基线取 h-1(字顶约 56, 距色带底 5px),
+    //   再加 1px 的弱分隔线, 让"色带 | 时间"两层分开而不靠留白。
+    //   早先紧凑态不画, 用户折叠后就得靠猜时间段, 每次都要展开一次再收起。
+    // 间距也要收: 紧凑态约 1090px 可用, 每小时一格约 136px, 8 小时不挤;
+    // 但窗口窄到 700px 以下时 8 个标签会连成一片, 所以按可用宽度自动跳格。
     var tk = new Date(ov.t0);
     tk.setMinutes(0, 0, 0);
+    var tickCount = 0, tickSpan = (ov.t1 - ov.t0) / 3600000;
+    var availW = w - 24;
+    // 每个标签约占 34px(5 字符 * ~6.8px), 装不下就隔一格画一格
+    var stepH = Math.max(1, Math.ceil((tickSpan * 34) / Math.max(1, availW)));
+    // 紧凑态: 色带下方画一条极淡的分隔线, 代替留白
+    if (!full) {
+      g.fillStyle = 'rgba(255,255,255,.055)';
+      g.fillRect(10, densTop + densH + 4 + bandH + 1, w - 20, 1);
+    }
     while (tk.getTime() <= ov.t1) {
       var x = ovX(tk.getTime());
       if (x >= 10 && x <= w - 10) {
         g.fillStyle = 'rgba(255,255,255,.10)';
-        g.fillRect(x, densTop, 1, h - densTop - (full ? OV_LABEL_H : 10));
-        if (full) {
-          g.fillStyle = '#8a8f98';
-          g.fillText(two(tk.getHours()) + ':00', x - 11, h - 4);
+        // 紧凑态刻度线止于色带底边(51), 不穿到下面的时间文字上;
+        // 展开态要贯穿分P 行, 只让出底部标签高度。
+        g.fillRect(x, densTop, 1, full ? (h - densTop - OV_LABEL_H)
+                                      : (densTop + densH + 4 + bandH - densTop));
+        // 紧凑态: 9px 灰字贴底; 展开态: 10px 常规(下面还有分P 行, 需要更明显)
+        if (tickCount % stepH === 0) {
+          g.font = full ? '10px sans-serif' : '9px sans-serif';
+          g.fillStyle = full ? '#8a8f98' : '#767c86';
+          g.fillText(two(tk.getHours()) + ':00', x - 11, full ? h - 4 : h - 1);
         }
+        tickCount++;
       }
       tk = new Date(tk.getTime() + 3600000);
     }

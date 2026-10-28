@@ -6,6 +6,17 @@
 (function () {
   function $(id) { return document.getElementById(id); }
 
+  /** HTML 转义: 只用于**拼进 innerHTML 字符串**的文本。
+   *  为什么需要: 场次标题来自 Riot/B站官方接口与本地 matches.json, 不是用户自己输入的,
+   *  但那是外部数据 —— 名字里带 & < > " 完全可能(队名、赞助商后缀)。直接拼进 innerHTML
+   *  会破坏结构, 极端情况下注入脚本。本文件其余地方一律用 textContent, 只有少数必须拼
+   *  innerHTML 的地方(如总览图例)走这个函数。 */
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   var videoEl = $('video'), canvas = $('danmaku-canvas'), ctx = canvas.getContext('2d');
   var elMatchTitle = $('match-title'), elLiveBadge = $('live-badge'), elClock = $('clock-now');
   var dmList = $('dm-list'), scBanner = $('sc-banner'), chatBox = $('chat-box');
@@ -1611,12 +1622,12 @@
       var unaligned = !nParts && !t.offset_sec;
       if (unaligned) {
         html += '<span style="opacity:.75"><i style="background:#3a3d43"></i>' +
-                t.title + '<b style="color:#d99a6c"> 未对齐</b></span>';
+                escHtml(t.title) + '<b style="color:#d99a6c"> 未对齐</b></span>';
         return;
       }
       if (!t.bv) {
         html += '<span style="opacity:.75"><i style="background:#3a3d43"></i>' +
-                t.title + '<b style="color:#d99a6c"> 缺BV</b></span>';
+                escHtml(t.title) + '<b style="color:#d99a6c"> 缺BV</b></span>';
       }
     });
     ovLegend.innerHTML = html;

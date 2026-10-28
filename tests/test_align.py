@@ -268,6 +268,236 @@ def test_hop_change_contract() -> None:
               f"实际 {len(same['conns'])} 段")
 
 
+def test_afp_written_ts_matches_hop() -> None:
+    """写盘侧 fp 行的 ts 必须按 hdr 的 hop 推进 —— 这曾经是 hop=0.2 时代的残留。
+
+    踩过的坑: live_audiofp._flush_rows 里写死 `self._rows_i0 * 200`, 而 HOP_SEC 早已
+    改成 0.4。于是每批 300 帧(实际 120 秒音频)写出的 ts 只前进 60 秒, 行与行之间
+    时间轴倒跳 60 秒。现有读端(read_afp)只用 conn.t0_ms + 帧序号, 所以对齐结果
+    没坏 —— 但 fp.ts 是对外契约字段, 按 SCHEMA 实现的第三方读者会算出错时间轴,
+    而且不报错。
+
+    这条用例只用合成 PCM 跑一遍真实写盘路径, 断言 ts 差 == n * hop。
+    """
+    import io
+    import json
+
+    import live_audiofp
+
+    af = live_audiofp.AudioFingerprinter()
+    buf = io.StringIO()
+    af._out = buf
+    af._begin_segment()
+    af._t0 = 1_800_000_000_000
+
+    # 喂 3 批多一点 PCM, 按 ffmpeg 的真实块大小(几 KB)分批
+    hop_samp = int(round(live_audiofp.HOP_SEC * live_audiofp.SR))
+    rng = np.random.default_rng(101)
+    total = hop_samp * (1 + live_audiofp.BATCH_FRAMES * 3 + 20)
+    pcm = (rng.standard_normal(total) * 1000).astype("<i2").tobytes()
+    for off in range(0, len(pcm), 8192):
+        af._feed(pcm[off:off + 8192])
+    af._finish_segment("test")
+
+    rows = []
+    for line in buf.getvalue().splitlines():
+        with __import__("contextlib").suppress(ValueError):
+            o = json.loads(line)
+            if o.get("ty") == "fp":
+                rows.append(o)
+
+    check("写盘产生多行 fp(才能验行间 ts)", len(rows) >= 3, f"只有 {len(rows)} 行")
+    if len(rows) < 2:
+        return
+
+    hop = live_audiofp.HOP_SEC
+    ok = True
+    detail = ""
+    for i in range(1, len(rows)):
+        want = rows[i - 1]["n"] * hop * 1000
+        got = rows[i]["ts"] - rows[i - 1]["ts"]
+        if abs(got - want) > 1:
+            ok = False
+            detail = f"行{i - 1}->{i}: ts 前进 {got}ms, 应为 {want:.0f}ms"
+            break
+    check("fp 行间 ts 差 == 帧数 x hop(不写死 200ms)", ok, detail)
+
+    # 累计校验: 第 0 行 ts 就是 t0, 每行 ts 应等于 t0 + 累计帧数*hop
+    acc = 0
+    ok2 = True
+    for r in rows:
+        want = af._t0 + int(round(acc * hop * 1000))
+        if abs(r["ts"] - want) > 1:
+            ok2 = False
+            break
+        acc += r["n"]
+    check("fp 行 ts 与 t0+帧序号xhop 一致", ok2)
+
+
+def test_ffmpeg_timeout_guard() -> None:
+    """ffmpeg 抽音频必须带超时 —— 否则上游停流会永久挂死, 而校准是全局互斥的。
+
+    踩过的坑: `subprocess.run(cmd, capture_output=True)` 没 timeout。上游(尤其经
+    /api/stream 反代的 B站 CDN)只 accept 不发送时, ffmpeg 永远等下去, 一个 worker
+    挂死就挡住之后所有自动校准, 用户看到"一直转圈, 重启才好"。
+
+    这里造一个"只 accept、不吐数据"的本地端口, 断言 ffmpeg_audio_fp 在预算内报错退出。
+    """
+    import socket
+    import threading
+    import time as _t
+
+    import server
+
+    srv = socket.socket()
+    try:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        stop = threading.Event()
+
+        def hold():
+            try:
+                conn, _ = srv.accept()
+                stop.wait(60)          # 挂着不发送任何字节
+                conn.close()
+            except OSError:
+                pass
+        threading.Thread(target=hold, daemon=True).start()
+
+        t0 = _t.monotonic()
+        try:
+            server.ffmpeg_audio_fp(f"http://127.0.0.1:{port}/x", 0.4,
+                                   timeout_sec=3)
+            timed_out = False
+            why = "居然正常返回了"
+        except server.ApiError as e:
+            timed_out = "超时" in str(e)
+            why = str(e)[:70]
+        elapsed = _t.monotonic() - t0
+    finally:
+        stop.set()
+        srv.close()
+
+    check("ffmpeg 挂起时按预算报错(ApiError 提到超时)", timed_out, why)
+    check("超时在预算附近生效(<=15s, 不会挂死)", elapsed <= 15, f"耗时 {elapsed:.1f}s")
+
+    # 正常本地文件仍然能用(不能因为加了超时就误伤)
+    import tempfile
+    import wave
+    with tempfile.TemporaryDirectory(prefix="ffprobe_") as td:
+        wav = Path(td) / "a.wav"
+        sr = 16000
+        x = (np.random.default_rng(5).standard_normal(sr * 2) * 2000).astype("<i2")
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(x.tobytes())
+        fp = server.ffmpeg_audio_fp(str(wav), 0.4)
+        check("本地短音频照常算出指纹", fp.shape[0] > 0 and fp.shape[1] == 33,
+              str(fp.shape))
+
+
+def test_anchored_cluster_rejects_chain_votes() -> None:
+    """防链式聚类凑票: 100/130/160/190 这种每票只差 30 秒的散票不得判为一致。
+
+    踩过的坑: 旧实现把每票与簇内**最新一票**比, 于是 100->130->160->190 一路串成
+    同一簇, 簇内真实离散 90 秒仍算"一致"。实测随机噪声的 4 张烂票(conf≈1.2)就是
+    这样凑够票数被判通过的。
+
+    现在改成**锚定式**: 每票只与簇的**第一个**位置比。这里直接注入受控的票,
+    验证 4 张递进散票不会聚成一个簇(而不是靠真实音频碰运气)。
+    """
+    import audiofp
+    import server
+
+    hop = 0.4
+    t0_ms = 1_792_942_382_304
+    # 回放要够长才会切成多段: seg_frames 上限 180 秒, 8 段
+    ref_frames = int(round(180.0 * 8 / hop))          # 1440 帧 ≈ 576 秒
+    fp_replay = np.random.default_rng(31).standard_normal(
+        (ref_frames, 33)).astype(np.float32)
+    conns = [{"c": 0, "t0_ms": t0_ms,
+              "frames": np.random.default_rng(32).standard_normal(
+                  (int(3600 / hop), 33)).astype(np.float32),
+              "n": int(3600 / hop)}]
+
+    # 注入: 每段都被"定位"到递进 30 秒的位置, conf 都高于随机水平
+    # base 秒 = t0 + 100, 130, 160, 190, ... (每票只与前一票差 30 秒)
+    tol = server.AUTO_VOTE_TOLERANCE_SEC
+    chain = [100.0 + 30.0 * i for i in range(server.AUTO_VOTE_SEGMENTS)]
+
+    def seg_start_of(piece):
+        """piece 是 fp_replay 的视图, 反推出它的起始帧号(=_align_one_page 里的 st)。
+
+        必须这么算: base = seg_t0 + offset - st*hop, 各段的 st 不同。想模拟"某段
+        定位到 base=X", 就要给 offset = X - seg_t0 + st*hop, 不能直接返回 X。
+        """
+        p0 = piece.__array_interface__["data"][0]
+        b0 = fp_replay.__array_interface__["data"][0]
+        return (p0 - b0) // fp_replay.strides[0]
+
+    def make_fake(base_for_call):
+        def fake_align(seg_frames_arr, piece, hop_sec, exclude_sec=1.0, valid_range=None):
+            st = seg_start_of(piece)
+            base = base_for_call(st)
+            off = base - t0_ms / 1000.0 + st * hop_sec
+            return {"offset_sec": off, "confidence": 4.0, "best_score": 1.0}
+        return fake_align
+
+    old = audiofp.align
+    # 按"第几段"（而不是按帧号取模）给位置：8 段各给 100/130/160/.../310 秒。
+    # conf 用**随机水平**(1.2, 与真实噪声残票一致): 报告里的原始事故正是"4 张 conf≈1.2
+    # 的烂票靠递进位置凑够票数"。用 4.0 会走"强票"救援分支, 那是另一条路径, 不该混进来。
+    order = {"n": 0}
+
+    def chain_align(seg_frames_arr, piece, hop_sec, exclude_sec=1.0, valid_range=None):
+        st = seg_start_of(piece)
+        i = order["n"]
+        order["n"] += 1
+        base = chain[i % len(chain)]
+        off = base - t0_ms / 1000.0 + st * hop_sec
+        return {"offset_sec": off, "confidence": 1.2, "best_score": 1.0}
+
+    audiofp.align = chain_align
+    try:
+        try:
+            r = server._align_one_page(fp_replay, conns, hop,
+                                       server.AUTO_MIN_CONFIDENCE,
+                                       server.AUTO_MIN_MATCH_SEC)
+            accepted = True
+            detail = f"采纳了 offset={r.get('offset_ms')} votes={r.get('votes')}"
+        except server.ApiError as e:
+            accepted = False
+            detail = str(e)[:70]
+    finally:
+        audiofp.align = old
+
+    check("每票差 30 秒的链式散票不被判为一致", not accepted, detail)
+    # 这条不是实现细节, 是**两道防线缺一不可**的证据:
+    # 容差恰好是 30 秒, 所以"每票差 30 秒"正好卡在锚定聚类的边界上, 会进同一个簇
+    # (第一票与第四票已差 90 秒)。真正拦住它的是后面的"簇内离散 > 容差"硬上限。
+    # 换句话说: 只靠容差比对(无论锚定还是链式)都挡不住这种票, 必须有离散上限兜底。
+    check("容差 <= 30 秒(单靠容差挡不住 30 秒步进, 必须有离散上限)",
+          tol <= 30.0, f"容差 {tol}s")
+
+    # 反向对照: 真正紧贴的票(全部同一位置)必须被采纳 —— 别为了防凑票把正确的也拒了。
+    audiofp.align = make_fake(lambda st: 500.0)
+    try:
+        r = server._align_one_page(fp_replay, conns, hop,
+                                   server.AUTO_MIN_CONFIDENCE,
+                                   server.AUTO_MIN_MATCH_SEC)
+        # offset_ms 就是 base 的毫秒值(chosen[0]*1000), 不是墙钟。
+        ok = abs(r["offset_ms"] - 500_000) < 1000
+        why = f"offset={r['offset_ms']} 期望≈500000"
+    except server.ApiError as e:
+        ok, why = False, str(e)[:70]
+    finally:
+        audiofp.align = old
+    check("全部票指向同一处时正常采纳(防过拒)", ok, why)
+
+
 def main() -> int:
     print("对齐算法回归")
     for fn in (test_align_recovers_offset,
@@ -278,7 +508,10 @@ def main() -> int:
                test_random_level_consensus_rejected,
                test_segmented_mapping_no_drift,
                test_config_overrides_take_effect,
-               test_hop_change_contract):
+               test_hop_change_contract,
+               test_afp_written_ts_matches_hop,
+               test_ffmpeg_timeout_guard,
+               test_anchored_cluster_rejects_chain_votes):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

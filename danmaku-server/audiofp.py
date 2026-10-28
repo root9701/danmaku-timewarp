@@ -24,6 +24,8 @@ read_afp(path) -> {"conns": [{c, t0_ms, frames, n}], "params": {...}}
       {"ty":"end","c":0,"reason":"reconnect|stop|error"}
     fp 的 base64 解码为 uint8 数组，row-major n 行 x bands 列；
     第 i 帧墙钟 = ts + i*hop*1000 毫秒。
+    注意: read_afp 返回的 conn 里 **不含 ts**, 时间轴一律用 t0_ms + 帧序号 x hop 重建
+    (server._align_one_page 就是这么用的)。fp.ts 只是验收冗余, 读端不依赖它。
 量化约定（与 fingerprint() 输出一致，指纹值域 [-1,1]）：
     量化   q = clamp(round((v+1)*127.5), 0, 255)
     反量化 v = q/127.5 - 1

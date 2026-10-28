@@ -1867,6 +1867,12 @@ QUALITY_FALLBACK_DESC = {16: "360P", 32: "480P", 64: "720P", 74: "720P60",
                          80: "1080P", 112: "1080P+", 116: "1080P60", 120: "4K"}
 PLAYURL_DEFAULT_QN = 64
 
+# ffmpeg 抽音频的超时预算。抽音频远快于实时(实测 15 分钟音频 0.2 秒), 所以下限给到
+# 120 秒已经很宽松; 但**必须有上限行为**, 否则上游停流时 ffmpeg 永久阻塞, 而
+# autocalign 是全局互斥的 —— 一个挂死挡住之后所有校准请求。
+FFMPEG_MIN_TIMEOUT = 120.0      # 秒
+FFMPEG_TIMEOUT_FACTOR = 4.0     # 再按时长放大: 预算 = 时长*4 + 下限
+
 
 def _quality_list(data: dict) -> list:
     """把 accept_quality/accept_description 揉成 [{qn,label}]。
@@ -2539,17 +2545,33 @@ def _ffmpeg_exe() -> str:
         raise ApiError(f"ffmpeg 不可用: {e}")
 
 
-def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4):
+def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4, timeout_sec=None):
     """ffmpeg 把 src(本地文件或URL) 抽成 16k 单声道 s16le 原始流后直接算指纹。
 
-    同步阻塞(CPU+子进程), 调用方需 asyncio.to_thread。返回 (N,33) float32。"""
+    同步阻塞(CPU+子进程), 调用方需 asyncio.to_thread。返回 (N,33) float32。
+
+    **必须带超时。** 旧实现 `subprocess.run(cmd, capture_output=True)` 没有 timeout:
+    上游(尤其 /api/stream 反代的 B站 CDN)停流时会"连着但不吐数据", ffmpeg 永远等下去,
+    而 autocalign 是**全局互斥**的 —— 一个 worker 挂死会挡住之后所有校准请求, 用户看到
+    的是"自动校准一直转圈, 重启才好"。
+    实测: 对端只 accept 不发送时, ffmpeg 会一直阻塞; 加 timeout 才能打断。
+
+    timeout_sec 缺省按下限算: 抽音频远快于实时(实测 15 分钟音频 0.2s), 所以给 120 秒
+    起步已经极宽松; 调用方知道音频更长时自行放大(见 get_replay_fingerprint)。
+    """
+    if timeout_sec is None:
+        timeout_sec = FFMPEG_MIN_TIMEOUT
     cmd = [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
            "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
            "-f", "s16le", "pipe:1"]
     try:
-        proc = subprocess.run(cmd, capture_output=True)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
     except OSError as e:
         raise ApiError(f"启动 ffmpeg 失败: {e}")
+    except subprocess.TimeoutExpired as e:
+        raise ApiError(
+            f"ffmpeg 抽音频超时({timeout_sec:.0f} 秒未完成)。可能是源站停流或网络卡住, "
+            f"稍后重试") from e
     if proc.returncode != 0 or not proc.stdout:
         err = proc.stderr.decode("utf-8", errors="replace").strip()[:300]
         raise ApiError(f"ffmpeg 抽取音频失败: {err or '无输出'}")
@@ -2702,10 +2724,16 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     # ② 整段 mp4 兜底: html5 durl(可能多段), ffmpeg 走本服务 /api/stream 反代
     play = await bili_playurl_mp4(session, bv, page)
     urls = play["urls"]
+    # 超时按**该段时长**放大: 整段 mp4 可能是一整局(40~60 分钟), 抽音频虽快, 但
+    # 反代链路(本服务 -> B站 CDN)慢或半停时不能按本地文件的速度假定。乘 4 再给 120 秒
+    # 余量, 对一个只做音频解复用的 ffmpeg 来说已极宽松, 同时仍能打断真挂死。
+    lens = play.get("seg_lengths") or []
     fps = []
     for i, u in enumerate(urls):
+        seg_sec = float(lens[i]) if i < len(lens) and lens[i] else 0.0
+        budget = max(FFMPEG_MIN_TIMEOUT, seg_sec * FFMPEG_TIMEOUT_FACTOR + FFMPEG_MIN_TIMEOUT)
         src = f"http://127.0.0.1:{PORT}/api/stream?url={quote(u, safe='')}"
-        fps.append(await asyncio.to_thread(ffmpeg_audio_fp, src, hop_sec, win_sec))
+        fps.append(await asyncio.to_thread(ffmpeg_audio_fp, src, hop_sec, win_sec, budget))
         print(f"[autocalign] 回放段 {i + 1}/{len(urls)} 指纹完成 "
               f"({fps[-1].shape[0]} 帧)")
     fp = np.concatenate(fps, axis=0)     # 段间相位差 < hop, 顺序拼接即可

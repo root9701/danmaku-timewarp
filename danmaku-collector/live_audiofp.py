@@ -12,10 +12,14 @@ afp 文件契约(UTF-8 JSONL, 与弹幕数据同目录同基础名):
   (当前采集端写 hop=0.4; 旧文件是 0.2。读取方必须按各文件 hdr 里的值解释帧,
    不能假定当前默认值 —— 否则历史指纹会被整体拉伸或压缩。)
   {"ty":"conn","c":0,"t0_ms":<该段首样本墙钟>}                        每个拉流连接段
-  {"ty":"fp","c":0,"ts":<本批首帧墙钟>,"n":<帧数>,"fp":"<base64>"}    每 60s 一批
+  {"ty":"fp","c":0,"ts":<本批首帧墙钟>,"n":<帧数>,"fp":"<base64>"}    批量落盘(默认 300 帧)
   {"ty":"end","c":0,"reason":"reconnect|stop|error"}                  段结束
-fp base64 解码为 uint8 (n x 33) row-major; 第 i 帧墙钟 = ts + i*200 (毫秒)。
+fp base64 解码为 uint8 (n x 33) row-major; 第 i 帧墙钟 = ts + i*hop*1000 (毫秒)。
 量化 q = clamp(round((v+1)*127.5), 0, 255), 反量化 v = q/127.5 - 1。
+
+注意: 服务端 audiofp.read_afp **只认 conn.t0_ms + 帧序号**, 不读 fp.ts。
+fp.ts 是给人/外部工具看的冗余字段, 但也必须写对 —— 否则按本文档实现的第三方
+读者会算出错的时间轴(且不报错)。hop 变化时它的步长必须跟着变, 不能写死。
 
 纪律: 本模块任何异常自行吞掉(log.warning 降级), 绝不向 Recorder 抛——弹幕采集是主任务,
 指纹是增强, 宁可没有指纹也不能影响弹幕。
@@ -210,7 +214,9 @@ async def _pick_low_qn_flv(session, room_id):
 
 
 # ======================= AudioFingerprinter =======================
-BATCH_FRAMES = 300      # 每批帧数 = 60s
+# 每批写盘的帧数。物理时长 = BATCH_FRAMES * HOP_SEC, **不要**在注释或文档里写死秒数:
+# hop 从 0.2 调到 0.4 时, 300 帧从 60 秒悄悄变成 120 秒。
+BATCH_FRAMES = 300
 RECV_TIMEOUT = 60.0     # 秒无 PCM 判死该段(断流自愈)
 BACKOFF_BASE, BACKOFF_MAX = 10.0, 300.0  # 重连退避: 10s 起倍增, 上限 5 分钟
 RESET_AFTER_SEC = 60.0  # 段存活超过该时长, 重连退避复位
@@ -419,12 +425,18 @@ class AudioFingerprinter:
         if not self._rows:
             return
         arr = np.concatenate(self._rows)
-        self._write({"ty": "fp", "c": self._c, "ts": self._t0 + self._rows_i0 * 200,
+        # 首帧墙钟 = t0 + 帧序号 * hop。**必须按 HOP_SEC 换算, 不能写死毫秒**:
+        # hop 是数学定义(见文件头), 这里写死 200 会让 hop=0.4 的每行 ts 只推进 60 秒
+        # 而实际音频是 120 秒, 行与行之间时间轴倒跳。读端(audiofp.read_afp)目前只用
+        # conn.t0_ms + 帧序号, 所以不影响对齐结果; 但这是对外契约字段, 第三方按
+        # SCHEMA 读就会算出错时间轴, 且不报错。
+        self._write({"ty": "fp", "c": self._c,
+                     "ts": self._t0 + int(round(self._rows_i0 * HOP_SEC * 1000)),
                      "n": int(len(arr)), "fp": base64.b64encode(arr.tobytes()).decode("ascii")})
         self._rows, self._n_pend = [], 0
 
     def _finish_segment(self, reason):
-        self._flush_rows()  # 尾批不足 60s 也照常落盘(n 为实际帧数)
+        self._flush_rows()  # 尾批不足一整批也照常落盘(n 为实际帧数)
         if self._conn_written:
             self._write({"ty": "end", "c": self._c, "reason": reason})
             self._conn_written = False

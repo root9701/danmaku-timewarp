@@ -16,3 +16,10 @@ imageio-ffmpeg==0.6.0
 # 可选但已纳入锁定: 缺了不致命, 但有它体验完整
 qrcode==8.2          # 局域网模式终端二维码(server.py 里有 import 失败降级)
 tzdata==2026.5       # Windows 上 zoneinfo 需要它, 否则赛程时区解析抛异常
+
+# ---- 只在"跑测试"时需要, 运行回放台用不到 ----
+# 测试统一用本 venv 的解释器跑 tests/run_all.py, 而 test_manifest.py 会 import
+# 采集端的 collector.py(验证 manifest 归档/计数)。collector.py 顶层 import brotli,
+# 缺了它整组测试直接 ImportError —— 不是断言失败, 是跑不起来。
+# 它不是回放台的运行依赖, 所以单独成组, 别混进上面那三行"锁死"的名单。
+brotli==1.2.1

@@ -49,6 +49,5 @@
 | 数据契约 | `SCHEMA.md`（根） |
 | 结构 / 业务约束 / 术语 | `架构总览.md` / `业务约束.md` / `术语表.md` |
 | 模块设计 | `模块设计/` |
-| 质量闸门 / 回归 | `tools/` / `tests/` |
-| 一次性迁移脚本 | 4 个，已挪进 `tools/`（运行期不参与） |
+| 质量闸门 / 回归 | `tools/`（`quality_gate.py` / `pack_data.py` / `split_matches.py`）/ `tests/` |
 | 临时产出 | `tmp/`（gitignore 不入库） |

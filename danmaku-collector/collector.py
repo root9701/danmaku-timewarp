@@ -1104,6 +1104,56 @@ class Recorder:
         mp = self._meta_target_path()
         return mp.parent / "manifest.json" if mp is not None else None
 
+    @staticmethod
+    def _scan_session_files(sess_dir):
+        """扫会话目录里**全部**弹幕数据片, 返回 (files, dm_count, first_ms, last_ms)。
+
+        为什么要扫目录而不是只写本会话的 self._parts / self.dm_count:
+          v3 布局下一个房间一天只有一个会话目录(data/{日期}/{room}/), 同一天硬杀重启
+          会产生**第二次** finalize, 两次会话的数据片落在同一个目录里。如果 manifest
+          只描述当前这次, 就把上一次的 files/计数冲掉了 —— 数据文件本身还在(服务端
+          走目录扫描仍能播), 但权威索引失真、dm_count 少记。
+        所以 manifest 的语义是"这个目录里有什么", 而不是"本次进程写了什么"。
+
+        只数 ty=="dm"(与 server.count_dm_lines 口径一致); 半行/坏行跳过不抛错。
+        """
+        parts, dms, first, last = [], 0, None, None
+        try:
+            cands = sorted(p for p in sess_dir.iterdir()
+                           if p.is_file() and (p.name.endswith(".jsonl.gz")
+                                               or p.name.endswith(".jsonl"))
+                           and ".afp." not in p.name and ".meta." not in p.name)
+        except OSError:
+            return [], 0, None, None
+        for p in cands:
+            opened = None
+            try:
+                if p.name.endswith(".gz"):
+                    opened = gzip.open(p, "rt", encoding="utf-8", errors="replace")
+                else:
+                    opened = open(p, "rt", encoding="utf-8", errors="replace")
+                with opened as f:
+                    for line in f:
+                        try:
+                            o = json.loads(line)
+                        except ValueError:
+                            continue          # 半行(采集被强杀)只丢该行
+                        if not isinstance(o, dict):
+                            continue
+                        ts = o.get("ts")
+                        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                            continue
+                        if o.get("ty") == "dm":
+                            dms += 1
+                        if first is None or ts < first:
+                            first = int(ts)
+                        if last is None or ts > last:
+                            last = int(ts)
+                parts.append(p.name)
+            except (OSError, EOFError, gzip.BadGzipFile):
+                continue                  # 坏文件跳过, 不让整个 manifest 失败
+        return parts, dms, first, last
+
     def _write_manifest_atomic(self, meta_path, afp_gz, meta):
         """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。"""
         manifest_path = self._manifest_target_path()
@@ -1111,19 +1161,18 @@ class Recorder:
             return
         try:
             day = self._session_dirname(self.record_end or self.record_start)
-            # files 必须是**磁盘上真实存在的文件名**。
-            # self._parts 记的是未压缩名(供 meta.parts 用), 而 finalize 会把切片压成 .gz,
-            # 直接把 _parts 写进 manifest 会让它指向不存在的文件(下游按 manifest 读会读空)。
             sess_dir = manifest_path.parent
-            files = []
-            for name in self._parts:
-                for cand in (name, name + ".gz"):
-                    if (sess_dir / cand).is_file():
-                        files.append(cand)
-                        break
-            start_ms = self.first_ts or (
+            # 同目录里的旧 manifest 先归档(manifest_runN.json), 绝不静默覆盖:
+            # 它记录的是上一次会话的账, 直接顶掉就查不到那次录了多久/多少条了。
+            # 归档名不被服务端通配(只认 manifest.json), 不会造成重复会话。
+            with contextlib.suppress(Exception):
+                if manifest_path.exists():
+                    self._archive_existing([manifest_path])
+            # files/计数/起止一律按**目录实际内容**重算, 见 _scan_session_files 的说明。
+            files, dm_total, first_ms, last_ms = self._scan_session_files(sess_dir)
+            start_ms = first_ms or self.first_ts or (
                 int(self.record_start.timestamp() * 1000) if self.record_start else None)
-            end_ms = self.last_ts or (
+            end_ms = last_ms or self.last_ts or (
                 int(self.record_end.timestamp() * 1000) if self.record_end else None)
             # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
             # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
@@ -1139,7 +1188,7 @@ class Recorder:
                 "is_test": bool(self.is_test),
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "dm_count": self.dm_count,
+                "dm_count": dm_total or self.dm_count,
                 "sc_count": self.sc_count,
                 "files": files,
                 "afp": ({"file": afp_gz.name if afp_gz else None,

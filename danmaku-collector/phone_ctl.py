@@ -32,8 +32,10 @@ from pathlib import Path
 
 # 手机采集节点是**本机专属**的调试工具: adb 路径/设备序列号因机器而异。
 # 全部允许用环境变量覆盖, 避免把某台电脑的绝对路径写死在源码里(换机就跑不通)。
+# 设备序列号**不给默认值**: 写死一个真实序列号等于把作者机器的硬件标识连同仓库
+# 一起发出去, 而它对别人没有任何用处。没设时由 _pick_serial() 从 adb devices 里挑。
 ADB = os.environ.get("ADB_BIN", "").strip() or "adb"
-SERIAL = os.environ.get("ADB_SERIAL", "").strip() or "d6ab102"
+SERIAL = os.environ.get("ADB_SERIAL", "").strip()
 IME = "com.android.adbkeyboard/.AdbIME"
 HTTP_LOG = Path(os.environ.get("PHONE_CTL_LOG", "").strip()
                 or (Path(tempfile.gettempdir()) / "phone_ctl_cb.log"))
@@ -42,6 +44,30 @@ THIS_DIR = Path(__file__).resolve().parent
 # 手机回传文件的落地目录(可用环境变量覆盖)
 RECV_DIR = Path(os.environ.get("PHONE_RECV_DIR", "").strip()
                 or (Path(tempfile.gettempdir()) / "phone_recv"))
+
+
+def _pick_serial():
+    """没设 ADB_SERIAL 时从 adb devices 里挑唯一在线设备。
+
+    为什么不在源码里留默认序列号: 那是作者机器的硬件标识, 入库等于随仓库分发,
+    而且对别人毫无用处(他们的序列号必然不同)。这里改成运行时发现, 且只接受
+    "恰好一台设备在线"——多台时报错让人显式指定, 免得误操作到别的手机。
+    """
+    try:
+        out = subprocess.run([ADB, "devices"], capture_output=True, text=True,
+                             timeout=15, encoding="utf-8", errors="replace").stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        raise SystemExit(f"adb 不可用({e})。请确认 adb 在 PATH 里, 或用 ADB_BIN 指定路径。")
+    # 跳过 "List of devices attached" 表头与空行; 只认状态为 device 的
+    devs = [ln.split()[0] for ln in out.splitlines()
+            if ln.strip() and "\t" in ln and ln.split("\t")[-1].strip() == "device"]
+    if not devs:
+        raise SystemExit("没有在线的 adb 设备。请插上手机并确认已授权 USB 调试, "
+                         "或用 ADB_SERIAL 指定序列号。")
+    if len(devs) > 1:
+        raise SystemExit("检测到多台在线设备(" + ", ".join(devs) +
+                         ")。请用 ADB_SERIAL 指定要操作哪一台。")
+    return devs[0]
 
 
 def sh(*a, timeout=60):
@@ -266,6 +292,7 @@ def cmd_test(sec=60):
 
 
 def main():
+    global SERIAL
     for s in (sys.stdout, sys.stderr):
         try:
             s.reconfigure(encoding="utf-8")
@@ -275,6 +302,9 @@ def main():
     p.add_argument("action", choices=["status", "start", "stop", "log", "pull", "test"])
     p.add_argument("n", nargs="?", type=int, default=None)
     a = p.parse_args()
+    # 序列号可能来自 ADB_SERIAL, 也可能要现场发现。**不在这里写死任何值**。
+    if not SERIAL:
+        SERIAL = _pick_serial()
     out = sh("devices")
     if "device\n" not in out and "\tdevice" not in out:
         print("手机未连接:", out.strip()); return 1

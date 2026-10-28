@@ -3620,7 +3620,7 @@ def main() -> None:
     print("  停止: 关闭本窗口, 或按 Ctrl+C")
     print("=" * 60)
     if not lan:
-        print("  仅本机可访问。要让手机/iPad 看, 请用「启动回放台_局域网.bat」。")
+        print("  仅本机可访问。要让手机/iPad 看, 请改用同目录下的「..._局域网.bat」启动。")
     elif not ips:
         print("  [注意] 已绑定 0.0.0.0, 但没探测到局域网 IP(未连 WiFi?), 手机可能连不上。")
     if lan and ips:

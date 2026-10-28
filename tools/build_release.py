@@ -68,6 +68,28 @@ echo 服务已停止。
 pause
 """
 
+# 局域网版。为什么便携包必须有它:
+#   server.py 在仅本机模式下会打印"要让手机/iPad 看, 请用「启动回放台_局域网.bat」",
+#   而打包时**删掉了仓库里的那几个 .bat**。若不补这一份, 包里就只有本机模式,
+#   提示指向一个不存在的文件 —— 用户按提示找不到东西, 局域网能力等于被砍掉。
+# 与仓库版行为一致: 只差 DANMAKU_HOST=0.0.0.0(绑定全部网卡 -> 打印二维码)。
+LAN_BAT = """@echo off
+title 弹幕时光机 - 局域网访问（关闭本窗口即停止）
+cd /d "%~dp0"
+echo ==============================================
+echo   弹幕时光机 {ver} · 局域网访问
+echo   手机/iPad 和电脑连同一个 WiFi，扫下方二维码
+echo   关闭本窗口 = 停止服务
+echo ==============================================
+echo.
+set DANMAKU_HOST=0.0.0.0
+set PYTHONIOENCODING=utf-8
+"%~dp0python\\python.exe" "%~dp0danmaku-server\\server.py"
+echo.
+echo 服务已停止。
+pause
+"""
+
 
 def _size_mb(p: Path) -> float:
     if p.is_file():
@@ -193,8 +215,10 @@ def copy_code(dst: Path) -> None:
     for old in ("_ensure_venv.bat", "启动回放台.bat", "启动回放台_局域网.bat",
                 "退出回放台.bat"):
         (dst / "danmaku-server" / old).unlink(missing_ok=True)
-    (dst / "启动弹幕时光机.bat").write_text(
-        LAUNCH_BAT.replace("{ver}", VERSION), encoding="utf-8", newline="\r\n")
+    for name, tpl in (("启动弹幕时光机.bat", LAUNCH_BAT),
+                      ("启动弹幕时光机_局域网.bat", LAN_BAT)):
+        (dst / name).write_text(
+            tpl.replace("{ver}", VERSION), encoding="utf-8", newline="\r\n")
     for name in ("VERSION", "README.md"):
         src = ROOT / name
         if src.is_file():
@@ -216,6 +240,13 @@ def write_notice(dst: Path, full: bool) -> None:
 4. 第一次要先下载数据：点右上角「检查更新」
 
 关闭：关掉那个黑窗口就行。
+
+用手机 / iPad 看
+----------------
+双击「启动弹幕时光机_局域网.bat」，窗口里会显示二维码，手机和电脑
+连同一个 WiFi，扫码即可。首次可能需要放行 Windows 防火墙。
+
+（只在本机看就用「启动弹幕时光机.bat」，它不开放局域网。）
 
 数据要自己下载
 --------------
@@ -266,6 +297,13 @@ def verify(dst: Path, full: bool) -> bool:
     if not py.is_file():
         print("  ✗ 便携 Python 不存在")
         return False
+    # 两个启动脚本必须都在。这个检查不是形式主义: 曾经打包时删掉了仓库里的
+    # 局域网 .bat 却没补新的, 包里只剩本机模式, 而服务端提示还指向那个不存在的
+    # 文件 —— 用户按提示找不到东西, 局域网能力等于被砍掉, 且构建全绿。
+    for bat in ("启动弹幕时光机.bat", "启动弹幕时光机_局域网.bat"):
+        if not (dst / bat).is_file():
+            print(f"  ✗ 缺启动脚本: {bat}")
+            return False
     expect = "True" if full else "False"
     code = (
         "import sys, json, asyncio, gzip, urllib.request, sqlite3, ssl\n"

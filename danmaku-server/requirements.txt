@@ -21,5 +21,9 @@ tzdata==2026.5       # Windows 上 zoneinfo 需要它, 否则赛程时区解析�
 # 测试统一用本 venv 的解释器跑 tests/run_all.py, 而 test_manifest.py 会 import
 # 采集端的 collector.py(验证 manifest 归档/计数)。collector.py 顶层 import brotli,
 # 缺了它整组测试直接 ImportError —— 不是断言失败, 是跑不起来。
-# 它不是回放台的运行依赖, 所以单独成组, 别混进上面那三行"锁死"的名单。
+# 实测这是采集端唯一缺的第三方依赖(fcntl 是 Unix 专属, 代码里已有 Windows 兜底)。
+#
+# 为什么放这里而不是 requirements-dev.txt: _ensure_venv.bat 只认 requirements.txt,
+# 拆出去的结果就是"测试依然跑不起来", 等于没修。它的体积(约 1 MB)与 qrcode/tzdata
+# 同量级, 对普通用户无害; 真正的体积大头是 numpy(31MB) 与 imageio-ffmpeg(84MB)。
 brotli==1.2.1

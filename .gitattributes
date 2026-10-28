@@ -9,3 +9,7 @@
 *.css   text eol=lf
 *.md    text eol=lf
 *.json  text eol=lf
+
+# 版本号文件: 固定 LF。它是被程序按行读取的单行文本, 混进 CR 会让版本串
+# 变成 "1.0.0\r" —— read() 里虽有 strip() 兜底, 但没必要留这个坑。
+VERSION text eol=lf

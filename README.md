@@ -30,8 +30,8 @@
 lol延时直播/
 ├── README.md / SCHEMA.md           ← 用法配置 / 数据契约
 ├── DISTRIBUTION.md                 ← 只用作者的数据(不采集)
-├── AGENTS.md / 业务约束.md          ← 纪律红线 / 禁区与质检
-├── 架构总览.md / 术语表.md / 模块设计/
+├── 业务约束.md / 架构总览.md         ← 禁区与质检 / 模块与架构债
+├── 术语表.md / 模块设计/
 ├── LICENSE                         ← MIT(代码与文档)
 ├── tools/quality_gate.py           ← 质量闸门(退出码说话)
 ├── tests/test_align.py             ← 对齐算法回归
@@ -231,7 +231,7 @@ python tools\quality_gate.py
 danmaku-server\.venv\Scripts\python.exe tests\test_align.py
 ```
 
-改动前读 `AGENTS.md`（纪律与红线）、`业务约束.md`（禁区与质检）、`架构总览.md`（模块与架构债）。改数据字段前必读 `SCHEMA.md`。
+改动前读 `业务约束.md`（禁区与质检）、`架构总览.md`（模块与架构债）。改数据字段前必读 `SCHEMA.md`。
 
 ## 手机备份节点（可选）
 

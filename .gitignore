@@ -103,3 +103,7 @@ danmaku-server/config.json
 # 别人 clone 下来跑不出有意义的结果。
 docs/
 
+# 作业规范/纪律：只在本机约束开发，不随仓库分发。
+# 它不是给用户看的文档(用户看 README 与 SCHEMA)，放上去只会让仓库首页显得杂乱。
+AGENTS.md
+

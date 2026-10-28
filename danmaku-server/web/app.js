@@ -40,6 +40,16 @@
   var btnMore = $('btn-more'), moreBox = $('more-box');
 
   /* ---------------- 全局状态 ---------------- */
+  // 防剧透等用户偏好。**必须在任何函数之前声明**:
+  // loadMatchList()(约 L400)与 updateOvSummary() 都要读 settings.spoiler,
+  // 而 var 只提升声明、不提升初始化 —— 放在原来的位置(弹幕设置那一块)会让
+  // 首次加载读到 undefined, 抛错后场次下拉框直接空掉。
+  var settings = {
+    area: 1, opacity: 0.9, size: 26, density: 1,
+    speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
+    stroke: true,      // 文字描边
+    spoiler: true      // 防剧透(默认开): 隐藏进度条标记、分P 色块、局数文案
+  };
   var state = {
     applied: false,
     dmOn: true,
@@ -434,6 +444,10 @@
             tag = '（缺 BV）';
           } else if (m.align_failed) {
             tag = '（未对齐 · 直播可能未转播）';
+          } else if (settings.spoiler) {
+            // 防剧透开着时只报"能不能播", 不报局数 —— 分P 个数就是总局数,
+            // 与总览里被我们藏掉的分P 色块是同一个信息, 不在这里藏等于白藏。
+            tag = nPages ? '（可播放）' : '（未对齐）';
           } else if (nPages && totPages && nPages < totPages) {
             tag = '（已对齐 ' + nPages + '/' + totPages + ' 个分P）';
           } else if (nPages > 1) {
@@ -719,14 +733,16 @@
     if (!state.applied) { return; }
     var pm = currentPageMark();
     var t = state.baseTitle || state.title || '';
-    if (pm && pm.part) { t += ' · ' + pm.part; }
+    // 防剧透开着时不把分P 名拼进标题: "第一局/第二局"就是打到第几局。
+    if (pm && pm.part && !settings.spoiler) { t += ' · ' + pm.part; }
     if (elMatchTitle.textContent !== t) { elMatchTitle.textContent = t; }
     elMatchTitle.title = t;
     // 有下一局时才显示"跳过本局末尾"按钮(B站回放的分P末尾常带采访/评论, 可一键跳过)
     if (btnSkip) {
       var nx = nextPageMark();
       btnSkip.hidden = !nx;
-      if (nx) { btnSkip.title = '跳到下一局：' + (nx.part || ('第' + nx.page + 'P')); }
+      // 按钮标题同样不带分P 名(见上), 否则悬停一次就剧透了。
+      if (nx) { btnSkip.title = settings.spoiler ? '跳到下一段' : ('跳到下一局：' + (nx.part || ('第' + nx.page + 'P'))); }
     }
   }
 
@@ -796,8 +812,9 @@
     progInner.style.width = pct + '%';
     progThumb.style.left = pct + '%';
     var label = fmtCnt(Math.floor(segPos)) + ' / ' + fmtCnt(Math.floor(segLen));
+    // 分P 名("第一局"/"赛后采访")同样泄露打到第几局, 防剧透开着时不写。
     var pm = currentPageMark();
-    if (pm && pm.part) { label += '  ' + pm.part; }
+    if (pm && pm.part && !settings.spoiler) { label += '  ' + pm.part; }
     if (effectiveRate() !== 1) { label += '  ' + effectiveRate() + '×'; }
     timeLabel.textContent = label;
     // 标记是按"当前分P"换算的, 换段后必须重画。timeupdate 每秒触发多次,
@@ -1303,10 +1320,16 @@
   }
 
   /* ---------------- 防剧透 ----------------
-   * 用户要求默认开启。要藏两样东西, 因为它们都会泄露"打到第几局、谁赢了":
+   * 用户要求默认开启。要藏这些东西, 因为它们都会泄露"打到第几局、谁赢了":
    *   - 进度条上的时间标记(一血/大龙/水晶 → 直接看出局势与结局)
    *   - 总览里的分P 色块(第一局/第二局/第三局 → 直接看出打了几局)
+   *   - 场次下拉框的"已对齐 N 个分P"(N 就是总局数; 3 个分P = 打满三局)
+   *   - 顶栏与总览头部的"N 个分P"(同一个数字, 换了个地方写)
+   *   - 进度条时间标签里的分P 名(第一局/赛后采访 → 同上)
    * 保留: 场次色带(谁 vs 谁)与密度曲线 —— 那是"今晚有哪几场", 不泄露比分。
+   *
+   * 最后一条尤其容易漏: 只在总览做隐藏, 等于把同一个数字从图上搬到了
+   * 下拉框和状态栏里 —— 想防剧透的人反而在底栏一眼看到"3 个分P"。
    */
   function syncSpoilerBtn() {
     var b = $('btn-spoiler');
@@ -1315,8 +1338,8 @@
     b.textContent = '防剧透：' + (settings.spoiler ? '开' : '关');
     b.classList.toggle('on', !!settings.spoiler);
     b.title = settings.spoiler
-      ? '防剧透已开启：隐藏时间标记与分P 色块（点击关闭）'
-      : '防剧透已关闭：显示时间标记与分P 色块（点击开启）';
+      ? '防剧透已开启：隐藏时间标记、分P 色块与局数（点击关闭）'
+      : '防剧透已关闭：显示时间标记、分P 色块与局数（点击开启）';
     // 防剧透开着时, 展开分P 是没有意义的(展开也画不出来), 直接禁用并说明,
     // 否则用户点"展开分P"什么都不会发生, 看起来像按钮坏了。
     if (btnOvExpand) {
@@ -1332,6 +1355,14 @@
     saveSettings();
     renderProgMarks();
     drawOverview();
+    // 局数在四个地方各有一份(下拉框/总览头部/顶栏标题/进度条标签),
+    // 开关切换后必须全都重算。loadMatchList 会重建下拉框(它读 settings.spoiler),
+    // updateOvSummary 重算总览头部那行"N 个分P"(用缓存的上次响应, 不重新请求),
+    // syncTitleForPlayback/syncProgress 覆盖标题与时间标签。
+    if (state.curDate) { loadMatchList(state.curDate); }
+    if (ov.raw) { updateOvSummary(ov.raw); }
+    syncTitleForPlayback();
+    syncProgress();
     showToast(settings.spoiler ? '防剧透已开启' : '防剧透已关闭');
   }
   var btnSpoilerEl = $('btn-spoiler');
@@ -1342,12 +1373,7 @@
 
   // 说明: 字体选的是系统黑体, 不提供"选字体"(用户明确说不用), 但**描边可关** ——
   // 白字加 4px 黑边在浅色画面上会糊成一坨, 关掉更清楚。
-  var settings = {
-    area: 1, opacity: 0.9, size: 26, density: 1,
-    speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
-    stroke: true,      // 文字描边
-    spoiler: true      // 防剧透(默认开): 隐藏进度条标记与总览分P 色块
-  };
+  // settings 的声明已上移到文件顶部(loadMatchList 要读 settings.spoiler, 见那里的注释)。
   var DM_DEFAULTS = { area: 1, opacity: 0.9, size: 26, density: 1, speed: 1, stroke: true };
   var FONT = 'bold 26px "Microsoft YaHei", "PingFang SC", sans-serif';
   var TRACK_H = 34;
@@ -1532,6 +1558,7 @@
     order: [],                       // 已绘制块(命中测试用)
     layout: [], laneCount: 1,        // 轨道打包结果
     markers: [],                     // 事件标记(一血/大龙/水晶/GG), 防剧透可关
+    raw: null,                       // 上次 /api/overview 的原始响应(切换防剧透时重算摘要用)
   };
   // 极简风格的场次配色: 一个蓝点缀 + 多级灰。为什么不用彩虹:
   // 4 场用 4 个不同色相会让页面第一眼变成"彩色标签墙", 违背极简的前提。
@@ -1560,6 +1587,7 @@
     ov.laneCount = 1;
     ov.tracks = [];
     ov.bins = [];
+    ov.raw = null;                   // 换日期后旧摘要作废, 避免切换防剧透时重算出上一晚的数字
     getJson('/api/overview?date=' + enc(date)).then(function (j) {
       if (mySeq !== ovSeq) { return; }             // 已有更新的请求, 丢弃本次结果
       if (!j || !j.ok) {
@@ -1574,6 +1602,9 @@
       ov.bins = j.density.bins || [];
       ov.binMs = (j.density.bin_sec || 30) * 1000;
       ov.peak = j.density.peak || 1;
+      // 顶部状态摘要需要 span_sec / tracks / dm_count。防剧透切换时要重算,
+      // 而那时不会再发 /api/overview 请求 —— 所以把原始响应留一份(见 setSpoiler)。
+      ov.raw = j;
       // offset 语义: 回放内时间 t 对应墙钟 = anchor + offset + t。
       // 而主轴 0 点就是 anchor(首条弹幕墙钟), 所以该场在主轴上的起点 = offset*1000。
       ov.tracks = (j.tracks || []).map(function (t, i) {
@@ -1608,7 +1639,8 @@
     head.push(j.match_date || '?');
     head.push('主轴 ' + spanMin + ' 分');
     head.push(nTrack + ' 场');
-    if (nPart) { head.push(nPart + ' 个分P'); }
+    // 防剧透开着时不报分P 数: 分P 总数就是总局数, 与总览隐藏的分P 色块同源。
+    if (nPart && !settings.spoiler) { head.push(nPart + ' 个分P'); }
     ovSummary.textContent = head.join(' · ');
 
     if (elTopMeta) {

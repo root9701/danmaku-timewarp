@@ -3,6 +3,11 @@
    (蓝 #5b8cff)用于主按钮与进度。场次色带本身要区分 4 场, 所以用"蓝 + 多级灰"
    而不是彩虹色 —— 这样整页的第一眼仍然是"黑灰", 颜色只出现在该有信息的地方。
 
+   **单色纪律**(ui/color-restraint): 除蓝色外不再有第二种强调色。
+   橙色与绿色只留在状态文字上(.align-status / 图例的"未对齐"), 不再做按钮底色,
+   因为它们会跟蓝色抢注意力 —— 尤其是「自动校准」原本是整页最亮的元素, 却只是
+   一个低频动作。开关型按钮的"开"改用白字 + 亮边框表示, 靠**明度**而不是**色相**。
+
    分层的三件工具: 间距 > 字重 > 边框。边框刻意做成极低对比(#26282d 对 #101113),
    页面靠留白分区, 而不是靠一圈圈白线。
 */
@@ -16,7 +21,10 @@
   --text-dim: #8a8f98;
   --text-faint: #666b74;
   --blue: #5b8cff;
-  --ok: #69c48b;
+  /* 状态文字用色: 只出现在 .align-status 与总览图例, 不做任何控件底色。
+     ok 不再用绿 —— 绿在深色底上饱和度太高, 一句"对齐成功"像报错;
+     改用与正文同族的亮灰, 靠 ok/warn 的**亮度差**区分轻重。 */
+  --ok: #cfd4dc;
   --warn: #d99a6c;
   --radius: 6px;
   --radius-sm: 2px;
@@ -36,19 +44,15 @@ button, input, select { font-family: inherit; }
   padding: 8px 18px;
   border-bottom: 1px solid var(--line-soft);
 }
-.brand {
-  font-size: 12px; font-weight: 700; letter-spacing: .5px;
-  padding: 5px 10px; border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, #5b8cff, #8a8f98);
-  color: #fff; white-space: nowrap;
-}
 #match-title {
   font-size: 15px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* 「回放」徽章: 灰阶描边。它只是"当前不是直播"的标注, 不值得一个彩色胶囊 ——
+   原来用绿色描边, 在顶栏里比场次名还显眼。 */
 #live-badge {
   font-size: 11px; padding: 2px 9px; border-radius: 99px;
-  border: 1px solid rgba(105, 196, 139, .45); color: var(--ok);
+  border: 1px solid var(--line); color: var(--text-dim);
   white-space: nowrap;
 }
 .topbar-sp { flex: 1; }
@@ -90,16 +94,17 @@ button, input, select { font-family: inherit; }
   position: relative; width: 100%; height: 66px;
   background: var(--bg); border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm); overflow: hidden;
-  /* 高度由 JS 按内容设置(drawOverview 里读 clientHeight 同步 canvas)。
-     三档由 data-mode 决定, 见下:
-       compact 66px  钉顶常驻态: 密度 + 场次色带(切场入口)
-       band    96px  有场次但没有分P 块(未对齐): 多留一行提示
-       full   178px  展开态: 密度 + 色带 + 分P 行 + 小时刻度
+  /* 高度由 JS 按内容设置(drawOverview 里写 style.height 并读 clientHeight 同步 canvas)。
+     为什么不再用 data-mode 定死三档:
+       紧凑 66px  钉顶常驻态: 密度 + 场次色带(切场入口)
+       展开      = 66 + 分P 轨道(按轨道数算) —— 展开只在**下面追加一行**,
+                 上方的密度图与色带几何保持不变。
+     早先是 CSS 里写死 178px, 再让画布按 h*0.34 重算密度高度, 结果点「展开分P」
+     时上方整块被拉伸, 看起来像两端同时被拽开 —— 用户要的只是多一行分P。
      注意: 不要加 height 过渡动画 —— drawOverview 会在同一次调用里读取
      clientHeight 同步 canvas 尺寸, 过渡期间读到旧高度, canvas 会停在旧尺寸。 */
 }
 #ov-wrap[data-mode="band"] { height: 96px; }
-#ov-wrap[data-mode="full"] { height: 178px; }
 #ov-canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
 .ov-legend {
   display: flex; flex-wrap: wrap; gap: 10px 16px;
@@ -226,7 +231,65 @@ button, input, select { font-family: inherit; }
   opacity: 0; transition: opacity .15s;
 }
 #prog:hover #prog-thumb { opacity: 1; }
-#rng-vol { width: 72px; accent-color: var(--blue); }
+/* ---------- 音量: 悬停向上弹出的竖向滑块 ----------
+   为什么不用横条常驻: 72px 的滑块会让「弹 / 音量 / 全屏」在窄窗口换行,
+   而调音量是低频动作 —— 平时只留一个图标, 指上去再展开。
+   竖向滑块的实现: writing-mode: vertical-lr + direction: rtl 让 0 在底部、
+   100 在顶部(默认是反过来, 拖起来是反的)。appearance 必须清掉,
+   否则 Chrome 会忽略旋转、仍旧画成横条。 */
+.vol-wrap { position: relative; display: inline-flex; align-items: center; }
+.vol-pop {
+  position: absolute; bottom: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 8px 8px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .14s, transform .14s, visibility .14s;
+  z-index: 20;
+}
+/* 悬停展开, 但**移开鼠标后要留一点延迟**再收 —— 直接从滑块划到别处时,
+   滑块不该在指针还没离开时消失。用 transition-delay 在收起方向生效。 */
+.vol-wrap:hover .vol-pop,
+.vol-wrap:focus-within .vol-pop {
+  opacity: 1; visibility: visible; pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+.vol-wrap:not(:hover) .vol-pop { transition-delay: .18s; }
+#rng-vol {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 18px; height: 96px;
+  margin: 0; padding: 0;
+  accent-color: var(--blue);
+  -webkit-appearance: none; appearance: none;   /* 不写会画成横条 */
+  background: transparent; cursor: pointer;
+}
+/* 轨道: 细圆角条。默认的轨道在深色底上几乎看不见。 */
+#rng-vol::-webkit-slider-runnable-track {
+  width: 4px; height: 100%; border-radius: 2px;
+  background: rgba(255, 255, 255, .22);
+}
+#rng-vol::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: #fff; margin-left: -3.5px;     /* 让拇指落在 4px 轨道正中 */
+  box-shadow: 0 0 3px rgba(0, 0, 0, .7);
+}
+#vol-num {
+  font-size: 10px; font-weight: 600; color: var(--text-dim);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+/* 静音时滑块整体变暗: 数字显示 0, 但滑块仍停在用户设定的位置(取消静音后
+   要能回到原音量)。靠明度差表达"当前不生效", 而不是把滑块拽到底。 */
+.vol-wrap.muted #rng-vol::-webkit-slider-runnable-track {
+  background: rgba(255, 255, 255, .10);
+}
+.vol-wrap.muted #rng-vol::-webkit-slider-thumb {
+  background: var(--text-faint);
+}
+.vol-wrap.muted #vol-num { color: var(--text-faint); }
 #speed-badge {
   position: absolute; top: 10px; right: 14px; z-index: 9;
   background: rgba(0, 0, 0, .72); color: #fff;
@@ -322,22 +385,40 @@ button, input, select { font-family: inherit; }
   font-style: normal; margin-left: auto;
   font-size: 11px; color: var(--text-faint);
 }
+/* SC(醒目留言)横幅: 原本是橙色渐变底 + 橙色文字, 一出现整块跳出来。
+   现在只留极淡的中性底, 靠左侧一道蓝竖条表示"这条被置顶了"。 */
 #sc-banner {
   padding: 9px 12px; font-size: 13px;
-  background: linear-gradient(90deg, rgba(217, 154, 108, .16), transparent);
-  border-bottom: 1px solid rgba(217, 154, 108, .38);
+  background: rgba(255, 255, 255, .04);
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid var(--blue);
 }
-.sc-line { color: #e6b98e; }
+/* hidden 必须显式兜一层: 本元素在 flex 列里, UA 的 [hidden]{display:none} 很容易
+   被后续给 #sc-banner 加的 display 规则盖掉(项目里另外 5 个隐藏元素都写了这条)。
+   目前它恰好生效, 但只靠"暂时没人给它写 display"来保证隐藏, 太脆 ——
+   哪天有人想让它横排而加一句 display:flex, 它就会变成一条常驻的空灰条。 */
+#sc-banner[hidden] { display: none; }
+.sc-line { color: var(--text); }
 #dm-list {
   /* min-height:0 必写: flex 子项的默认 min-height 是 auto, 不清零的话
      "flex:1 + overflow:auto" 不会收缩, 内容会把容器撑到内容高度(滚动条永不出现)。 */
-  flex: 1; min-height: 0; overflow-y: auto; padding: 6px 13px;
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 6px 13px;
   font-size: 13px; line-height: 1.95;
 }
-#dm-list::-webkit-scrollbar { width: 6px; }
+#dm-list::-webkit-scrollbar { width: 6px; height: 0; }
 #dm-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
-.dm-item { word-break: break-all; color: #b9bfc9; }
-.dm-item.sc { color: #e6b98e; }
+/* word-break: break-all 对付长单词够用, 但压不住**连续全角标点**:
+   "！！！！！！！！！！！！" 这种, Chrome 按标点禁则不让它在行首/行尾断开,
+   整串会顶宽容器 —— #dm-list 是 overflow-x:auto, 于是底部冒出一条横向
+   滚动条(实测溢出 53px, 高 15px), 看起来就是"列表下方多了一条灰带",
+   而且它只在播到含这类弹幕的时刻才出现。
+   三道一起上, 缺一不可:
+     overflow-wrap:anywhere  允许在任意字符(含标点)间断开 —— 真正治标点串的
+     overflow-x:hidden       横条根本没机会出现(内容已能断行, 不需要横向滚动)
+     scrollbar height:0      即便哪里还溢出, 也不吐出那条 15px 的灰带 */
+.dm-item { word-break: break-all; overflow-wrap: anywhere; color: #b9bfc9; }
+/* SC 弹幕: 亮白 + 略加粗, 不用橙色。在一列灰字里, "更白"本身就足够突出。 */
+.dm-item.sc { color: var(--text); font-weight: 600; }
 .dm-item.me { color: var(--blue); }
 #chat-box { display: flex; gap: 8px; padding: 9px 10px; border-top: 1px solid var(--line); }
 #chat-box input {
@@ -361,13 +442,48 @@ button, input, select { font-family: inherit; }
   border-radius: var(--radius);
 }
 .toolbar { margin: 10px 18px 14px; padding: 8px 12px; }
-.tool-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.fld { display: flex; align-items: center; gap: 6px; }
+/* 工具条**只占一行**。原先 flex-wrap:wrap 在 1207px 宽(常见笔记本窗口)下会
+   把「刷新赛程 / 更多」甩到第二行 —— 控制区从 26px 变成 60px, 底部多出一条
+   空行, 而且换行位置随窗口宽度跳变, 看起来像是布局坏了。
+   现在改成 nowrap, 并把可压缩项(flex-shrink)设出来:
+     固定不缩: 播放/开关/小按钮(它们已经是内容最小宽度)
+     可收缩  : 三个下拉框(文本用省略号, 完整值在 title 里)
+   这样窄窗口丢的是下拉框里的文字, 而不是整条控件的可见性。 */
+.tool-row {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: nowrap; min-width: 0;
+}
+.tool-row > .btn, .tool-row > .nbtn, .tool-row > .tool-sep,
+.tool-row > .align-cur { flex: 0 0 auto; }
+.fld { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .fld > span { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.fld > select, .fld > input { min-width: 0; }
+/* 三个下拉框是唯一的可压缩项。日期框给固定宽度(装得下 "2026-10-27"),
+   场次与弹幕框按剩余空间分配 —— 它们的内容最长, 也最该用省略号。
+   用 .fld-grow 类而不是 :has(), 避免依赖较新的选择器支持。 */
+/* 三个下拉框是唯一的可压缩项, 但**不能压到看不清内容**:
+   日期框固定 146px(标签 22 + 间距 6 + 控件 118), 场次/弹幕框各留
+   150px 下限 —— 再窄就只剩省略号, 用户没法确认自己选的是哪一场。
+   注意 flex-shrink 必须写在**父级 .fld** 上: 只给 select 定 flex-basis,
+   父级作为 flex 子项仍会被压扁, 控件跟着缩(实测日期框会被压到 97px)。
+   真正的窄屏兜底在文末媒体查询里(1100px 以下整条改两行)。 */
+#sel-date { flex: 0 0 118px; }
+.fld-date { flex: 0 0 146px; }
+/* 场次/弹幕两个框**等宽均分**剩余空间(flex:1 1 0)。
+   用 flex:1 1 auto 会按各自内容宽度分配 —— 弹幕文案短一截就吃亏,
+   结果一个刚好、一个被省略号截断。
+   场次给 1.08 的权重: 它的文案(T1 vs CFO（已对齐 1/2P）)比弹幕长一档,
+   等分时刚好差 1px 被截断, 略偏一点就都装得下。 */
+.fld-grow { flex: 1 1 0; min-width: 132px; }
+/* 场次框的文案比弹幕框长一档(T1 vs CFO（已对齐 1/2P）), 等分时刚好差 1px
+   被省略号截断, 所以给它略高的权重。 */
+.fld-match { flex-grow: 1.12; }
+.fld-grow > select { flex: 1 1 auto; width: 100%; min-width: 0; }
 .fld select, .fld input[type="text"], .fld input[type="number"] {
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: 4px 8px; font-size: 12px;
+  text-overflow: ellipsis;
 }
 .fld select:focus, .fld input:focus { outline: none; border-color: var(--blue); }
 
@@ -379,11 +495,13 @@ button, input, select { font-family: inherit; }
 .btn:hover { filter: brightness(1.3); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-primary { background: var(--blue); }
-.btn-accent { background: var(--warn); color: #1a1208; }
-/* 开关型按钮: 只写状态, 名字由前面的 <span> 给 */
-.btn-toggle { background: var(--surface-2); color: var(--text-dim); min-width: 84px; }
+/* 开关型按钮: 只写状态, 名字由前面的 <span> 给。
+   开启态不再用绿色描边(两个绿框并排像两盏警报灯), 改用**白字 + 亮描边**:
+   明度差足以表达"已开启", 又不引入第二种色相。同样走 inset, 保住行高一致。 */
+.btn-toggle { background: var(--surface-2); color: var(--text-dim); min-width: 76px; }
 .btn-toggle.on {
-  background: transparent; border: 1px solid var(--ok); color: var(--ok);
+  background: transparent; color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text-dim);
 }
 .tool-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 2px; }
 
@@ -402,6 +520,9 @@ button, input, select { font-family: inherit; }
   border-top: 1px dashed var(--line);
 }
 .more-box[hidden] { display: none; }
+/* 对齐结果在「更多」里要独占一行: 它是可能很长的一句话(带 offset 与分P 明细),
+   跟着按钮并排会被挤成一列竖排。basis:100% 让它强制换行。 */
+.more-box .align-status { flex: 1 0 100%; margin-top: 2px; }
 .nudge { display: inline-flex; gap: 4px; align-items: center; }
 
 .align-cur {
@@ -413,9 +534,10 @@ button, input, select { font-family: inherit; }
   color: var(--text-dim); word-break: break-all;
 }
 .align-status.ok { color: var(--ok); }
+/* err: 用偏暖的柔红而不是纯红 —— 深色底上的纯红会震眼, 而且这里的信息量不大 */
 .align-status.err { color: #d98a8a; }
 /* warn: 数据已更新但程序有新版本 —— 不是错误, 但要用户注意 */
-.align-status.warn { color: #d9b06c; }
+.align-status.warn { color: var(--warn); }
 .align-status[hidden] { display: none; }
 
 /* ---------- toast ---------- */
@@ -432,7 +554,7 @@ button, input, select { font-family: inherit; }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1100px) {
-  /* 单列: 侧栏回到正常流, 给它一个固定高度; 槽位不再需要绝对定位 */
+  /* 单列: 侧栏回到正常流, 给它一个固定高度。 */
   .main { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 0; }
   .rail-slot { height: 260px; }
   .toolbar { margin: 12px; }
@@ -442,7 +564,6 @@ button, input, select { font-family: inherit; }
 }
 @media (max-width: 620px) {
   #btn-row { gap: 4px; }
-  #rng-vol { width: 52px; }
   .topbar-meta { display: none; }
   /* 窄屏优先保住场次名与时钟; 版本号可在「检查更新」的结果里看到 */
   #app-version { display: none; }

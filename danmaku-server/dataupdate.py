@@ -38,6 +38,11 @@ import srcfetch
 RAW_BASE = srcfetch.RAW_BASE
 INDEX_NAME = "data-index.json"
 
+# 并发下载路数。实测每个文件有 2-3 秒固定开销(建连+TLS+镜像重定向), 与文件大小
+# 无关 —— 1KB 的 manifest 也要 2.09 秒。串行下一天的 14 个文件要 72 秒(0.15 MB/s),
+# 4 路并发后 38 秒(0.56 MB/s)。再多对公共镜像不礼貌(可能被限流), 家用带宽收益也递减。
+_WORKERS = 4
+
 
 class UpdateError(Exception):
     """更新失败, 消息可直接展示给用户。"""
@@ -178,8 +183,30 @@ def _download_one(rel: str, want, sha, root: Path) -> int:
     return len(blob)
 
 
-def download_day(day: str, entry: dict, data_dir: Path, on_file=None,
-                 workers: int = 4) -> int:
+def _run_batch(batch: list, root: Path, on_file, counter: list) -> None:
+    """并发下载一批文件。成功后把字节数累加进 counter[0]。
+
+    抽出来是为了让 download_day 只表达"顺序"(先切片后 manifest)这件事。
+    counter 用单元素列表而不是返回值: 需要在 with 块内累加, 而异常时要原样抛出去,
+    调用方拿不到正常返回值 —— 用列表可以避免为此引入可变对象属性。
+    """
+    if not batch:
+        return
+    n = max(1, min(_WORKERS, len(batch)))
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {
+            ex.submit(_download_one, rel, want, sha, root): rel
+            for rel, want, sha in batch
+        }
+        for fut in as_completed(futures):
+            rel = futures[fut]
+            size = fut.result()          # UpdateError/OSError 原样抛给调用方
+            counter[0] += size
+            if on_file:
+                on_file(rel, size)
+
+
+def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     """下载一天的会话文件。返回写入字节数。
 
     幂等: 已存在且**大小与哈希都对得上**的文件跳过 —— 同一天重复跑不会重复下。
@@ -212,20 +239,19 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None,
     if not todo:
         return 0
 
-    total = 0
-    n = max(1, min(workers, len(todo)))
-    with ThreadPoolExecutor(max_workers=n) as ex:
-        futures = {
-            ex.submit(_download_one, rel, want, sha, root): rel
-            for rel, want, sha in todo
-        }
-        for fut in as_completed(futures):
-            rel = futures[fut]
-            size = fut.result()          # UpdateError/OSError 原样抛给调用方
-            total += size
-            if on_file:
-                on_file(rel, size)
-    return total
+    # ★ manifest.json 必须**最后**落盘。
+    #   本地判断"这一天有没有"看的是 manifest 在不在(local_days)。若它先落盘而某个
+    #   切片失败了, 用户就会看到"这天有数据"却播不完整 —— 而且下次更新会认为已有的
+    #   跳过, 坏状态被固化。反过来(切片先、manifest 后)失败时只是"这天还没下好",
+    #   下次重跑会补齐。这就是把它单独拎出来的全部理由。
+    #   注意不能只靠"排到最后提交": 多线程提交顺序 ≠ 完成顺序, 必须等前面全完再下它。
+    head = [t for t in todo if not t[0].endswith("manifest.json")]
+    tail = [t for t in todo if t[0].endswith("manifest.json")]
+
+    counter = [0]
+    _run_batch(head, root, on_file, counter)
+    _run_batch(tail, root, on_file, counter)   # 前面失败会抛出 -> manifest 不落盘
+    return counter[0]
 
 
 def check(data_dir: Path) -> dict:

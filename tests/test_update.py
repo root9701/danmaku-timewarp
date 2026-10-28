@@ -208,6 +208,32 @@ def main() -> int:
         except dataupdate.UpdateError as e:
             check("无 sha256 的老清单仍可下载", False, str(e)[:60])
 
+        # 4) **manifest 必须最后落盘**。local_days() 用 manifest 存在与否判断
+        #    "这天有没有", 所以若 manifest 先落盘而切片失败, 用户会看到"有数据"
+        #    却播不完整, 且下次更新会跳过这天, 坏状态被固化。
+        #    验证: 让某个切片必定失败, 断言失败后 manifest 不在本地。
+        tmp2 = tmp / "failcase"
+        (tmp2 / "data").mkdir(parents=True)
+        fail_entry = json.loads(json.dumps(entry))
+        fail_day_dir = tmp2 / "data" / day0 / "123"
+        fail_day_dir.mkdir(parents=True, exist_ok=True)
+        # 删掉本地已有的, 迫使全部重下; 并把一个切片的远端内容改坏
+        victim2 = remote / fail_entry["files"][0]
+        victim2_good = victim2.read_bytes()
+        victim2.write_bytes(victim2_good[: len(victim2_good) // 2])
+        try:
+            dataupdate.download_day(day0, fail_entry, tmp2 / "data")
+            check("切片失败时整体失败", False, "竟然成功了")
+        except dataupdate.UpdateError:
+            check("切片失败时整体失败", True)
+        finally:
+            victim2.write_bytes(victim2_good)
+        check("切片失败时 manifest 未落盘",
+              not (fail_day_dir / "manifest.json").is_file(),
+              "manifest 落盘了 -> 会被误判为'这天已有数据'")
+        check("切片失败时 local_days 不认为这天存在",
+              day0 not in dataupdate.local_days(tmp2 / "data"))
+
         print("\n[镜像降级链]")
         # 官方地址应排在最后(有代理时它最可靠), 镜像在前(国内直连最快)
         official = ("https://raw.githubusercontent.com/root9701/"

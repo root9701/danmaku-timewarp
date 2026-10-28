@@ -53,6 +53,7 @@
     curDate: '', curFile: '', curMatchTitle: '', curBv: '',
     segs: [], segLens: [], segStarts: [0], segIdx: 0,
     pendingSeekMs: null, pendingAutoplay: false,
+    pendingUnmask: false,   // 重取直链后, 等新链接就绪再撤遮罩(见 error 处理)
     pageMarks: [],        // [{page,part,start_sec,duration}] 每局在虚拟轴上的起点
     pageOffsets: {},      // {page: offset_sec} 每个分P 各自的墙钟 offset(音频对齐结果)
     offsetDelta: 0,       // 手动微调量(作用于所有分P, 整体平移弹幕)
@@ -823,6 +824,12 @@
     if (state.pendingSeekMs != null) {
       try { videoEl.currentTime = state.pendingSeekMs; } catch (e) { /* 元数据未就绪 */ }
       state.pendingSeekMs = null;
+    }
+    // 只在"重取直链"这条路撤遮罩(见 error 处理里的 pendingUnmask)。
+    // 不能无条件撤: "浏览器阻止自动播放"/"播放遇到问题"那两种遮罩要等用户点击。
+    if (state.pendingUnmask) {
+      state.pendingUnmask = false;
+      hideMask();
     }
     if (state.pendingAutoplay) {
       state.pendingAutoplay = false;
@@ -2497,8 +2504,61 @@
     var u = state.segs[state.segIdx] || state.playUrl;
     if (!triedFallback && u) {
       triedFallback = true;
-      videoEl.src = '/api/stream?url=' + enc(u);
-      videoEl.load();
+      // ★ 不能把**同一个**失效 URL 塞进反代。
+      //
+      // 反代只改 Referer/UA, 改不了签名 —— 直链失效(过期/被 CDN 拒)时,
+      // 拿它去反代必然还是 403。旧代码就是这么写的, 于是"兜底"等于白试一次,
+      // 然后直接弹"直链可能过期"。实测直链有效期 120 分钟, 所以"连播一整晚"
+      // 到第三、四局时必定踩到。
+      //
+      // 正确做法: 重新请求 /api/playurl 拿一条**新签名**的直链再试。
+      // 记住当前播放位置, 换完 URL 后回到原处(见 loadedmetadata 的 pendingSeekMs)。
+      var keepInSeg = videoEl.currentTime || 0;
+      var wasPlaying = !videoEl.paused;
+      var keepSeg = state.segIdx;
+      var oldCount = state.segs.length;
+      // 虚拟轴位置: 即使分P 数变了也能回到"同一时刻", 而不是"同一分P 的同一秒"
+      var vPos = (keepSeg < state.segStarts.length)
+        ? (state.segStarts[keepSeg] || 0) + keepInSeg : keepInSeg;
+      showMask('正在重新获取播放地址…');
+      fetchPlay(state.curBv, 0, curQuality).then(function (play) {
+        var segs = (play.urls && play.urls.length) ? play.urls.slice() : [play.url];
+        var lens = (play.seg_lengths && play.seg_lengths.length === segs.length)
+          ? play.seg_lengths.slice() : [play.duration || 0];
+        state.segs = segs;
+        state.segLens = lens;
+        state.segStarts = [0];
+        for (var s = 1; s < segs.length; s++) {
+          state.segStarts.push(state.segStarts[s - 1] + lens[s - 1]);
+        }
+        if (typeof play.duration === 'number') { state.duration = play.duration; }
+        qualityList = (play.qualities || []).slice();
+        curQuality = play.quality || curQuality;
+        syncQualityBtn();
+        // 同一个 BV 的分P 数正常情况下不变; 变了就按虚拟轴位置找回原处
+        if (segs.length === oldCount && keepSeg < segs.length) {
+          state.segIdx = keepSeg;
+          state.pendingSeekMs = keepInSeg;
+        } else {
+          var i = segs.length - 1;
+          for (var k = 0; k < segs.length; k++) {
+            if (vPos < state.segStarts[k] + lens[k]) { i = k; break; }
+          }
+          state.segIdx = i;
+          state.pendingSeekMs = Math.max(0, vPos - state.segStarts[i]);
+        }
+        state.pendingAutoplay = wasPlaying;
+        // 只在"重取直链"这条路上标记撤遮罩。不能无条件在 loadedmetadata 里撤 ——
+        // "浏览器阻止自动播放"/"播放遇到问题"这两种遮罩必须等到用户点击,
+        // 无条件撤掉会让提示一闪而过, 用户根本来不及看到。
+        state.pendingUnmask = true;
+        videoEl.src = segs[state.segIdx];
+        videoEl.load();
+      }).catch(function () {
+        // 重新取也失败 -> 说明确实连不上 B 站, 而不是链接过期
+        showError('视频加载失败：重新获取播放地址也没成功。'
+                  + '请检查网络后重试。');
+      });
       return;
     }
     showError('视频加载失败：直链可能过期或被 CDN 拒绝，请重试。');

@@ -1,7 +1,8 @@
 """弹幕时光机 · 本地回放服务器 (danmaku-server/server.py)
 
 托管前端静态页 web/; 弹幕回放 API: /api/days /api/danmaku /api/match(GET/POST);
-B站视频对接: /api/playurl(取 mp4 直链) /api/stream(直链 403 时的反代兜底)。
+B站视频对接: /api/playurl(取 mp4 直链) /api/stream(反代 B站 CDN, 给自动校准的
+ffmpeg 喂流用 —— **播放不再走它**, 直链失效时前端会重新调 /api/playurl 取新签名)。
 
 数据源(只读): ../data/{YYYY-MM-DD}/
   正式 {room}.jsonl.gz(旧格式) / {room}_s{HHMM}.jsonl[.gz](小时滚动切片, 活动 raw 未压缩)
@@ -2369,7 +2370,11 @@ async def handle_overview(request: web.Request) -> web.Response:
     return api_ok(**data)
 
 
-# ---- /api/stream: 反代B站 CDN 字节流(直链 403 时的兜底) ----
+# ---- /api/stream: 反代B站 CDN 字节流 ----
+# **播放不用它**: 直链失效(过期/被拒)时前端重新调 /api/playurl 取新签名 ——
+# 反代改不了签名, 拿失效直链来反代必然还是 403, 所以它救不了过期链接。
+# 它现在的用途是**自动校准**: ffmpeg 需要一条能带 Referer 的稳定地址喂流
+# (见 get_replay_fingerprint 里 "ffmpeg 走本服务 /api/stream 反代")。
 # /api/stream 只用于反代 B 站 CDN。这里的防护是"白名单域名 + 解析后 IP 校验":
 # 旧实现只做字面 IP 判断, 审计实测 127.1 / 0x7f000001 / 2130706433 等写法能绕过字面
 # 解析(ipaddress 判 ValueError 直接放行), 且域名解析到 127.0.0.1 也可穿透 —— 等于

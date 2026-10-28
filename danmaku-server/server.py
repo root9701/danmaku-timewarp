@@ -72,6 +72,21 @@ try:
 except ImportError:
     imageio_ffmpeg = None       # type: ignore
 
+
+def _no_audiofp_msg() -> str:
+    """自动校准不可用时给用户看的话。
+
+    为什么不用 `No module named 'numpy'`: 目标用户是普通玩家, 看到这个只会以为
+    程序坏了。真实原因是**这个包本来就不带校准能力**(轻量版省掉 numpy 51MB +
+    ffmpeg 84MB), 而数据已由作者校准好 —— 用户不需要它, 也不该被判成故障。
+    所以文案要点明"这是正常的", 并给出唯一有价值的补救路径(手动微调)。
+    """
+    tech = _AFP_IMPORT_ERR or "numpy/audiofp 未安装"
+    return ("这个版本不含自动校准（数据已由作者校准好，直接播放即可）。"
+            "如需自己重算，请换「完整版」；"
+            "只想微调几秒的话，用下面的「手动微调」更快。"
+            f"（技术细节：{tech}）")
+
 # ---- 常量 ----
 BASE_DIR = Path(__file__).resolve().parent                  # danmaku-server/
 WEB_DIR = BASE_DIR / "web"                                  # 前端静态目录
@@ -2684,7 +2699,7 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     本服务 /api/stream 反代; 多段按顺序拼接指纹)。
     返回 (fp (N,33) float32, 来源说明)。"""
     if not HAS_AUDIOFP:
-        raise ApiError(f"音频指纹模块不可用: {_AFP_IMPORT_ERR or 'numpy/audiofp 导入失败'}")
+        raise ApiError(_no_audiofp_msg())
     if local_audio:                      # 调试/测试: 本地音频直接算, 不碰网络与缓存
         fp = await asyncio.to_thread(ffmpeg_audio_fp, local_audio, hop_sec, win_sec)
         return fp, f"本地音频({Path(local_audio).name})"
@@ -3068,7 +3083,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     offset 语义与前端一致: replaySec = (wallMs - anchorMs)/1000 - offset_sec。
     """
     if not HAS_AUDIOFP:
-        raise ApiError(f"音频指纹模块不可用: {_AFP_IMPORT_ERR or 'numpy/audiofp 导入失败'}")
+        raise ApiError(_no_audiofp_msg())
     t0 = time.monotonic()
 
     # a) 找 afp 文件(主文件 + 全部 _runN 归档, 跨文件合并段号)
@@ -3328,14 +3343,49 @@ async def handle_update_check(request: web.Request) -> web.Response:
                   remote_app_version=remote_app, app_update=app_update)
 
 
+# 更新进度: 一次更新期间只有一组值, 前端轮询 /api/update/progress 读它。
+# 为什么需要: 21MB 并发下载约 40 秒, 期间若界面只有一个静止的"下载中…",
+# 用户会以为程序卡死然后强杀 —— 那是"半个文件"最容易被制造的场景。
+# 用模块级字典而不是全局状态机: 更新是进程内互斥的(见 _update_lock)。
+_update_progress = {"running": False, "done": 0, "total": 0,
+                    "current": "", "bytes": 0, "error": ""}
+_update_lock = asyncio.Lock()
+
+
+def _progress_cb(i, total, cur):
+    """dataupdate.on_progress 的回调。在下载线程里被调用, 只写不可变字段。
+
+    不加锁: 这里写的是**单值快照**(整数/字符串), CPython 的赋值是原子的,
+    读端最多看到"上一帧", 不会读到半个值。加锁反而会在下载热路径上竞争。
+    """
+    _update_progress.update(done=i - 1, total=total, current=str(cur))
+
+
+async def handle_update_progress(request: web.Request) -> web.Response:
+    """查询当前下载进度(只读, 不触发任何动作)。"""
+    return api_ok(**dict(_update_progress))
+
+
 async def handle_update_pull(request: web.Request) -> web.Response:
     """拉取缺失的日期。阻塞下载放线程里, 不卡事件循环。"""
     if not HAS_DATAUPDATE:
         raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
-    try:
-        res = await asyncio.to_thread(dataupdate.update, DATA_DIR)
-    except dataupdate.UpdateError as e:
-        raise ApiError(str(e))
+    if _update_lock.locked():
+        raise ApiError("已经有一个更新在进行中，请等它结束。")
+    async with _update_lock:
+        _update_progress.update(running=True, done=0, total=0,
+                                current="", bytes=0, error="")
+        try:
+            res = await asyncio.to_thread(
+                dataupdate.update, DATA_DIR, _progress_cb)
+        except dataupdate.UpdateError as e:
+            _update_progress.update(running=False, error=str(e))
+            raise ApiError(str(e))
+        except Exception as e:                  # 兜底: 别让进度永远卡在 running
+            _update_progress.update(running=False, error=str(e))
+            raise
+        _update_progress.update(running=False, done=_update_progress["total"],
+                                bytes=res.get("bytes") or 0)
     # 下载完顺手自检: 大小对不代表 gzip 完整(截断的响应只有解压才会暴露)
     problems = []
     for day in res.get("updated") or []:
@@ -3485,6 +3535,7 @@ def build_app() -> web.Application:
     r.add_get("/api/stream", handle_stream)
     r.add_post("/api/autocalign", handle_autocalign)
     r.add_get("/api/update/check", handle_update_check)
+    r.add_get("/api/update/progress", handle_update_progress)
     r.add_post("/api/update/pull", handle_update_pull)
     r.add_get("/api/version", handle_version)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册

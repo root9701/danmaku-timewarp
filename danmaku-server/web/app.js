@@ -2130,6 +2130,36 @@
   }
 
   var updateBusy = false;
+  var updatePollTimer = null;
+
+  // 下载期间轮询进度。只用于显示, 失败也不影响下载本身(下一拍再试即可),
+  // 所以这里用 catch 吞掉错误 —— 不能因为"进度查不到"就把整个更新判失败。
+  function fmtElapsed(sec) {
+    return sec < 60 ? Math.round(sec) + ' 秒'
+      : Math.floor(sec / 60) + ' 分 ' + Math.round(sec % 60) + ' 秒';
+  }
+
+  function startUpdatePolling(totalBytes) {
+    stopUpdatePolling();
+    var t0 = Date.now();
+    updatePollTimer = setInterval(function () {
+      getJson('/api/update/progress').then(function (p) {
+        if (!p || !p.ok) { return; }
+        if (!p.running) { return; }          // 结束后由主流程收尾
+        var el = (Date.now() - t0) / 1000;
+        var head = '正在下载 ' + p.done + '/' + p.total + ' 天';
+        if (p.current) { head += '（' + p.current + '）'; }
+        var tail = '已用 ' + fmtElapsed(el);
+        // 有 total 才能估总量; 没拿到就只说已用时间, 不编造百分比
+        if (totalBytes > 0) { tail += ' / 共 ' + fmtMB(totalBytes); }
+        setUpdateStatus(head + '，' + tail + '…', '');
+      }).catch(function () { /* 进度查询失败不致命 */ });
+    }, 800);
+  }
+
+  function stopUpdatePolling() {
+    if (updatePollTimer) { clearInterval(updatePollTimer); updatePollTimer = null; }
+  }
 
   // 新数据落盘后必须重载日期下拉, 否则用户看不到刚下的一天。
   // 复用 loadDays(): 它已处理"数据目录日 vs 比赛日"的显示差异与测试会话分组 ——
@@ -2170,6 +2200,9 @@
       setUpdateStatus('发现 ' + j.need + ' 天新数据（' + fmtMB(j.new_bytes) +
         '）：' + days + '。开始下载…', '');
       btnUpdate.textContent = '下载中…';
+      // 21MB 并发下载约 40 秒。没有进度的话，界面只有一个静止的"下载中…"，
+      // 用户会以为卡死然后强杀进程 —— 那正是"半个文件"最容易被制造的场景。
+      startUpdatePolling(j.new_bytes);
       return fetch('/api/update/pull', { method: 'POST' }).then(function (r) {
         return r.json();
       });
@@ -2187,6 +2220,7 @@
     }).catch(function (e) {
       setUpdateStatus('更新失败：' + (e && e.message ? e.message : '未知错误'), 'err');
     }).then(function () {
+      stopUpdatePolling();
       updateBusy = false;
       btnUpdate.disabled = false;
       btnUpdate.textContent = '检查更新';

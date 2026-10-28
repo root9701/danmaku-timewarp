@@ -20,9 +20,13 @@
 
 依赖: 只用标准库。本模块**不碰 data/, 不写任何文件**。
 """
+import gzip
 import hashlib
+import io
+import json
 import urllib.error
 import urllib.request
+import zlib
 
 # 数据源: 只允许从这里取。改这里等于改分发渠道。
 GH_OWNER = "root9701"
@@ -149,23 +153,87 @@ def get_once(url: str, timeout: int = None) -> bytes:
         f"连不上数据源：{last.__class__.__name__}{hint}") from last
 
 
-def _check(blob: bytes, sha: str, want_bytes, hostname: str):
+def content_ok(name: str, blob: bytes):
+    """不看清单, 直接判断内容本身是否完整。返回 True/False/None(无法判断)。
+
+    为什么需要这条路径:
+      清单里的 bytes 是**元数据**, 它可能本身就是错的 —— 实测就发生过:
+      .gitattributes 缺 data/** -text 时工作区被 CRLF 污染, 清单按被污染的本地
+      文件算出 7316313, 而仓库里实际是 7315759。此时"按清单字节数校验"会让
+      **每个通道都失败**, 下载功能彻底不可用 —— 而内容其实是好的。
+      教训: 元数据可疑时, 要靠内容自身的校验能力来判断, 别把数字当真理。
+
+    gzip 自带 CRC32: 截断、等长篡改、尾部追加都能发现(test_update 有断言)。
+    .jsonl 没有自校验, 但它是逐行 JSON —— 截断必然断在最后一行, 解析就会失败。
+    manifest.json 是整份 JSON: 截断/损坏会让解析直接失败, 也是可靠判据。
+    """
+    if name.endswith(".gz"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(blob)) as f:
+                while f.read(1 << 20):
+                    pass
+        except (OSError, EOFError, zlib.error):
+            return False
+        return True
+    if name.endswith(".json"):
+        # manifest.json / meta.json: 整份必须是合法 JSON
+        try:
+            json.loads(blob.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return False
+        return True
+    if name.endswith(".jsonl"):
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return True                     # 空切片是合法的
+        try:
+            json.loads(lines[0])
+            json.loads(lines[-1])           # 截断一定断在末尾, 验最后一行最有效
+        except ValueError:
+            return False
+        return True
+    return None                             # 二进制等无法自证, 交给哈希
+
+
+def _check(blob: bytes, sha: str, want_bytes, hostname: str, name: str = ""):
     """校验内容。通过返回 None, 不通过返回失败原因(字符串)。
 
-    先看长度(便宜, 能抓到截断), 再算哈希(能抓到等长篡改)。
+    优先级: sha256 > 内容自校验 > 字节数。
+      sha256 是作者对"这份内容"的承诺, 最权威。
+      没有 sha256 时(老清单), 若字节数对不上, 用内容自校验兜底 —— 见 content_ok
+      的注释: 清单的字节数本身可能是错的, 但它不该让好文件下不来。
+      两者都判不了才拒绝(unable to verify 不应该放行不可再生的数据)。
+
+    清单自己(data-index.json)拉取时不带 sha/字节数 —— 那时还没有清单可依据,
+    属于"先有鸡还是先有蛋", 只能不校验。这是可接受的: 清单解析失败会被上层拦下,
+    而它不含不可再生的数据(重跑 pack_data --index 就能重建)。
     """
-    if want_bytes is not None and len(blob) != want_bytes:
-        return f"{hostname} 返回 {len(blob)} 字节, 期望 {want_bytes}"
-    if sha and hashlib.sha256(blob).hexdigest() != sha:
-        return f"{hostname} 内容哈希不符"
-    return None
+    if sha:
+        if hashlib.sha256(blob).hexdigest() != sha:
+            return f"{hostname} 内容哈希不符"
+        return None                         # 哈希对 = 内容就是作者那份, 长度无关
+    if want_bytes is None or len(blob) == want_bytes:
+        return None
+    ok = content_ok(name, blob)
+    if ok is True:
+        return None                         # 清单长度过时, 但内容完整
+    if ok is False:
+        return f"{hostname} 内容损坏(长度 {len(blob)}, 清单 {want_bytes})"
+    return f"{hostname} 返回 {len(blob)} 字节, 期望 {want_bytes}"
 
 
-def _attempt(cand: str, url: str, sha: str, want_bytes, timeout):
+def _attempt(cand: str, url: str, sha: str, want_bytes, timeout, name: str = ""):
     """试一个通道。
 
     返回 (内容, 失败原因, 是否内容不对)。成功时后两项是 ("", False)。
     404 会直接抛出去 —— 那是"远端根本没有", 换通道无意义。
+
+    校验失败时**仍然返回内容**: 调用方要用它的哈希判断"多个通道是否给出同样的
+    坏内容"(那说明清单错了, 不是镜像的问题)。返回 None 会让这个判断失效。
     """
     # 镜像给更短的超时: 4 个通道各等 20 秒, 全失败要一分多钟, 用户以为死机了。
     secs = timeout if timeout is not None else (
@@ -176,14 +244,14 @@ def _attempt(cand: str, url: str, sha: str, want_bytes, timeout):
         if "404" in str(e):
             raise
         return None, str(e)[:40], False
-    problem = _check(blob, sha, want_bytes, host(cand))
+    problem = _check(blob, sha, want_bytes, host(cand), name)
     if problem:
-        return None, problem, True      # 连上了但内容不对
+        return blob, problem, True      # 连上了但内容不对
     return blob, "", False
 
 
 def fetch(url: str, sha256: str = "", want_bytes=None,
-          timeout: int = None) -> bytes:
+          timeout: int = None, name: str = "") -> bytes:
     """按通道优先级下载, 每个通道都要过完整性校验。返回第一个通过的内容。
 
     为什么"校验失败"也当作通道失败去换下一个:
@@ -210,7 +278,8 @@ def fetch(url: str, sha256: str = "", want_bytes=None,
     net_fail, bad_data = [], []
     seen_bad = set()                 # 已见过的"内容不对"的哈希
     for cand in mirrors(url):
-        blob, problem, is_data = _attempt(cand, url, sha, want_bytes, timeout)
+        blob, problem, is_data = _attempt(cand, url, sha, want_bytes,
+                                          timeout, name)
         if not problem:
             return blob
         last = FetchError(problem)

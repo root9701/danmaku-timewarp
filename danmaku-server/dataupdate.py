@@ -29,6 +29,7 @@ import gzip
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import srcfetch
@@ -42,14 +43,16 @@ class UpdateError(Exception):
     """更新失败, 消息可直接展示给用户。"""
 
 
-def _fetch(url: str, sha256: str = "", want_bytes=None) -> bytes:
+def _fetch(url: str, sha256: str = "", want_bytes=None,
+           name: str = "") -> bytes:
     """下载并校验, 把 srcfetch 的异常翻译成本模块的 UpdateError。
 
     保留这个薄封装而不是让调用方直接用 srcfetch:
     调用方(server.py)只捕获 dataupdate.UpdateError, 不该知道底下有几个模块。
+    `name` 用于内容自校验(gzip 解开 / jsonl 逐行解析), 见 srcfetch.content_ok。
     """
     try:
-        return srcfetch.fetch(url, sha256=sha256, want_bytes=want_bytes)
+        return srcfetch.fetch(url, sha256=sha256, want_bytes=want_bytes, name=name)
     except srcfetch.FetchError as e:
         raise UpdateError(str(e)) from e
 
@@ -134,7 +137,49 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
-def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
+def _local_ok(p: Path, want, sha, rel: str) -> bool:
+    """本地已有文件是否可直接用(不必重下)。
+
+    判据必须与下载后的校验一致(srcfetch._check), 否则会出现
+    "下完判通过, 下次又判不通过" —— 每次点更新都重下 21MB:
+      有 sha256  -> 只认 sha256(最权威)
+      字节数对得上 -> 直接用
+      字节数不符或没给 -> 问内容自校验(gzip CRC / JSON 可解析)
+    """
+    if sha:
+        return _sha256_file(p) == sha
+    if want is not None and p.stat().st_size == want:
+        return True
+    try:
+        ok = srcfetch.content_ok(rel, p.read_bytes())
+    except OSError:
+        return False
+    return ok is True
+
+
+def _download_one(rel: str, want, sha, root: Path) -> int:
+    """下载并落盘单个文件。返回写入字节数。失败抛 UpdateError。
+
+    只做一件事, 便于被线程池并发调用。每个文件写自己的 .part,
+    并发写不同文件互不干扰; 同一文件不会同时被下两次(调用方先去重)。
+    """
+    rel = _safe_rel(rel)
+    dst = root / rel
+    blob = _fetch(f"{RAW_BASE}/{rel}", sha256=sha or "", want_bytes=want,
+                  name=rel)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".part")
+    try:
+        tmp.write_bytes(blob)
+        os.replace(tmp, dst)        # 原子替换: 断电也不会留半个文件
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+    return len(blob)
+
+
+def download_day(day: str, entry: dict, data_dir: Path, on_file=None,
+                 workers: int = 4) -> int:
     """下载一天的会话文件。返回写入字节数。
 
     幂等: 已存在且**大小与哈希都对得上**的文件跳过 —— 同一天重复跑不会重复下。
@@ -142,33 +187,44 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     为什么已有文件也要算哈希: 上次下载中途断网会留下截断文件, 或上次下的是被
     镜像污染的版本。既然要保证不可再生的数据正确, 就只认哈希 —— 代价是每个
     已有文件多读一遍, 21MB 约 0.1 秒。
+
+    为什么并发 4 路:
+      实测每个文件有 2-3 秒**固定开销**(建连 + TLS + 镜像重定向), 与文件大小无关 ——
+      1KB 的 manifest 也要 2.09 秒。串行下一天的 14 个文件要 72 秒(0.15 MB/s),
+      而单文件大文件能到 1.75 MB/s。并发把这段时间重叠起来。
+      4 路是保守值: 再多对公共镜像不礼貌(可能被限流), 且家用带宽收益递减。
+      并发安全: 每个文件写自己的 .part 再原子改名, 不同文件之间不共享状态。
     """
     files = entry.get("files") or []
     if not files:
         raise UpdateError(f"{day} 的清单条目没有 files")
-    total = 0
     root = data_dir.parent          # 清单路径形如 data/{day}/{room}/x, 相对仓库根
+
+    # 先筛出真正要下的(已有且校验通过的直接跳过), 并发只用在下载上
+    todo = []
     for rel in files:
         rel = _safe_rel(rel)
-        dst = root / rel
         want, sha = _file_meta(entry, rel)
-        if dst.is_file():
-            size_ok = (want is None or dst.stat().st_size == want)
-            hash_ok = (not sha) or _sha256_file(dst) == sha
-            if size_ok and hash_ok:
-                continue            # 已有且校验通过, 不重下
-        blob = _fetch(f"{RAW_BASE}/{rel}", sha256=sha or "", want_bytes=want)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_name(dst.name + ".part")
-        try:
-            tmp.write_bytes(blob)
-            os.replace(tmp, dst)    # 原子替换: 断电也不会留半个文件
-        finally:
-            if tmp.exists():
-                tmp.unlink(missing_ok=True)
-        total += len(blob)
-        if on_file:
-            on_file(rel, len(blob))
+        dst = root / rel
+        if dst.is_file() and _local_ok(dst, want, sha, rel):
+            continue
+        todo.append((rel, want, sha))
+    if not todo:
+        return 0
+
+    total = 0
+    n = max(1, min(workers, len(todo)))
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {
+            ex.submit(_download_one, rel, want, sha, root): rel
+            for rel, want, sha in todo
+        }
+        for fut in as_completed(futures):
+            rel = futures[fut]
+            size = fut.result()          # UpdateError/OSError 原样抛给调用方
+            total += size
+            if on_file:
+                on_file(rel, size)
     return total
 
 

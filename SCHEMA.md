@@ -182,12 +182,18 @@ UTF-8 JSONL，四种行：
 | `POST /api/autocalign` | 自动校准，`page=0` 表示全部分P |
 | `GET /api/version` | 当前程序版本（只读本地 `VERSION` 文件，**不联网**） |
 | `GET /api/update/check` | 拉远端 `data-index.json`，比对本地，返回待下载清单（不落盘） |
+| `GET /api/update/progress` | 当前下载进度（只读，不触发任何动作） |
 | `POST /api/update/pull` | 按清单增量下载数据文件，原子落盘到 `data/` |
 
 **`/api/update/*`** 是唯一会**访问互联网并写入 `data/`** 的接口（其余接口只读本地）。
 它读系统代理、失败回退直连，所以「代理按需开关」和「没有代理」两种状态都能用；
+下载走多通道镜像降级链，每个文件校验 sha256（见 `DISTRIBUTION.md`）。
 远端清单里没有的日期不会被删（不存在"同步删除"语义）。
+`pull` 进程内互斥：同时发两个请求，第二个返回
+`{"ok":false,"error":"已经有一个更新在进行中，请等它结束。"}`。
 `pull` 成功后需要重新拉 `/api/days` 才能看到新会话。
+`progress` 返回 `{running, done, total, current, bytes, error}`：`done`/`total` 以**天**为单位，
+`current` 是当前文件名（含日期前缀）。它只用于显示，前端轮询失败不应影响下载本身。
 
 **`/api/playurl`** 的 `qn` 只影响 `durl`(整段 mp4) 这条路径，**可取值上限是 720P**：
 1080P 及以上只存在于 DASH，需自行拼接音视频裸轨，`<video>` 无法直出，故不提供。

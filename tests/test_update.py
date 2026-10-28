@@ -149,16 +149,39 @@ def main() -> int:
         day0 = sorted(idx["days"])[0]
         entry = json.loads(json.dumps(idx["days"][day0]))   # 深拷贝
 
-        # 1) 大小不符: 清单说 1060 字节, 实际 61 -> 必须拒绝
-        entry_bad_size = json.loads(json.dumps(entry))
-        entry_bad_size["file_sizes"][0]["bytes"] += 999
-        (tmp / "local" / entry_bad_size["files"][0]).unlink(missing_ok=True)
+        # 1) 清单字节数**过时**但内容完整 -> 应当放过。
+        #    这是线上真实发生过的情况: .gitattributes 缺 data/** -text 时,
+        #    清单按被 CRLF 污染的工作区算出 7316313, 而仓库里实际 7315759。
+        #    若按字节数硬拒, 每个通道都失败 -> 下载功能彻底坏掉。
+        entry_stale = json.loads(json.dumps(entry))
+        entry_stale["file_sizes"][0]["bytes"] += 999
+        stale_rel = entry_stale["files"][0]
+        (tmp / "local" / stale_rel).unlink(missing_ok=True)
         try:
-            dataupdate.download_day(day0, entry_bad_size, local)
-            check("大小不符被拒绝", False, "竟然接受了")
+            dataupdate.download_day(day0, entry_stale, local)
+            check("清单字节数过时但内容完整 -> 放过", True)
         except dataupdate.UpdateError as e:
-            check("大小不符被拒绝", "校验失败" in str(e) or "字节" in str(e),
-                  str(e)[:70])
+            check("清单字节数过时但内容完整 -> 放过", False, str(e)[:70])
+
+        # 2) 内容真损坏(截断)且没有 sha256 -> 必须拒绝。
+        #    此时只有长度和内容自校验两道防线, 不能把半个文件写进 data/。
+        entry_nosha = json.loads(json.dumps(entry))
+        for f in entry_nosha["file_sizes"]:
+            f.pop("sha256", None)
+        entry_nosha["file_sizes"][0]["bytes"] = 999999      # 故意给个不可能的期望
+        (tmp / "local" / stale_rel).unlink(missing_ok=True)
+        # 让远端这个文件变成截断的 gzip, 模拟"下载到一半断了"
+        broken = remote / stale_rel
+        broken_good = broken.read_bytes()
+        broken.write_bytes(broken_good[: len(broken_good) // 2])
+        try:
+            dataupdate.download_day(day0, entry_nosha, local)
+            check("无 sha256 时截断内容被拒绝", False, "竟然接受了坏数据")
+        except dataupdate.UpdateError as e:
+            check("无 sha256 时截断内容被拒绝",
+                  "损坏" in str(e) or "校验" in str(e), str(e)[:70])
+        finally:
+            broken.write_bytes(broken_good)                 # 还原远端样本
 
         # 2) **等长篡改**: 改一个字节, 大小完全不变 -> 只有 sha256 能抓到。
         #    这是第三方镜像最典型的风险(缓存了被污染的副本), 而字节数校验对它无效。

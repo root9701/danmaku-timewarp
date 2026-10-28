@@ -165,6 +165,25 @@ def _find_gh():
     return ""
 
 
+def _proxy_hint() -> str:
+    """没登录时给一句"是不是代理没给 gh"的提示。
+
+    gh **只认 HTTPS_PROXY/HTTP_PROXY 环境变量**, 不读 Windows 的系统代理设置。
+    实测本机: github.com 直连 15 秒超时, api.github.com 直连却正常 ——
+    于是 `git push` 能过(git 走 credential manager, 且有时不同的路由),
+    而 `gh auth login` 卡在 "A connection attempt failed"。
+    报错信息只提"超时", 不会告诉你去配代理, 所以这里主动扫一眼:
+    """
+    if os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"):
+        return ""
+    return (
+        "\n  gh 不读 Windows 系统代理, 只认环境变量。若你的代理开着但 gh 连不上"
+        "(github.com 超时), 先设:\n"
+        '    $env:HTTPS_PROXY="http://127.0.0.1:7897"\n'
+        '    $env:HTTP_PROXY="http://127.0.0.1:7897"\n'
+        "  （端口按你自己的代理改）, 再跑 gh auth login。")
+
+
 def check_gh():
     """--publish 需要 gh 且已登录。失败要早报, 而不是打完包才发现传不了。"""
     gh = _find_gh()
@@ -182,7 +201,8 @@ def check_gh():
     if not ok:
         raise StepFailed(
             "gh 没登录, 传不了包。先执行:\n  gh auth login\n"
-            "（交互式, 需要你本人在终端里点完；脚本不代做）")
+            "（交互式, 需要你本人在终端里点完；脚本不代做）"
+            + _proxy_hint())
     say(f"  ✓ gh 已登录 ({gh})")
     return gh
 

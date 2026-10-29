@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-"""split_matches.py — 把 matches.json 拆成 align/{日期}.json + 本地覆盖层。
+"""split_matches.py — 把 matches.json 拆成 data/{日期}/align.json + 本地覆盖层。
 
 用法:
     python tools/split_matches.py            # 干跑, 只报告
     python tools/split_matches.py --apply    # 真正写入
 
 拆分规则:
-  - align/{日期}.json  一天一个文件, **入库分发**。只装该日的 align 记录与 lists 条目。
-  - matches.json       本地覆盖层, **不入库**。拆完后只留"无法归日"的残留(通常为空)。
+  - data/{日期}/align.json  一天一个文件, **随数据分发**。只装该日的 align 记录与
+                            lists 条目。与弹幕/指纹同目录, 用户「拉取弹幕」一起拿到。
+  - matches.json            本地覆盖层, **不入库**。拆完后只留"无法归日"的残留。
 
 为什么要拆: matches.json 同时装"作者算好的对齐结果"和"用户自己的手动微调",
 混在一个被 gitignore 的文件里, 既发不出去也合不回来。
+
+为什么放进 data/ 而不是 danmaku-server/align/: 后者要打进程序包, 于是"新增一天的
+校准"就变成"必须发一版程序"; 而对齐参数只有几 KB, 用户完全不该为此更新程序。
 """
 import argparse
 import json
@@ -20,7 +24,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRV = ROOT / "danmaku-server"
 MATCHES = SRV / "matches.json"
-ALIGN_DIR = SRV / "align"
+DATA = ROOT / "data"
+ALIGN_NAME = "align.json"
+# 旧布局: danmaku-server/align/{日期}.json。迁移后不再写入, 仅用于一次性搬迁。
+LEGACY_ALIGN = SRV / "align"
 
 DATE_KEYS = ("date", "data_date", "match_date")
 
@@ -80,7 +87,7 @@ def main() -> int:
     print(f"归入 {len(per_day)} 个日期文件:")
     for d in sorted(per_day):
         e = per_day[d]
-        print(f"  align/{d}.json   {len(e['align'])} 条记录, "
+        print(f"  data/{d}/{ALIGN_NAME}   {len(e['align'])} 条记录, "
               f"{len(e['lists'])} 天 lists")
     if unassigned["align"] or unassigned["lists"]:
         print(f"无法归日(留在本地层): {len(unassigned['align'])} 条记录, "
@@ -90,10 +97,15 @@ def main() -> int:
         print("\n[干跑] 加 --apply 才写入")
         return 0
 
-    ALIGN_DIR.mkdir(parents=True, exist_ok=True)
     for d in sorted(per_day):
         body = per_day[d]
-        p = ALIGN_DIR / f"{d}.json"
+        day_dir = DATA / d
+        if not day_dir.is_dir():
+            # 没有数据目录就不该造出来: align.json 的归属前提是"这一天有数据",
+            # 凭空建目录会让清单里出现空日期, 用户拉到一个没有弹幕的天。
+            print(f"跳过 {d}: data/{d}/ 不存在(该日无数据, 不对齐也不分发)")
+            continue
+        p = day_dir / ALIGN_NAME
         if p.is_file():
             # 已存在: 合并(以新拆出来的为准, 但保留文件里已有的其他记录)
             try:

@@ -101,13 +101,12 @@ def _no_audiofp_msg() -> str:
 BASE_DIR = Path(__file__).resolve().parent                  # danmaku-server/
 WEB_DIR = BASE_DIR / "web"                                  # 前端静态目录
 MATCHES_PATH = BASE_DIR / "matches.json"                    # 本地覆盖层(用户自己的改动, 不入库)
-# 分发的对齐结果: 一天一个文件, 入库(见 align/README.md)。
-# 为什么要拆: matches.json 同时装"作者算好的对齐结果"和"用户自己的手动微调",
-# 混在一个被 gitignore 的文件里, 既发不出去也合不回来。拆开后:
-#   align/*.json  = 只读, git pull 更新(上游算的)
-#   matches.json  = 可写, 本地覆盖(用户微调), 优先级更高
-ALIGN_DIR = Path(os.environ.get("DANMAKU_ALIGN", "").strip()
-                 or BASE_DIR / "align")
+# 对齐结果随数据分发: data/{日期}/align.json(一天一份, 与弹幕/指纹同目录)。
+# 为什么不放 danmaku-server/align/: 那份要打进程序包, 于是"新增一天的校准"
+# 变成"必须发一版程序" —— 用户根本不需要为几 KB 的对齐参数更新程序。
+# 放进 data/ 后, 它跟着「拉取弹幕」一起下发, 程序永久不用为校准而升版。
+# matches.json 仍是**本地覆盖层**(用户微调), 优先级高于数据里那份。
+ALIGN_NAME = "align.json"
 COOKIES_PATH = BASE_DIR / "cookies.txt"                     # 可选: B站 Cookie
 CONFIG_PATH = Path(os.environ.get("DANMAKU_CONFIG", "").strip()
                    or BASE_DIR / "config.json")             # 可选的用户配置(不存在则全用默认)
@@ -295,17 +294,18 @@ def _read_json_file(path: Path):
 
 
 def _load_align_dir() -> dict:
-    """读 align/ 下全部 {日期}.json, 合并成 {"align": {...}, "lists": {...}}。
+    """扫描 data/*/align.json, 合并成 {"align": {...}, "lists": {...}}。
 
-    单独缓存每个文件的解析结果(按 mtime 失效): 365 天的目录也只需 stat 一遍,
-    git pull 更新某一天后会自动重读那一天, 不会因为缓存看不到新数据。
+    对齐结果与弹幕/指纹放在同一处(data/{日期}/align.json), 因此它跟着**数据拉取**
+    一起下发, 不需要为新增一天的校准再发一版程序。
+
+    单独缓存每个文件的解析结果(按 mtime 失效): 天数多了以后也只需 stat 一遍,
+    拉取更新某一天后会自动重读那一天, 不会因为缓存看不到新数据。
     """
     out_align: dict = {}
     out_lists: dict = {}
-    if not ALIGN_DIR.is_dir():
-        return {"align": out_align, "lists": out_lists}
     try:
-        files = sorted(ALIGN_DIR.glob("*.json"))
+        files = sorted(DATA_DIR.glob("*/align.json"))
     except OSError:
         return {"align": out_align, "lists": out_lists}
     with _ALIGN_CACHE_LOCK:
@@ -315,13 +315,14 @@ def _load_align_dir() -> dict:
                 mtime = p.stat().st_mtime
             except OSError:
                 continue
-            live.add(p.name)
-            hit = _ALIGN_CACHE.get(p.name)
+            key = f"{p.parent.name}/{p.name}"
+            live.add(key)
+            hit = _ALIGN_CACHE.get(key)
             if hit and hit[0] == mtime:
                 data = hit[1]
             else:
                 data = _read_json_file(p) or {}
-                _ALIGN_CACHE[p.name] = (mtime, data)
+                _ALIGN_CACHE[key] = (mtime, data)
             al = data.get("align")
             if isinstance(al, dict):
                 out_align.update(al)
@@ -329,9 +330,9 @@ def _load_align_dir() -> dict:
             if isinstance(ls, dict):
                 out_lists.update(ls)
         # 清掉已被删除的文件, 防止内存里留着幽灵记录
-        for name in list(_ALIGN_CACHE):
-            if name not in live:
-                _ALIGN_CACHE.pop(name, None)
+        for key in list(_ALIGN_CACHE):
+            if key not in live:
+                _ALIGN_CACHE.pop(key, None)
     return {"align": out_align, "lists": out_lists}
 
 

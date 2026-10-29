@@ -32,22 +32,25 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 class Sandbox:
-    """把 server 的 ALIGN_DIR / MATCHES_PATH 指到临时目录。"""
+    """把 server 的 DATA_DIR / MATCHES_PATH 指到临时目录。
+
+    对齐结果现在住在 data/{日期}/align.json, 所以沙箱要同时提供 data/ 目录。
+    """
 
     def __init__(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="dmk_layer_"))
-        self.align = self.tmp / "align"
+        self.data = self.tmp / "data"
         self.matches = self.tmp / "matches.json"
-        self.align.mkdir()
-        self._old_align = server.ALIGN_DIR
+        self.data.mkdir()
+        self._old_data = server.DATA_DIR
         self._old_matches = server.MATCHES_PATH
-        server.ALIGN_DIR = self.align
+        server.DATA_DIR = self.data
         server.MATCHES_PATH = self.matches
         with server._ALIGN_CACHE_LOCK:
             server._ALIGN_CACHE.clear()
 
     def close(self):
-        server.ALIGN_DIR = self._old_align
+        server.DATA_DIR = self._old_data
         server.MATCHES_PATH = self._old_matches
         with server._ALIGN_CACHE_LOCK:
             server._ALIGN_CACHE.clear()
@@ -55,8 +58,14 @@ class Sandbox:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def write_day(self, day: str, body: dict):
-        (self.align / f"{day}.json").write_text(
+        """写一天的 align.json(与真实布局一致: data/{日期}/align.json)。"""
+        d = self.data / day
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "align.json").write_text(
             json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+    def align_path(self, day: str) -> Path:
+        return self.data / day / "align.json"
 
 
 K26 = "2026-10-26|7734200|BV19wnQ6sExk"
@@ -117,11 +126,11 @@ def test_local_override_wins() -> None:
 
 
 def test_align_dir_never_written() -> None:
-    """本地微调绝不能改 align/ —— 那是 git pull 覆盖的区域。"""
+    """本地微调绝不能改数据里那份 align.json —— 它随数据拉取更新, 写了会被覆盖。"""
     sb = Sandbox()
     try:
         sb.write_day("2026-10-26", sample_day())
-        before = (sb.align / "2026-10-26.json").read_text(encoding="utf-8")
+        before = sb.align_path("2026-10-26").read_text(encoding="utf-8")
 
         def mut(m):
             e = dict(m["align"][K26])
@@ -129,8 +138,8 @@ def test_align_dir_never_written() -> None:
             m["align"][K26] = e
 
         server.update_matches(mut)
-        after = (sb.align / "2026-10-26.json").read_text(encoding="utf-8")
-        check("align/ 文件字节未变", before == after)
+        after = sb.align_path("2026-10-26").read_text(encoding="utf-8")
+        check("data/{日期}/align.json 字节未变", before == after)
     finally:
         sb.close()
 
@@ -160,9 +169,9 @@ def test_check_align_ignores_pageless() -> None:
     sys.path.insert(0, str(ROOT / "tools"))
     import pack_data
     sb = Sandbox()
-    old = pack_data.ALIGN
+    old = pack_data.DATA
     try:
-        pack_data.ALIGN = sb.align
+        pack_data.DATA = sb.data
         sb.write_day("2026-10-26", {
             "align": {
                 # 有 pages 且 BV 在 lists 里 -> 通过
@@ -176,7 +185,7 @@ def test_check_align_ignores_pageless() -> None:
         problems = pack_data.check_align()
         check("无 pages 的残留不算问题", problems == [], str(problems))
     finally:
-        pack_data.ALIGN = old
+        pack_data.DATA = old
         sb.close()
 
 
@@ -185,9 +194,9 @@ def test_check_align_flags_missing_window() -> None:
     sys.path.insert(0, str(ROOT / "tools"))
     import pack_data
     sb = Sandbox()
-    old = pack_data.ALIGN
+    old = pack_data.DATA
     try:
-        pack_data.ALIGN = sb.align
+        pack_data.DATA = sb.data
         sb.write_day("2026-10-26", {
             "align": {K26: {"bv": "BV19wnQ6sExk",
                             "pages": {"1": {"offset_sec": 1.0, "duration": 2}}}},
@@ -196,7 +205,7 @@ def test_check_align_flags_missing_window() -> None:
         problems = pack_data.check_align()
         check("缺赛程时间窗被报出", len(problems) == 1, str(problems))
     finally:
-        pack_data.ALIGN = old
+        pack_data.DATA = old
         sb.close()
 
 

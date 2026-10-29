@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
-ALIGN = ROOT / "danmaku-server" / "align"
+ALIGN_NAME = "align.json"          # 与 server.py 的 ALIGN_NAME 一致
 DIST = ROOT / "dist"
 
 
@@ -115,31 +115,41 @@ def check_session(day: str, sess: Path) -> list:
     return problems
 
 
+def iter_align():
+    """遍历全部 data/{日期}/align.json, 产出 (日期, 路径)。"""
+    if not DATA.is_dir():
+        return
+    for day_dir in sorted(DATA.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        p = day_dir / ALIGN_NAME
+        if p.is_file():
+            yield day_dir.name, p
+
+
 def check_align() -> list:
-    """align/ 的一致性检查。
+    """对齐表的一致性检查(一天一份, 住在 data/{日期}/align.json)。
 
     规则: **只有带 pages(真的算出 offset)的记录**才要求 BV 能在 lists 里找到 ——
     时间窗只在"算 offset"时用得上。无 pages 的条目是失败标记或历史残留(比如会话
     目录后来被合并改名、或那场其实属于另一天), 它们不影响播放, 不该阻止发布。
     """
     problems = []
-    if not ALIGN.is_dir():
-        return problems
-    for p in sorted(ALIGN.glob("*.json")):
+    for day, p in iter_align():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            problems.append(f"align/{p.name}: 解析失败 {e}")
+            problems.append(f"data/{day}/{ALIGN_NAME}: 解析失败 {e}")
             continue
         if not isinstance(d, dict):
-            problems.append(f"align/{p.name}: 顶层不是对象")
+            problems.append(f"data/{day}/{ALIGN_NAME}: 顶层不是对象")
             continue
         lists = d.get("lists") or {}
         pairs = set()
-        for day, lst in lists.items():
+        for d2, lst in lists.items():
             for it in (lst or []):
                 if isinstance(it, dict) and it.get("bv"):
-                    pairs.add((day, str(it["bv"])))
+                    pairs.add((d2, str(it["bv"])))
         for key, rec in (d.get("align") or {}).items():
             if not isinstance(rec, dict):
                 continue
@@ -149,10 +159,10 @@ def check_align() -> list:
             bv = str(rec.get("bv") or "").strip()
             if not bv:
                 continue
-            day = str(key).split("|")[0]
-            if (day, bv) not in pairs:
+            dkey = str(key).split("|")[0]
+            if (dkey, bv) not in pairs:
                 problems.append(
-                    f"align/{p.name}: {key} 有 {len(pages)} 页对齐结果, "
+                    f"data/{day}/{ALIGN_NAME}: {key} 有 {len(pages)} 页对齐结果, "
                     f"但 BV 在 lists 里查不到(重新校准时拿不到赛程时间窗)")
     return problems
 
@@ -186,9 +196,6 @@ def strip_afp() -> int:
                 mfp.write_text(json.dumps(mf, ensure_ascii=False, indent=2) + "\n",
                                encoding="utf-8")
         n_sess += 1
-    # align/ 一并带上
-    if ALIGN.is_dir():
-        shutil.copytree(ALIGN, DIST / "align")
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     print(f"生成 {DIST.relative_to(ROOT)}/")
     print(f"  会话 {n_sess} 个, 剔除 afp {n_afp} 个文件")
@@ -197,10 +204,41 @@ def strip_afp() -> int:
     return 0
 
 
+def _collect_files(day: str, files, days: dict) -> None:
+    """把一批文件登记进 `days[day]`, 逐文件算字节数与 sha256。"""
+    d = days.setdefault(day, {"files": [], "file_sizes": [],
+                              "sessions": [], "bytes": 0})
+    for f in files:
+        rel = f.relative_to(ROOT).as_posix()
+        if rel in d["files"]:
+            continue
+        d["files"].append(rel)
+        d["file_sizes"].append({"name": rel, "bytes": f.stat().st_size,
+                                "sha256": _sha256(f)})
+        d["bytes"] += f.stat().st_size
+
+
+def _build_days() -> dict:
+    """扫盘构造 {日期: {files, file_sizes, sessions, bytes}}。
+
+    两类文件来源不同, 必须都收:
+      1. 房间子目录里的会话产物(弹幕/指纹/meta/manifest) —— iter_sessions
+      2. 日期目录下的对齐表 data/{日期}/align.json —— iter_align
+    对齐表不在房间子目录里, 只看 (1) 会漏 —— 而它正是轻量版播放所必需的
+    "弹幕贴第几秒"参数, 漏了用户拉完数据仍然看不了。
+    """
+    days: dict = {}
+    for day, sess in iter_sessions():
+        _collect_files(day, [f for f in sorted(sess.iterdir()) if f.is_file()], days)
+        days[day]["sessions"].append(sess.relative_to(ROOT).as_posix())
+    for day, p in iter_align():
+        _collect_files(day, [p], days)
+    return days
+
+
 def write_index() -> int:
     """生成 data-index.json —— 用户端「拉取弹幕」就靠它判断该拉哪几天。
 
-    清单只描述正式会话(data/{日期}/{房间}/), 不含 _test。
     每个日期记下完整文件列表与逐文件**字节数 + sha256**:
 
       字节数 —— 用于显示"要下多少", 也用于抓截断的响应。
@@ -210,26 +248,7 @@ def write_index() -> int:
 
     哈希是流式算的, 21MB 约 0.1 秒, 不构成发布负担。
     """
-    days = {}
-    for day, sess in iter_sessions():
-        rel_sess = sess.relative_to(ROOT).as_posix()
-        files, sizes, total = [], [], 0
-        for f in sorted(sess.iterdir()):
-            if not f.is_file():
-                continue
-            rel = f.relative_to(ROOT).as_posix()
-            files.append(rel)
-            sizes.append({"name": rel, "bytes": f.stat().st_size,
-                          "sha256": _sha256(f)})
-            total += f.stat().st_size
-        days.setdefault(day, {"files": [], "file_sizes": [],
-                              "sessions": [], "bytes": 0})
-        d = days[day]
-        d["files"].extend(files)
-        d["file_sizes"].extend(sizes)
-        d["sessions"].append(rel_sess)
-        d["bytes"] += total
-
+    days = _build_days()
     idx = {
         "schema_version": 1,
         # 程序版本: 用户端用它判断"我的代码是不是旧的"。

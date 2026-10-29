@@ -1,0 +1,160 @@
+{
+  "align": {
+    "2026-10-29|7734200": {
+      "bv": "BV1Eas967EY9",
+      "bvs": [
+        "BV1ezs96kE6c",
+        "BV1Eas967EY9"
+      ],
+      "date": "2026-10-29",
+      "file": "7734200",
+      "offset_sec": 6564.899,
+      "title": "LYON vs IG"
+    },
+    "2026-10-29|7734200|BV1Eas967EY9": {
+      "auto": {
+        "confidence": 7.661,
+        "method": "audiofp",
+        "ts": "2026-10-29T08:27:51"
+      },
+      "bv": "BV1Eas967EY9",
+      "date": "2026-10-29",
+      "file": "7734200",
+      "offset_sec": 6564.899,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 7.661,
+          "duration": 2847,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 6564.899,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-29T08:27:51",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 6.702,
+          "duration": 3296,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 9630.064,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-29T08:27:51",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 7.839,
+          "duration": 2346,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 13134.902,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-29T08:27:51",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月29日 LYON vs IG",
+      "total_pages": 3
+    },
+    "2026-10-29|7734200|BV1ezs96kE6c": {
+      "auto": {
+        "confidence": 6.44,
+        "method": "audiofp",
+        "ts": "2026-10-29T08:26:38"
+      },
+      "bv": "BV1ezs96kE6c",
+      "date": "2026-10-29",
+      "file": "7734200",
+      "offset_sec": 44.901,
+      "page_errors": {
+        "3": "该分P 的音频在直播里找不到自洽位置(最多 2/8 段指向同一处, 最强票 conf=1.36); 可能是这场直播没有转播, 或采集期间音频断流"
+      },
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 6.44,
+          "duration": 3517,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 44.901,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-29T08:26:38",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 6.795,
+          "duration": 2521,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3780.072,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-29T08:26:38",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月29日 MKOI vs T1",
+      "total_pages": 3
+    }
+  },
+  "lists": {
+    "2026-10-29": [
+      {
+        "bv": "BV1ezs96kE6c",
+        "offset_sec": 44.901,
+        "pages": {
+          "1": {
+            "confidence": 6.44,
+            "offset_sec": 44.901,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 6.795,
+            "offset_sec": 3780.072,
+            "part": "第二局"
+          }
+        },
+        "start_ms": 1793217600000,
+        "title": "T1 vs MKOI",
+        "total_pages": 3
+      },
+      {
+        "bv": "BV1Eas967EY9",
+        "offset_sec": 6564.899,
+        "pages": {
+          "1": {
+            "confidence": 7.661,
+            "offset_sec": 6564.899,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 6.702,
+            "offset_sec": 9630.064,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 7.839,
+            "offset_sec": 13134.902,
+            "part": "第三局"
+          }
+        },
+        "start_ms": 1793228400000,
+        "title": "LYON vs IG",
+        "total_pages": 3
+      }
+    ]
+  }
+}

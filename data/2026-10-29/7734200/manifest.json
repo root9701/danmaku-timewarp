@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "room": 7734200,
+  "match_date": "2026-10-29",
+  "is_test": false,
+  "start_ms": 1793217599682,
+  "end_ms": 1793233957345,
+  "dm_count": 165745,
+  "sc_count": 31,
+  "files": [
+    "7734200_s0400.jsonl.gz",
+    "7734200_s0500.jsonl.gz",
+    "7734200_s0600.jsonl.gz",
+    "7734200_s0700.jsonl.gz",
+    "7734200_s0800.jsonl.gz"
+  ],
+  "afp": {
+    "file": "7734200.afp.jsonl.gz",
+    "hop": 0.4,
+    "win": 0.4
+  },
+  "meta": "7734200.meta.json",
+  "collector_version": "1.1.0",
+  "ended_by": "interrupt"
+}

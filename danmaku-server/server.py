@@ -150,6 +150,17 @@ _env = os.environ.get("DANMAKU_DATA", "").strip()
 DATA_DIR = (Path(_env).resolve() if _env
             else BASE_DIR.parent / "data")
 
+# 是否下载音频指纹(afp)。afp 只服务于 /api/autocalign, 而那条链路需要 numpy
+# 与 imageio-ffmpeg —— 便携包两者都不带(见 _no_audiofp_msg), 于是 afp 下下来
+# 只会被当成"不是弹幕"过滤掉, 却占了数据体积的一半以上。
+# 默认跟随本机能力: 能校准就下, 不能就不下。config.json 的 download.afp 可覆盖 ——
+# 关掉之后又想要, 下次「拉取弹幕」会补下缺的那几天(dataupdate.afp_fix_days)。
+_DEFAULT_WANT_AFP = HAS_AUDIOFP
+WANT_AFP = _DEFAULT_WANT_AFP
+_afp_cfg = _cfg("download", "afp", default=None)
+if isinstance(_afp_cfg, bool):
+    WANT_AFP = _afp_cfg
+
 BILI_REFERER = "https://www.bilibili.com/"
 BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -3400,7 +3411,7 @@ async def handle_update_check(request: web.Request) -> web.Response:
     if not HAS_DATAUPDATE:
         raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
     try:
-        info = await asyncio.to_thread(dataupdate.check, DATA_DIR)
+        info = await asyncio.to_thread(dataupdate.check, DATA_DIR, WANT_AFP)
     except dataupdate.UpdateError as e:
         raise ApiError(str(e))
     info.pop("remote_app_version", None)      # 旧字段, 改读 Release 后不再使用
@@ -3456,7 +3467,7 @@ async def handle_update_pull(request: web.Request) -> web.Response:
                                 current="", bytes=0, error="")
         try:
             res = await asyncio.to_thread(
-                dataupdate.update, DATA_DIR, _progress_cb)
+                dataupdate.update, DATA_DIR, _progress_cb, WANT_AFP)
         except dataupdate.UpdateError as e:
             _update_progress.update(running=False, error=str(e))
             raise ApiError(str(e))

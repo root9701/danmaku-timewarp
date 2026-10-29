@@ -22,5 +22,9 @@
   "bili": {
     "_comment": "B站官方回放搜索。official_mid 是账号 ID，哔哩哔哩英雄联盟赛事=50329118。",
     "official_mid": 50329118
+  },
+
+  "download": {
+    "_comment": "音频指纹(afp)是否随数据下载。默认跟随本机能力：能自动校准(numpy + ffmpeg)就下，否则不下 —— 便携版属于后者，afp 占了数据体积的一半而它用不上。需要强制改变时在本节加 \"afp\": true 或 false；改 true 后下次「拉取弹幕」会把已缺的指纹补齐，改 false 只是此后不再下载，已下的不删。"
   }
 }

@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import srcfetch
+import datalist
 
 # 数据源: 只允许从这里取。改这里等于改分发渠道。
 RAW_BASE = srcfetch.RAW_BASE
@@ -43,6 +44,11 @@ INDEX_NAME = "data-index.json"
 # 无关, 并发把这些开销重叠起来; 到这个量级后提升趋于平缓, 再往上只是增加对公共
 # 镜像的请求压力。
 _WORKERS = 4
+
+# 「选哪些文件」在 datalist(纯函数, 不碰网络与磁盘); 本模块只管怎么下、下到哪。
+# 这里转出几个最常用的名字, 免得调用方同时 import 两个模块。
+is_afp = datalist.is_afp
+AFP_SUFFIXES = datalist.AFP_SUFFIXES
 
 
 class UpdateError(Exception):
@@ -100,38 +106,27 @@ def local_days(data_dir: Path) -> dict:
 
 
 def plan(index: dict, have: dict) -> list:
-    """算出要下哪些日期。返回 [(日期, 条目)] 升序。"""
-    todo = []
-    for day in sorted(index.get("days") or {}):
-        if day in have:
-            continue
-        todo.append((day, index["days"][day]))
-    return todo
+    """算出要整日下载的日期。返回 [(日期, 条目)] 升序。逻辑见 datalist.plan。"""
+    return datalist.plan(index, have)
+
+
+def afp_fix_days(index: dict, have: dict, data_dir: Path,
+                 want_afp: bool) -> list:
+    """已有日期里缺 afp 的那些。见 datalist.afp_fix_days。"""
+    return datalist.afp_fix_days(index, have, data_dir.parent, want_afp)
 
 
 def _safe_rel(rel: str) -> str:
-    """校验清单里的相对路径, 防路径穿越。"""
-    p = Path(rel)
-    if p.is_absolute() or ".." in p.parts or not p.parts:
-        raise UpdateError(f"清单里有非法路径: {rel}")
-    if p.parts[0] != "data":
-        raise UpdateError(f"清单路径必须以 data/ 开头: {rel}")
-    return rel
+    """校验清单里的相对路径, 防路径穿越(逻辑在 datalist.safe_rel)。"""
+    try:
+        return datalist.safe_rel(rel)
+    except ValueError as e:
+        raise UpdateError(str(e)) from e
 
 
 def _file_meta(entry: dict, rel: str) -> tuple:
-    """从清单里取该文件的 (字节数, sha256)。缺失的字段返回 None。
-
-    为什么要容忍缺失: 老清单(没有 sha256 的那版)在用户机器上可能还留着。
-    读老清单不能报错, 退化到"只校验大小"——比不校验好, 也比直接拒绝更新好。
-    """
-    want = sha = None
-    for f in entry.get("file_sizes") or []:
-        if f.get("name") == rel:
-            want = int(f.get("bytes") or 0)
-            sha = (f.get("sha256") or "").strip().lower() or None
-            break
-    return want, sha
+    """从清单里取该文件的 (字节数, sha256)。见 datalist.file_meta。"""
+    return datalist.file_meta(entry, rel)
 
 
 def _sha256_file(p: Path) -> str:
@@ -207,7 +202,8 @@ def _run_batch(batch: list, root: Path, on_file, counter: list) -> None:
                 on_file(rel, size)
 
 
-def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
+def download_day(day: str, entry: dict, data_dir: Path, on_file=None,
+                 want_afp: bool = True) -> int:
     """下载一天的会话文件。返回写入字节数。
 
     幂等: 已存在且**大小与哈希都对得上**的文件跳过 —— 同一天重复跑不会重复下。
@@ -216,10 +212,15 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     版本。数据不可再生, 所以只认哈希, 不认大小。
 
     并发安全: 每个文件写自己的 .part 再原子改名, 不同文件之间不共享状态。
+
+    want_afp=False 时跳过音频指纹文件(见模块顶部 AFP_SUFFIXES 的说明)。
     """
-    files = entry.get("files") or []
+    files = [r for r in (entry.get("files") or [])
+             if want_afp or not is_afp(r)]
     if not files:
-        raise UpdateError(f"{day} 的清单条目没有 files")
+        if not (entry.get("files") or []):
+            raise UpdateError(f"{day} 的清单条目没有 files")
+        return 0                          # 本条目只剩 afp 且不下 afp
     root = data_dir.parent          # 清单路径形如 data/{day}/{room}/x, 相对仓库根
 
     # 先筛出真正要下的(已有且校验通过的直接跳过), 并发只用在下载上
@@ -249,49 +250,76 @@ def download_day(day: str, entry: dict, data_dir: Path, on_file=None) -> int:
     return counter[0]
 
 
-def check(data_dir: Path) -> dict:
+def check(data_dir: Path, want_afp: bool = True) -> dict:
     """比对远端清单与本地, 返回可展示给用户的摘要(不下载)。
 
     `remote_app_version` 是**作者发布时的程序版本**(来自清单的 app_version 字段)。
     老清单没有这个字段 -> 返回 None, 调用方必须容忍(当作"未知"), 不能报错。
+
+    want_afp=False 时 new_bytes 扣掉指纹部分, 并单列 afp_fix_days ——
+    否则界面会报一个"下不到的体积", 且用户永远不知道自己缺指纹。
     """
     idx = fetch_index()
     have = local_days(data_dir)
     todo = plan(idx, have)
+    fix = afp_fix_days(idx, have, data_dir, want_afp)
+    new_bytes = 0
+    for _, entry in todo:
+        total, afp = datalist.day_bytes(entry)
+        new_bytes += total if want_afp else total - afp
+    for _day, entry in fix:
+        new_bytes += datalist.day_bytes(entry)[1]
     return {
         "remote_latest": idx.get("latest"),
         "remote_app_version": idx.get("app_version") or None,
         "local_days": sorted(have),
         "new_days": [d for d, _ in todo],
-        "new_bytes": sum(int(e.get("bytes") or 0) for _, e in todo),
+        "afp_fix_days": [d for d, _ in fix],
+        "new_bytes": new_bytes,
         "need": len(todo),
+        "want_afp": want_afp,
     }
 
 
-def update(data_dir: Path, on_progress=None) -> dict:
-    """执行增量更新。返回结果摘要。"""
+def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
+    """执行增量更新。返回结果摘要。
+
+    先下整日(plan), 再给已有日期补指纹(afp_fix_days)。两步共用同一套
+    幂等与原子落盘, 补指纹只碰 afp 文件, 不会重下弹幕。
+    """
     idx = fetch_index()
     have = local_days(data_dir)
     todo = plan(idx, have)
-    if not todo:
+    fix = afp_fix_days(idx, have, data_dir, want_afp)
+    if not todo and not fix:
         return {"updated": [], "bytes": 0, "message": "已是最新"}
 
     done, nbytes = [], 0
-    for i, (day, entry) in enumerate(todo, 1):
+    total = len(todo) + len(fix)
+    for i, (day, entry) in enumerate(todo + fix, 1):
         if on_progress:
-            on_progress(i, len(todo), day)
-        def _cb(rel, n, _d=day):
+            on_progress(i, total, day)
+        def _cb(rel, n, _d=day, _i=i):
             if on_progress:
-                on_progress(i, len(todo), f"{_d}  {Path(rel).name}")
+                on_progress(_i, total, f"{_d}  {Path(rel).name}")
         try:
-            nbytes += download_day(day, entry, data_dir, _cb)
-            done.append(day)
+            nbytes += download_day(day, entry, data_dir, _cb, want_afp=want_afp)
+            if i <= len(todo):
+                done.append(day)
         except UpdateError:
             raise
         except OSError as e:
             raise UpdateError(f"{day} 写入失败: {e}") from e
-    return {"updated": done, "bytes": nbytes,
-            "message": f"已新增 {len(done)} 天"}
+    filled = total - len(todo)
+    if done:
+        msg = f"已新增 {len(done)} 天"
+        if filled:
+            msg += f"，并补齐 {filled} 天的音频指纹"
+    elif filled:
+        msg = f"补齐了 {filled} 天的音频指纹"
+    else:
+        msg = "已是最新"
+    return {"updated": done, "bytes": nbytes, "message": msg}
 
 
 def _manifests_for_day(day_dir: Path) -> list:

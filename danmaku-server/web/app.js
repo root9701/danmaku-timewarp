@@ -2311,15 +2311,22 @@
         appNotice = '；程序版本没查到（' + j.app_update_error +
           '），是否有新版未知';
       }
-      if (!j.need) {
+      if (!j.need && !(j.afp_fix_days || []).length) {
         setUpdateStatus('弹幕已是最新（本地 ' + (j.local_days || []).length +
           ' 天，远端最新 ' + (j.remote_latest || '?') + '）' + appNotice,
           appNotice ? 'warn' : 'ok');
         return null;
       }
       var days = (j.new_days || []).join('、');
-      setUpdateStatus('远端有 ' + j.need + ' 天新弹幕（' + fmtMB(j.new_bytes) +
-        '）：' + days + '。开始下载…', '');
+      if (!j.need) {
+        // 只剩音频指纹没补齐: 说清"补什么", 否则用户以为数据没变却又要下载
+        setUpdateStatus('补齐 ' + (j.afp_fix_days || []).length +
+          ' 天的音频指纹（' + fmtMB(j.new_bytes) + '）：' +
+          (j.afp_fix_days || []).join('、') + '。开始下载…', '');
+      } else {
+        setUpdateStatus('远端有 ' + j.need + ' 天新弹幕（' + fmtMB(j.new_bytes) +
+          '）：' + days + '。开始下载…', '');
+      }
       btnUpdate.textContent = '下载中…';
       // 21MB 并发下载约 40 秒。没有进度的话，界面只有一个静止的"下载中…"，
       // 用户会以为卡死然后强杀进程 —— 那正是"半个文件"最容易被制造的场景。

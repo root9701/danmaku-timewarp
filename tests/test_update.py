@@ -66,6 +66,15 @@ def make_fake_remote(tmp: Path) -> tuple:
         sizes.append({"name": mf_rel, "bytes": mf.stat().st_size,
                       "sha256": hashlib.sha256(mf.read_bytes()).hexdigest()})
         total += mf.stat().st_size
+        # 音频指纹: 便携包不下它(见 dataupdate.AFP_SUFFIXES), 但清单里有它,
+        # 所以要能验证"跳过"与"补齐"两条路径。
+        afp_rel = f"data/{day}/123/123.afp.jsonl"
+        ap = remote / afp_rel
+        ap.write_bytes(b'{"ty":"hdr","hop":0.4}\n' * 200)
+        files.append(afp_rel)
+        sizes.append({"name": afp_rel, "bytes": ap.stat().st_size,
+                      "sha256": hashlib.sha256(ap.read_bytes()).hexdigest()})
+        total += ap.stat().st_size
         days[day] = {"files": files, "file_sizes": sizes, "bytes": total}
     idx = {"schema_version": 1, "latest": max(days), "days": days}
     (remote / "data-index.json").write_text(
@@ -154,6 +163,48 @@ def main() -> int:
         check("第二个会话被截断也能检出", bool(bad2), "只验了第一个会话")
         check("报错里指明是哪个会话",
               any("222" in x for x in bad2), bad2[:2])
+
+        # 音频指纹可选下载: 便携包不带 numpy, 那份数据下下来也只会被过滤掉,
+        # 却占了一半以上体积。这里验证三条: 跳过、可补齐、补齐后幂等。
+        print("\n[音频指纹可选]")
+        skip = tmp / "afp_skip" / "data"
+        skip.mkdir(parents=True)
+        res_skip = dataupdate.update(skip, want_afp=False)
+        afp_local = [p for p in (tmp / "afp_skip").rglob("*.afp.jsonl")]
+        check("want_afp=False 时一天都不落 afp", not afp_local, afp_local[:2])
+        check("want_afp=False 仍下齐弹幕",
+              len([p for p in (tmp / "afp_skip").rglob("*.jsonl.gz")])
+              == sum(len([f for f in v["files"] if f.endswith(".jsonl.gz")])
+                     for v in idx["days"].values()))
+        check("跳过的体积明显小于全量",
+              res_skip["bytes"] < real_bytes, f"{res_skip['bytes']} vs {real_bytes}")
+
+        info_skip = dataupdate.check(skip, want_afp=False)
+        check("关掉时不报新天数", info_skip["need"] == 0, info_skip["need"])
+        check("关掉时不报缺指纹", info_skip.get("afp_fix_days") == [],
+              info_skip.get("afp_fix_days"))
+
+        # 改成开启: 已有日期必须被识别为"缺指纹", 否则永远补不回来
+        info_on = dataupdate.check(skip, want_afp=True)
+        check("开启后识别出缺指纹的日期",
+              sorted(info_on.get("afp_fix_days") or []) == sorted(idx["days"]),
+              info_on.get("afp_fix_days"))
+        check("预估体积只算指纹部分",
+              0 < info_on["new_bytes"] < real_bytes, info_on["new_bytes"])
+
+        res_fix = dataupdate.update(skip, want_afp=True)
+        check("补齐后 afp 全部到位",
+              len(list((tmp / "afp_skip").rglob("*.afp.jsonl"))) == len(idx["days"]),
+              "只补了部分")
+        check("补齐不动弹幕文件", res_fix["updated"] == [], res_fix["updated"])
+        check("补齐的消息说明是补指纹", "指纹" in res_fix["message"], res_fix["message"])
+        check("再跑一次不再补", dataupdate.update(skip, want_afp=True).get("message")
+              == "已是最新")
+        check("补齐的 afp 内容与远端一致",
+              all((tmp / "afp_skip" / rel).read_bytes()
+                  == (remote / rel).read_bytes()
+                  for v in idx["days"].values() for rel in v["files"]
+                  if rel.endswith(".afp.jsonl")))
 
         print("\n[防路径穿越]")
         for bad_rel in ("../x", "/etc/passwd", "align/x.json", "data/../../x",

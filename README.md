@@ -190,6 +190,7 @@ flowchart TD
 | `host` | `127.0.0.1` | 监听地址。`0.0.0.0` = 局域网可访问（无鉴权，仅在可信网络使用） |
 | `discover.league_id` | Worlds | 抓哪个赛事，见下表 |
 | `discover.timezone` | `Asia/Shanghai` | IANA 时区名。**Windows 需先 `pip install tzdata`** |
+| `download.afp` | 跟随本机能力 | 是否下载音频指纹。能自动校准才下；改 `true` 后下次「拉取弹幕」会补齐已缺的指纹 |
 
 ### 赛区与环境变量
 

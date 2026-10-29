@@ -25,8 +25,11 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CODE_DIRS = ("danmaku-server", "danmaku-collector")
-SKIP = ("__pycache__", ".venv", "tools", "tests")
+# tools/ 也要扫: release.py 曾经藏着 `tag = "" if kind == "slim" else ""` 这种死代码,
+# 而它当时不在扫描范围内 —— 闸门"看不见"的地方就会长草。tools/ 是发布链路的唯一入口,
+# 恰恰是最不该免检的部分。tests/ 仍不扫(测试文件的结构性超限没有改进价值)。
+CODE_DIRS = ("danmaku-server", "danmaku-collector", "tools")
+SKIP = ("__pycache__", ".venv", "tests")
 
 FUNC_MAX_LINES = 60
 FILE_MAX_LINES = 400

@@ -15,6 +15,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "danmaku-server"))
@@ -212,6 +213,39 @@ def test_manifest_afp_stripped_shape() -> None:
     check("裁剪后带 afp_stripped 标记", mf.get("afp_stripped") is True)
 
 
+def test_stream_redirect_is_rechecked() -> None:
+    """`/api/stream` 的每一跳重定向都必须过白名单 + 内网校验。
+
+    旧实现用 aiohttp 默认的 allow_redirects=True: 白名单只查用户传进来的那个 URL,
+    302 之后的目标不再复查 —— 只要能造一次跳转就绕过了全部校验。现在改为逐跳手动
+    跟随, 每跳都调 _check_stream_url; 这里就测这个复检语义。
+    """
+    # 允许的: B 站 CDN
+    for ok_url in ("https://cn-zjhz-cu-01-01.bilivideo.com/x.mp4",
+                   "https://upos-sz-mirrorcos.bilivideo.com/a/b"):
+        try:
+            server._check_stream_url(ok_url)
+            passed = True
+        except server.ApiError:
+            passed = False
+        check(f"放行 {urlparse(ok_url).hostname}", passed)
+
+    # 拒绝的: 非白名单域名 / 本机 / 内网 / 非 http(s)
+    accept = ("http://evil.example.com/x",
+              "http://127.0.0.1:8789/api/days",
+              "http://localhost/x",
+              "http://192.168.1.1/x",
+              "http://[::1]/x",
+              "file:///etc/passwd")
+    for bad_url in accept:
+        try:
+            server._check_stream_url(bad_url)
+            rejected = False
+        except server.ApiError:
+            rejected = True
+        check(f"拒绝 {bad_url}", rejected, "竟然放行了")
+
+
 def main() -> int:
     print("分层与分发契约")
     for fn in (test_upstream_read,
@@ -220,7 +254,8 @@ def main() -> int:
                test_local_layer_is_minimal,
                test_check_align_ignores_pageless,
                test_check_align_flags_missing_window,
-               test_manifest_afp_stripped_shape):
+               test_manifest_afp_stripped_shape,
+               test_stream_redirect_is_rechecked):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

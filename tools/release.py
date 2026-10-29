@@ -327,7 +327,6 @@ def refresh_index():
 # ---------------- 3. 出包 ----------------
 
 def build(kind):
-    tag = "" if kind == "slim" else ""      # 参数用 --slim / --full
     ok, out = _py("tools/build_release.py", f"--{kind}", "--zip")
     if not ok:
         raise StepFailed(f"打 {kind} 包失败:\n{out[-2500:]}")

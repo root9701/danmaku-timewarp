@@ -40,7 +40,7 @@ import zipfile                     # npz 缓存是 zip 容器, 损坏时抛 BadZ
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 from aiohttp import web
@@ -2388,6 +2388,9 @@ async def handle_overview(request: web.Request) -> web.Response:
 # 旧实现只做字面 IP 判断, 审计实测 127.1 / 0x7f000001 / 2130706433 等写法能绕过字面
 # 解析(ipaddress 判 ValueError 直接放行), 且域名解析到 127.0.0.1 也可穿透 —— 等于
 # 把它当成了开放正向代理。既然本工具只反代 B 站, 直接白名单最省事也最安全。
+# **重定向也在白名单约束内**: 早期版本让 aiohttp 自动跟随(allow_redirects=True),
+# 上面两道检查只作用于首跳 URL, 302 之后的目标不再复查 —— 白名单被绕过。
+# 现在改为逐跳手动跟随, 每一跳都调 _check_stream_url 复检(见 handle_stream)。
 ALLOWED_STREAM_SUFFIXES = (
     ".bilivideo.com", ".bilivideo.cn", ".bilibili.com", ".biliapi.net",
     ".hdslb.com", ".szbdyd.com", ".akamaized.net", ".mcdn.bilivideo.com",
@@ -2432,10 +2435,14 @@ def is_private_host(host: str) -> bool:
     return False
 
 
-async def handle_stream(request: web.Request) -> web.StreamResponse:
-    url = (request.query.get("url") or "").strip()
-    if not url:
-        raise ApiError("缺少参数 url")
+def _check_stream_url(url: str) -> None:
+    """校验一个待代理的绝对地址; 不合法就抛 ApiError。
+
+    **首跳与每一次重定向都必须过这一关**: B 站 CDN 会用 302 把请求引到别的主机,
+    若只查用户传进来的那个 URL、然后让 aiohttp 自动跟随, 跳转目标就等于绕过了
+    白名单与内网校验 —— 白名单只是"看起来"生效。所以 handle_stream 用
+    allow_redirects=False 手动逐跳, 每跳都调本函数复检。
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ApiError("参数 url 必须是合法的 http/https 地址")
@@ -2443,6 +2450,13 @@ async def handle_stream(request: web.Request) -> web.StreamResponse:
         raise ApiError("只允许代理 B 站 CDN 地址")
     if is_private_host(parsed.hostname):
         raise ApiError("不允许代理本机/内网地址")
+
+
+async def handle_stream(request: web.Request) -> web.StreamResponse:
+    url = (request.query.get("url") or "").strip()
+    if not url:
+        raise ApiError("缺少参数 url")
+    _check_stream_url(url)
     session = request.app["http"]
     fwd = {"User-Agent": BILI_UA, "Referer": BILI_REFERER}
     if request.headers.get("Range"):           # 透传 Range, 支持视频拖动进度条
@@ -2451,7 +2465,19 @@ async def handle_stream(request: web.Request) -> web.StreamResponse:
                                     sock_read=120)
     upstream = None
     try:
-        upstream = await session.get(url, headers=fwd, timeout=timeout)
+        # 逐跳跟随重定向, 每跳过 _check_stream_url 复检(见该函数说明)。
+        for _hop in range(6):
+            upstream = await session.get(url, headers=fwd, timeout=timeout,
+                                         allow_redirects=False)
+            loc = upstream.headers.get("Location")
+            if upstream.status not in (301, 302, 303, 307, 308) or not loc:
+                break
+            upstream.close()
+            upstream = None
+            url = urljoin(url, loc)          # Location 可能是相对路径
+            _check_stream_url(url)           # 跳转目标不合法 -> 抛 ApiError, 不再跟随
+        if upstream is None:
+            raise ApiError("上游重定向次数过多, 已放弃代理")
         if upstream.status >= 400:
             status = upstream.status
             upstream.close()

@@ -135,6 +135,26 @@ def main() -> int:
             bad = dataupdate.verify_day(local / sorted(idx["days"])[0])
             check("截断的 gzip 被检出", bool(bad), "verify_day 没报损坏")
 
+        # 多会话日: 同一天有多个会话目录时, **每一份** manifest 都要验。
+        # 旧实现找到一个 manifest 就用, 其余会话完全没自检, 而界面照样报"校验通过"。
+        print("\n[完整性 · 多会话日]")
+        multi = tmp / "multi" / "2026-10-29"
+        good = gzip.compress(b"ok\n" * 100)
+        for room in ("111", "222"):
+            d = multi / room
+            d.mkdir(parents=True)
+            (d / f"{room}_s0400.jsonl.gz").write_bytes(good)
+            (d / "manifest.json").write_text(
+                json.dumps({"files": [f"{room}_s0400.jsonl.gz"]}), encoding="utf-8")
+        check("两个会话都完好时不报问题",
+              dataupdate.verify_day(multi) == [], dataupdate.verify_day(multi))
+        victim2 = multi / "222" / "222_s0400.jsonl.gz"
+        victim2.write_bytes(victim2.read_bytes()[:20])
+        bad2 = dataupdate.verify_day(multi)
+        check("第二个会话被截断也能检出", bool(bad2), "只验了第一个会话")
+        check("报错里指明是哪个会话",
+              any("222" in x for x in bad2), bad2[:2])
+
         print("\n[防路径穿越]")
         for bad_rel in ("../x", "/etc/passwd", "align/x.json", "data/../../x",
                         "src/x.py"):

@@ -101,7 +101,7 @@ lol延时直播/
 │   启动采集.bat / 启动控制台.bat / 退出控制台.bat
 └── danmaku-server/                           ← 播放端（Python aiohttp + 原生 JS）
     server.py / audiofp.py / srcfetch.py / dataupdate.py / web/
-    启动回放台.bat / 启动回放台_局域网.bat / 退出回放台.bat
+    Start.bat / Start-LAN.bat / Stop.bat
 ```
 
 模块职责与依赖方向见 `架构总览.md`。
@@ -158,7 +158,7 @@ flowchart TD
 | 时间 | 操作 |
 |---|---|
 | 比赛开始前 | 双击 `danmaku-collector/启动采集.bat`，窗口可最小化，不可关闭 |
-| 次日 | 双击 `danmaku-server/启动回放台.bat`（局域网访问用 `启动回放台_局域网.bat`） |
+| 次日 | 双击 `danmaku-server/Start.bat`（局域网访问用 `Start-LAN.bat`） |
 | 之后 | 打开 <http://127.0.0.1:8789> → 选日期与场次 → 播放 → 自动校准 |
 
 官方回放通常在中午前后上传完整。若某场次暂无 BV，中午点击「刷新赛程」补齐。
@@ -260,7 +260,7 @@ flowchart TD
 | 端 | 脚本 | 详见 |
 |---|---|---|
 | 采集端 | `启动采集.bat` / `启动控制台.bat` / `退出控制台.bat` | [`danmaku-collector/README.md`](danmaku-collector/README.md) |
-| 播放端 | `启动回放台.bat` / `启动回放台_局域网.bat` / `退出回放台.bat` | [`danmaku-server/README.md`](danmaku-server/README.md) |
+| 播放端 | `Start.bat` / `Start-LAN.bat` / `Stop.bat` | [`danmaku-server/README.md`](danmaku-server/README.md) |
 
 播放端同时支持**仅本机**（`127.0.0.1`）与**局域网**（`0.0.0.0` + 二维码）两种模式，
 监听地址由启动脚本显式设置，不受 `config.json` 覆盖。局域网访问需放行防火墙端口 8789，

@@ -1,11 +1,12 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title 退出回放台 - 停止服务
+title 弹幕时光机 - 停止服务
 cd /d "%~dp0"
 
 echo ==============================================
-echo   退出 弹幕时光机
+echo   弹幕时光机
+echo   操作  停止服务（端口 8789）
 echo ==============================================
 echo.
 
@@ -20,14 +21,14 @@ set FOUND=0
 for /f "tokens=5" %%P in ('findstr ":8789" "%TMPF%" ^| findstr "LISTENING"') do (
     if not "%%P"=="0" (
         set FOUND=1
-        echo   正在停止回放台 ^(PID %%P^) ...
+        echo   正在停止 ^(PID %%P^) ...
         taskkill /PID %%P /T /F >nul 2>&1
     )
 )
 del "%TMPF%" >nul 2>&1
 
 if "!FOUND!"=="0" (
-    echo   回放台没在运行 ^(端口 8789 无监听^)。
+    echo   未运行 ^(端口 8789 无监听^)。
 ) else (
     echo.
     echo   已停止，端口 8789 已释放。

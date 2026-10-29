@@ -3650,40 +3650,41 @@ def _print_qr(url: str) -> None:
 
 
 def _print_banner(host_src: str) -> None:
-    """启动横幅: 访问地址、监听来源、局域网二维码与防火墙排障。
+    """启动横幅: 访问地址、停止方式、运行参数; 局域网模式追加二维码与防火墙排障。
 
+    信息分两层: 上半区只放用户操作所需(地址/停止), 下半区放排查参数(监听来源/
+    数据目录)。技术细节不放上半区 —— 普通用户看到"环境变量"会误以为配置有误。
     单独成函数是为了让 main() 只表达"启动流程"(闸门要求函数 <= 60 行)。
     """
     lan = HOST not in ("127.0.0.1", "localhost")
     ips = _lan_ips() if lan else []
     print()
-    print("=" * 60)
-    print("  弹幕时光机 · 本地服务器")
-    print(f"  本机访问:     http://127.0.0.1:{PORT}")
+    print(f"  弹幕时光机  {APP_VERSION}")
+    print(f"  本机访问    http://127.0.0.1:{PORT}")
     for ip in ips:
-        print(f"  局域网访问:   http://{ip}:{PORT}")
-    print(f"  监听地址:     {HOST}:{PORT}  (来自{host_src})")
-    print(f"  采集数据目录: {DATA_DIR}")
-    print(f"  B站Cookie:    {'已加载' if load_cookie_header() else '未配置(可选)'}")
-    print("  停止: 关闭本窗口, 或按 Ctrl+C")
-    print("=" * 60)
+        print(f"  局域网访问  http://{ip}:{PORT}")
+    print("  停止服务    关闭本窗口，或按 Ctrl+C")
+    print()
+    print("  " + "─" * 54)
+    print(f"  监听地址     {HOST}:{PORT}（{host_src}）")
+    print(f"  数据目录     {DATA_DIR}")
+    print(f"  B 站 Cookie  {'已加载' if load_cookie_header() else '未配置（可选）'}")
+    print()
     if not lan:
-        print("  仅本机可访问。要让手机/iPad 看, 请改用同目录下的「..._局域网.bat」启动。")
+        print("  当前仅本机可访问。手机或平板观看请改用同目录 Start-LAN.bat。")
         return
     if not ips:
-        print("  [注意] 已绑定 0.0.0.0, 但没探测到局域网 IP(未连 WiFi?), 手机可能连不上。")
+        print("  已绑定 0.0.0.0，但未探测到局域网地址（未连接 WiFi？），手机可能无法访问。")
         return
-    print()
-    print("  手机/iPad 扫码访问（和电脑连同一个 WiFi）:")
+    print("  手机或平板（需与电脑连接同一 WiFi）扫码访问：")
     print()
     _print_qr(f"http://{ips[0]}:{PORT}")
     # 局域网失败最常见的原因不是网络, 而是 Windows 防火墙没放行 ——
     # 症状是"手机上转圈/打不开", 用户不知道该改什么。首次绑定 0.0.0.0 时
     # 系统一般会弹「是否允许访问」, 点了取消或没弹窗就永久不通。
     # 放在二维码之后而不是之前: 先让人看到访问地址, 再给排障入口。
-    print()
-    print("  手机打不开这个地址？多半是 Windows 防火墙没放行。")
-    print("  管理员 PowerShell 执行一次（之后不用再执行）:")
+    print("  若手机无法打开，多为 Windows 防火墙未放行。以管理员身份运行 PowerShell，")
+    print("  执行一次即可（此后无需重复）：")
     print()
     print(f'    New-NetFirewallRule -DisplayName "弹幕时光机" '
           f'-Direction Inbound -Protocol TCP -LocalPort {PORT} '
@@ -3698,7 +3699,7 @@ def main() -> None:
         pass
     # 监听地址来源: 环境变量 DANMAKU_HOST > config.json 的 host > 默认 127.0.0.1。
     # 这里把**实际生效值**和来源都打出来 —— 曾经出现过: config.json 存了 0.0.0.0,
-    # 而「启动回放台.bat」标题写"仅本机", 结果实际绑定 0.0.0.0 并打印二维码,
+    # 而 Start.bat 标题写"仅本机", 结果实际绑定 0.0.0.0 并打印二维码,
     # 用户看到的标题和实际行为自相矛盾, 排查时无从下手。
     host_src = ("环境变量 DANMAKU_HOST" if os.environ.get("DANMAKU_HOST", "").strip()
                 else ("config.json 的 host" if str(_cfg("host", default="")).strip()
@@ -3711,16 +3712,15 @@ def main() -> None:
         # 默认的 aiohttp 异常是 20 行 traceback, 用户看不出该怎么办, 这里给可执行的指引。
         if getattr(e, "errno", None) in (48, 10048) or "10048" in str(e):
             print()
-            print("=" * 60)
-            print(f"  [启动失败] 端口 {PORT} 已被占用")
-            print("=" * 60)
-            print("  多半是已经有一个回放台在运行了。可以:")
-            print("    1. 回去找那个旧窗口, 直接关掉它; 或")
-            print("    2. 双击「退出回放台.bat」一键清理; 或")
-            print(f"    3. 命令行查是谁占的: netstat -ano | findstr :{PORT}")
+            print(f"  启动失败    端口 {PORT} 已被占用")
             print()
-            print("  如果你就想同时开两个, 改 config.json 的 port 再启动。")
-            print("=" * 60)
+            print(f"  可能已有一个实例在运行。请择一处理：")
+            print(f"    1. 切换到已有窗口并关闭它")
+            print(f"    2. 运行 Stop.bat 结束占用进程")
+            print(f"    3. 查看占用者    netstat -ano | findstr :{PORT}")
+            print()
+            print(f"  如需同时运行多个实例，请修改 config.json 中的 port 后重启。")
+            print()
         else:
             print(f"\n  [启动失败] {e}\n")
         raise SystemExit(1)

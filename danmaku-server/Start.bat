@@ -6,8 +6,9 @@ rem 失败时脚本已打印原因并 pause, 这里直接退出, 不重复报错
 call "%~dp0_ensure_venv.bat" "%~dp0" 
 if errorlevel 1 exit /b 1
 echo ==============================================
-echo   弹幕时光机 · 仅本机可访问
-echo   关闭本窗口 = 停止服务
+echo   弹幕时光机
+echo   模式  仅本机
+echo   停止  关闭本窗口，或按 Ctrl+C
 echo ==============================================
 echo.
 rem 必须显式覆盖监听地址: config.json 的 host 可能是 0.0.0.0(局域网模式保存过),

@@ -61,7 +61,7 @@ cd danmaku-timewarp
 
 ### 3. 双击启动
 
-双击 `danmaku-server\启动回放台.bat`。**首次运行会自动创建虚拟环境并安装依赖**（约 1~3 分钟，仅一次），完成后浏览器自动打开 `127.0.0.1:8789`。
+双击 `danmaku-server\Start.bat`。**首次运行会自动创建虚拟环境并安装依赖**（约 1~3 分钟，仅一次），完成后浏览器自动打开 `127.0.0.1:8789`。
 
 > 依赖装不上多半是网络问题，用国内镜像：
 > `danmaku-server\.venv\Scripts\python.exe -m pip install -r danmaku-server\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`

@@ -64,7 +64,8 @@ title 弹幕时光机 - 本机访问（关闭本窗口即停止）
 cd /d "%~dp0"
 echo ==============================================
 echo   弹幕时光机 {ver}
-echo   关闭本窗口 = 停止服务
+echo   模式  仅本机
+echo   停止  关闭本窗口，或按 Ctrl+C
 echo ==============================================
 echo.
 rem 用包内自带的解释器, 不依赖系统装了 Python。
@@ -83,17 +84,17 @@ pause
 """
 
 # 局域网版。为什么便携包必须有它:
-#   server.py 在仅本机模式下会打印"要让手机/iPad 看, 请用「启动回放台_局域网.bat」",
-#   而打包时**删掉了仓库里的那几个 .bat**。若不补这一份, 包里就只有本机模式,
-#   提示指向一个不存在的文件 —— 用户按提示找不到东西, 局域网能力等于被砍掉。
+#   server.py 在仅本机模式下会提示"手机或平板观看请改用同目录 Start-LAN.bat"。
+#   若不补这一份, 包里就只有本机模式, 提示指向一个不存在的文件 —— 用户按提示
+#   找不到东西, 局域网能力等于被砍掉(曾经真实发生, 且构建全绿)。
 # 与仓库版行为一致: 只差 DANMAKU_HOST=0.0.0.0(绑定全部网卡 -> 打印二维码)。
 LAN_BAT = """@echo off
 title 弹幕时光机 - 局域网访问（关闭本窗口即停止）
 cd /d "%~dp0"
 echo ==============================================
-echo   弹幕时光机 {ver} · 局域网访问
-echo   手机/iPad 和电脑连同一个 WiFi，扫下方二维码
-echo   关闭本窗口 = 停止服务
+echo   弹幕时光机 {ver}
+echo   模式  局域网（手机或平板需连接同一 WiFi）
+echo   停止  关闭本窗口，或按 Ctrl+C
 echo ==============================================
 echo.
 set PYTHONNOUSERSITE=1
@@ -102,6 +103,40 @@ set PYTHONIOENCODING=utf-8
 "%~dp0python\\python.exe" "%~dp0danmaku-server\\server.py"
 echo.
 echo 服务已停止。
+pause
+"""
+
+# 停止脚本。便携包此前缺它: server.py 的端口占用提示让用户"运行 Stop.bat",
+# 而包里根本没有这个文件 —— 提示指向不存在的文件, 用户无从下手。
+# 与仓库版一致: 按端口 8789 精确定位, 不按进程名杀(会误伤其它 python)。
+STOP_BAT = """@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+title 弹幕时光机 - 停止服务
+cd /d "%~dp0"
+echo ==============================================
+echo   弹幕时光机
+echo   操作  停止服务（端口 8789）
+echo ==============================================
+echo.
+set TMPF=%TEMP%\\danmaku_8789_pids.txt
+netstat -ano > "%TMPF%" 2>nul
+set FOUND=0
+for /f "tokens=5" %%P in ('findstr ":8789" "%TMPF%" ^| findstr "LISTENING"') do (
+    if not "%%P"=="0" (
+        set FOUND=1
+        echo   正在停止 ^(PID %%P^) ...
+        taskkill /PID %%P /T /F >nul 2>&1
+    )
+)
+del "%TMPF%" >nul 2>&1
+if "!FOUND!"=="0" (
+    echo   未运行 ^(端口 8789 无监听^)。
+) else (
+    echo.
+    echo   已停止，端口 8789 已释放。
+)
+echo.
 pause
 """
 
@@ -246,11 +281,12 @@ def copy_code(dst: Path) -> None:
             "*.pyc", "*.log"),
         dirs_exist_ok=True)
     # 启动脚本在包根, 替掉原来那套"建 venv 装依赖"的脚本(便携版不需要)
-    for old in ("_ensure_venv.bat", "启动回放台.bat", "启动回放台_局域网.bat",
-                "退出回放台.bat"):
+    for old in ("_ensure_venv.bat", "Start.bat", "Start-LAN.bat", "Stop.bat",
+                "启动回放台.bat", "启动回放台_局域网.bat", "退出回放台.bat"):
         (dst / "danmaku-server" / old).unlink(missing_ok=True)
-    for name, tpl in (("启动弹幕时光机.bat", LAUNCH_BAT),
-                      ("启动弹幕时光机_局域网.bat", LAN_BAT)):
+    for name, tpl in (("Start.bat", LAUNCH_BAT),
+                      ("Start-LAN.bat", LAN_BAT),
+                      ("Stop.bat", STOP_BAT)):
         (dst / name).write_text(
             tpl.replace("{ver}", VERSION), encoding="utf-8", newline="\r\n")
     for name in ("VERSION", "README.md"):
@@ -263,44 +299,44 @@ def write_notice(dst: Path, full: bool) -> None:
     """包内说明。用户解压后第一眼看到的就是它。"""
     calib = ("可以（含 numpy + ffmpeg）" if full
              else "**不可用**（轻量版未包含校准依赖；数据已由作者校准好，直接看即可）")
-    text = f"""弹幕时光机 v{VERSION} — {'完整版' if full else '轻量版'}
+    text = f"""弹幕时光机 {VERSION} — {'完整版' if full else '轻量版'}
 ==============================================
 
-怎么用
-------
-1. 解压到**任意目录**（路径别太深，中文可以）
-2. 双击「启动弹幕时光机.bat」
-3. 浏览器会自动打开；没打开就手动访问 http://127.0.0.1:8789
-4. 第一次要先下载弹幕：点底栏右侧的「拉取弹幕」
+启动
+----
+1. 解压到任意目录（路径可含中文）
+2. 双击 Start.bat
+3. 浏览器自动打开；若未打开，请手动访问 http://127.0.0.1:8789
+4. 首次使用需下载弹幕：点击底栏右侧「拉取弹幕」
 
-关闭：关掉那个黑窗口就行。
+停止
+----
+关闭窗口，或双击 Stop.bat。
 
-用手机 / iPad 看
-----------------
-双击「启动弹幕时光机_局域网.bat」，窗口里会显示二维码，手机和电脑
-连同一个 WiFi，扫码即可。
-
-手机打不开的话，多半是 Windows 防火墙没放行。用【管理员】PowerShell
-执行一次（只需一次）：
+手机或平板访问
+--------------
+双击 Start-LAN.bat，窗口内会显示二维码。手机需与电脑连接同一 WiFi，
+扫码即可访问。若无法打开，多为 Windows 防火墙未放行，以管理员身份
+运行 PowerShell 执行一次（此后无需重复）：
 
   New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
 
-（只在本机看就用「启动弹幕时光机.bat」，它不开放局域网。）
+（仅在本机观看请使用 Start.bat，它不开放局域网。）
 
-数据要自己下载
+数据需自行下载
 --------------
-包里**不带比赛数据**（否则一个包就几百 MB，而且新数据一出来就得重下）。
-首次使用点底栏的「拉取弹幕」，会从公共镜像下载，速度约 1-2 MB/s。
+本包不含比赛数据（否则单包体积将达数百 MB，且新数据发布后需重新下载）。
+首次使用点击底栏「拉取弹幕」，从公共镜像下载，速度约 1-2 MB/s。
 
 自动校准：{calib}
 
-出问题
-------
-- 下不到数据：多半是网络。稍等再试，或换个时间。
-- 提示"数据校验失败"：说明数据源有问题，不是你的电脑坏了，过会儿再试。
-- 端口 8789 被占用（提示"已有一个回放台在运行"）：可能上次的窗口没关，
-  先关掉旧窗口。要换端口就复制一份 danmaku-server\\config.example.json
-  改名为 config.json，改里面的 port。
+常见问题
+--------
+- 无法下载数据：多为网络问题，请稍后重试或更换时段。
+- 提示「数据校验失败」：说明数据源异常，并非本机故障，请稍后重试。
+- 端口 8789 被占用（提示「端口 8789 已被占用」）：可能上次的窗口未关闭，
+  先关闭旧窗口或运行 Stop.bat。如需更换端口，请复制 danmaku-server\\config.example.json
+  为 config.json，修改其中的 port。
 
 详见 README.md。
 """
@@ -316,6 +352,27 @@ def make_zip(src: Path, out: Path) -> None:
             if p.is_file():
                 z.write(p, p.relative_to(src.parent))
     print(f"  zip: {out.name}  {_size_mb(out):.0f} MB")
+
+
+def _check_scripts(dst: Path) -> bool:
+    """包根脚本齐备, 且 server.py 点名提示的脚本都真实存在。
+
+    这个检查不是形式主义: 曾经打包时删掉了仓库里的局域网 .bat 却没补新的,
+    包里只剩本机模式, 而服务端提示还指向那个不存在的文件 —— 用户按提示找不到
+    东西, 局域网能力等于被砍掉, 且构建全绿。Stop.bat 同理: 端口占用提示让用户
+    "运行 Stop.bat", 缺了就是一纸空指引。
+    """
+    for bat in ("Start.bat", "Start-LAN.bat", "Stop.bat"):
+        if not (dst / bat).is_file():
+            print(f"  ✗ 缺脚本: {bat}")
+            return False
+    # 直接读 server.py 源码: 提示文案与打包结果各改各的, 只有这条断言能拦住
+    srv = (dst / "danmaku-server" / "server.py").read_text(encoding="utf-8")
+    for named in ("Start-LAN.bat", "Stop.bat"):
+        if named in srv and not (dst / named).is_file():
+            print(f"  ✗ server.py 提示了 {named}, 但包内没有")
+            return False
+    return True
 
 
 def verify(dst: Path, full: bool) -> bool:
@@ -336,13 +393,8 @@ def verify(dst: Path, full: bool) -> bool:
     if not py.is_file():
         print("  ✗ 便携 Python 不存在")
         return False
-    # 两个启动脚本必须都在。这个检查不是形式主义: 曾经打包时删掉了仓库里的
-    # 局域网 .bat 却没补新的, 包里只剩本机模式, 而服务端提示还指向那个不存在的
-    # 文件 —— 用户按提示找不到东西, 局域网能力等于被砍掉, 且构建全绿。
-    for bat in ("启动弹幕时光机.bat", "启动弹幕时光机_局域网.bat"):
-        if not (dst / bat).is_file():
-            print(f"  ✗ 缺启动脚本: {bat}")
-            return False
+    if not _check_scripts(dst):
+        return False
     expect = "True" if full else "False"
     code = (
         "import sys, json, asyncio, gzip, urllib.request, sqlite3, ssl\n"

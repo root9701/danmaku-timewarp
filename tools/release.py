@@ -45,8 +45,10 @@ TAG = "v" + VERSION
 GH_REMOTE = "origin"
 GH_REPO = "root9701/danmaku-timewarp"
 
-# 出包的种类。顺序固定: 轻量版先出 —— 体积小、出错早暴露。
-KINDS = ("slim", "full")
+# 发布只出便携版一份。为什么不发完整版: 它多带 numpy + ffmpeg(约 135MB), 而
+# **校准结果已由作者算好并随数据下发**, 用户拿到也用不上 —— 需要重算的人本来就有
+# 开发环境, 从源码跑更合适(README 有一行命令)。少一份附件, 用户就少一次选择。
+KINDS = ("slim",)
 
 
 class StepFailed(Exception):
@@ -441,6 +443,59 @@ def e2e(kind, zip_path):
 
 # ---------------- 4. 发布(不可撤销动作) ----------------
 
+NOTES_TEMPLATE = ROOT / "RELEASE_NOTES.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
+
+
+def _section(path: Path, version: str) -> str:
+    """取 `## <version>` 到下一个 `## ` 之间的正文。取不到返回空串。
+
+    为什么按标题切而不是让人手工维护两份: 更新内容会随每次发版增长, 若塞进
+    release.py 的字符串里, 一处漏改就会出现"页面写着旧内容"——而它已公开。
+    取不到时**不报错**而是空着: 发版仍能完成, 只是少一节文字;
+    比"因为找不到 changelog 而卡住发布"更可取。
+    """
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    head = f"## {version}"
+    out = []
+    hit = False
+    for ln in lines:
+        if ln.strip() == head:
+            hit = True
+            continue
+        if hit and ln.startswith("## "):
+            break
+        if hit:
+            out.append(ln)
+    return "\n".join(out).strip()
+
+
+def build_notes(zip_path: Path, size_mb: float) -> str:
+    """把固定说明(RELEASE_NOTES.md)与本版更新(CHANGELOG.md)拼成页面正文。
+
+    分两块的理由: 固定说明讲"这是什么、怎么用", 每次一样; 更新内容讲"这次改了什么",
+    每次不同。混在一起时, 改用法要翻旧版本对照, 看更新又得先跳过一大段不变的说明。
+    """
+    fixed = NOTES_TEMPLATE.read_text(encoding="utf-8") if NOTES_TEMPLATE.is_file() else ""
+    # 模板顶部是给维护者看的说明, 不该出现在发布页: 以最后一处 <!-- BODY --> 为界, 只取其后。
+    # 用 rsplit 而不是 split: 说明里可能也写着这个标记(如"BODY 之后的内容"), 取最后一处才稳。
+    if "<!-- BODY -->" in fixed:
+        fixed = fixed.rsplit("<!-- BODY -->", 1)[1]
+    if "## 更新内容" in fixed:
+        fixed = fixed.split("## 更新内容", 1)[0].rstrip()
+    fixed = (fixed.replace("{{VERSION}}", VERSION)
+                  .replace("{{SIZE_MB}}", f"{size_mb:.0f}")
+                  .replace("{{ZIP}}", zip_path.name))
+    body = _section(CHANGELOG, VERSION)
+    if not body:
+        say(f"  ! CHANGELOG.md 里没有 {VERSION} 一节, 更新内容留空")
+        body = "（本版无单独说明）"
+    return f"{fixed.strip()}\n\n## 更新内容\n\n{body}\n"
+
+
 def publish(zips, dry_run):
     """打 tag + 推 main + 建 Release 传包。**这一步之后内容就公开了。**"""
     if dry_run:
@@ -466,47 +521,8 @@ def publish(zips, dry_run):
             "  网络/代理问题不是授权问题 —— 换个时间再试, 不要把 tag 删了重来。\n"
             f"  当前状态: 本地已有 tag {TAG}, 仍是「已提交未推送」。")
     say("  ✓ 已推送 main 与 tag")
-    notes = (
-        f"## 弹幕时光机 {VERSION}\n\n"
-        "配套 B 站官方回放的弹幕播放器。数据与程序分离：本包不含比赛数据，"
-        "首次使用在界面内下载。\n\n"
-        "### 下载\n\n"
-        "| 版本 | 体积（zip） | 自动校准 | 适用场景 |\n"
-        "|---|---|---|---|\n"
-        f"| 轻量版 | {zips[0].stat().st_size / 1024 / 1024:.0f} MB | 不支持 | "
-        "直接观看。校准结果随数据发布，无需本地计算 |\n"
-        f"| 完整版 | {zips[1].stat().st_size / 1024 / 1024:.0f} MB | 支持 | "
-        "需要自行重算 offset，或校对已有结果 |\n\n"
-        "两者代码相同，差异仅在是否打包 numpy 与 ffmpeg。\n\n"
-        "### 使用\n\n"
-        "解压至任意目录（路径可含中文），双击 `Start.bat`，"
-        "浏览器自动打开 `http://127.0.0.1:8789`。\n\n"
-        "需要在手机或平板观看时，改用 `Start-LAN.bat`，"
-        "终端会显示二维码。若手机无法访问，需先放行 Windows 防火墙的 8789 端口，"
-        "命令见包内 `使用说明.txt`。\n\n"
-        "停止服务可关闭窗口，或双击 `Stop.bat`。\n\n"
-        "首次运行请点击底栏「拉取弹幕」下载比赛数据，单晚约 10 MB。\n\n"
-        "### 本版内容\n\n"
-        "**启动体验**\n\n"
-        "- 启动脚本更名为 `Start.bat` / `Start-LAN.bat` / `Stop.bat`，"
-        "文件名不再与界面术语混用\n"
-        "- 便携包补回 `Stop.bat`：此前端口占用提示让用户运行该脚本，"
-        "而包内并不存在\n"
-        "- 终端提示重排：访问地址与停止方式在前，监听来源与数据目录归入排查区\n\n"
-        "**安全与可靠性**\n\n"
-        "- `/api/stream` 重定向逐跳复检，白名单不再被 302 绕过\n"
-        "- 数据自检改为校验当天**每一个**会话的 manifest；此前只验第一个，"
-        "多会话日的其余会话漏检却仍报通过\n\n"
-        "**弹幕拉取与程序版本**\n\n"
-        "- 底栏「检查更新」更名为「拉取弹幕」，明确它只下载数据、不替换程序文件\n"
-        "- 程序版本改从 Releases 读取，不再依赖数据清单的生成时机\n"
-        "- 修复便携版在未安装相关 Python 包的机器上无法启动\n\n"
-        "### 已知限制\n\n"
-        "- 「拉取弹幕」只下载数据，不替换程序文件。程序更新需重新下载本页附件。\n"
-        "- 轻量版不包含自动校准；界面会给出提示，不会静默失败。\n\n"
-        "数据与对齐结果为作者采集产物，版权归原发布者及哔哩哔哩所有，"
-        "本项目不主张任何权利。"
-    )
+    size_mb = zips[0].stat().st_size / 1024 / 1024
+    notes = build_notes(zips[0], size_mb)
     gh = _find_gh() or "gh"
     ok, out = _run([gh, "release", "create", TAG, *[str(z) for z in zips],
                     "--repo", GH_REPO, "--title", f"弹幕时光机 {VERSION}",

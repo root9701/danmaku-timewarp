@@ -93,8 +93,8 @@ def _no_audiofp_msg() -> str:
     """
     tech = _AFP_IMPORT_ERR or "numpy/audiofp 未安装"
     return ("这个版本不含自动校准（数据已由作者校准好，直接播放即可）。"
-            "如需自己重算，请换「完整版」；"
-            "只想微调几秒的话，用下面的「手动微调」更快。"
+            "只想微调几秒的话，用下面的「手动微调」更快；"
+            "确实需要整段重算，请从源码运行（仓库 README 有说明）。"
             f"（技术细节：{tech}）")
 
 # ---- 常量 ----
@@ -2385,13 +2385,12 @@ async def handle_overview(request: web.Request) -> web.Response:
 # 反代改不了签名, 拿失效直链来反代必然还是 403, 所以它救不了过期链接。
 # 它现在的用途是**自动校准**: ffmpeg 需要一条能带 Referer 的稳定地址喂流
 # (见 get_replay_fingerprint 里 "ffmpeg 走本服务 /api/stream 反代")。
-# /api/stream 只用于反代 B 站 CDN。这里的防护是"白名单域名 + 解析后 IP 校验":
-# 旧实现只做字面 IP 判断, 审计实测 127.1 / 0x7f000001 / 2130706433 等写法能绕过字面
-# 解析(ipaddress 判 ValueError 直接放行), 且域名解析到 127.0.0.1 也可穿透 —— 等于
-# 把它当成了开放正向代理。既然本工具只反代 B 站, 直接白名单最省事也最安全。
-# **重定向也在白名单约束内**: 早期版本让 aiohttp 自动跟随(allow_redirects=True),
-# 上面两道检查只作用于首跳 URL, 302 之后的目标不再复查 —— 白名单被绕过。
-# 现在改为逐跳手动跟随, 每一跳都调 _check_stream_url 复检(见 handle_stream)。
+# /api/stream 只用于反代 B 站 CDN。防护是"白名单域名 + 解析后 IP 校验"两道:
+# 域名必须在 ALLOWED_STREAM_SUFFIXES 里, 且解析出的 IP 不得是本机/内网。
+# 只做字面 IP 判断不够: 127.1 / 0x7f000001 / 2130706433 都指向回环但字面不同,
+# 域名解析到 127.0.0.1 同样可穿透。
+# **重定向也在这两道约束内**: aiohttp 自动跟随时只检查首跳 URL, 302 之后的目标
+# 不再复查。所以关闭自动跟随, 逐跳手动跟随, 每一跳都调 _check_stream_url.
 ALLOWED_STREAM_SUFFIXES = (
     ".bilivideo.com", ".bilivideo.cn", ".bilibili.com", ".biliapi.net",
     ".hdslb.com", ".szbdyd.com", ".akamaized.net", ".mcdn.bilivideo.com",
@@ -3357,27 +3356,46 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
 async def handle_version(request: web.Request) -> web.Response:
     """程序版本。前端顶栏右上角显示它, 用户据此判断自己是不是旧版。
 
-    **不联网**: 这里只报本地版本。查远端版本是「拉取弹幕」的事 —— 放在启动路径上
-    会让双击脚本后多等几秒(网络差时更久), 而用户多数时候并不需要知道。
+    **不联网**: 这里只报本地版本。查远端版本由 /api/app/latest 单独负责 ——
+    启动路径上不该等网络, 但也不该完全不查(那样用户永远不知道自己该更新)。
     """
     return api_ok(version=APP_VERSION)
 
 
+async def handle_app_latest(request: web.Request) -> web.Response:
+    """查远端最新程序版本。**只查版本, 不碰数据**, 供顶栏角标使用。
+
+    为什么与 /api/update/check 分开:
+      那个接口会读 data-index.json(8KB)并比对全部日期, 是给「拉取弹幕」用的。
+      顶栏角标只需要一个 tag, 让它走同一条重路径会让启动多等几百毫秒, 且一旦
+      数据源慢, 角标也跟着不出现 —— 两件事没有依赖关系, 不该绑在一起。
+
+    失败一律降级为 error 字段,**不抛 HTTP 错误**: 角标查不到就只是不显示红点,
+    不该在界面上弹任何东西。用户不需要为"检查更新失败"分心。
+    """
+    if not HAS_SRCFETCH:
+        return api_ok(version=APP_VERSION, remote=None, update=False,
+                      error="版本检查模块不可用", url="")
+    remote, err = None, ""
+    try:
+        remote = await asyncio.to_thread(srcfetch.latest_release_tag)
+    except Exception as e:                   # noqa: BLE001 —— 任何失败都只降级
+        err = str(e)[:120]
+    return api_ok(version=APP_VERSION, remote=remote,
+                  update=bool(remote) and appversion.is_newer(remote, APP_VERSION),
+                  error=err, url=srcfetch.release_page_url())
+
+
 async def handle_update_check(request: web.Request) -> web.Response:
-    """查有没有新数据 / 新程序版本。不发下载, 只比对清单。
+    """比对数据清单与远端程序版本。只返回结果, 不下载任何文件。
 
-    **数据更新与程序更新是两件事**, 必须分开报告:
-      - 数据: 每晚新增, 由本接口自动下载(dataupdate 只写 data/)。
-      - 程序: 代码变了, 本接口**只提示不下载**。自动覆盖代码的风险(半途中断、
-        覆盖用户改动、新代码要新依赖)远大于收益, 让它给一条命令让用户自己决定。
+    返回两个独立字段:
+      - 数据侧: 由 dataupdate.check 给出(local_days / need / new_days / new_bytes)。
+      - 程序侧: app_update 表示远端 tag 高于本地 VERSION; app_update_error 非空
+        表示**没有查到**远端版本。两者不能混用 —— 查不到不等于已是最新。
 
-    程序版本改读 **GitHub Releases**(不是清单里的 app_version): 清单只在作者
-    重新生成数据索引时才更新, 只改代码的提交会让"有新版本"这个提示永远不出现。
-    Release 的 tag 是专门为程序发布打的。
-
-    两路查询**互不拖累**: Release 查不到(限速/断网/还没发过)不该让数据更新
-    也失败, 反之亦然。所以程序版本单独 try, 失败时返回 available=False 并
-    带上原因, 前端据此决定要不要提"有新版本"。
+    程序版本读 GitHub Releases 而非清单里的 app_version: 清单只在重生成数据索引时
+    更新, 只改代码的提交不会改变它。
     """
     if not HAS_DATAUPDATE:
         raise ApiError(f"更新模块不可用: {_UPDATE_IMPORT_ERR}")
@@ -3599,6 +3617,7 @@ def build_app() -> web.Application:
     r.add_get("/api/update/progress", handle_update_progress)
     r.add_post("/api/update/pull", handle_update_pull)
     r.add_get("/api/version", handle_version)
+    r.add_get("/api/app/latest", handle_app_latest)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册
     return app
 

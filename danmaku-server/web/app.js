@@ -2828,15 +2828,90 @@
   window.addEventListener('resize', function () { drawOverview(); });
 
   /* ---------------- 启动 ---------------- */
-  // 版本号: 只报本地版本(不联网)。拿不到就留空 —— 不显示 "v0.0.0" 那种假版本,
-  // 那会让用户以为程序坏了。查远端版本是「拉取弹幕」顺带做的事。
+  // 版本号: 先显示本地版本(不联网), 再异步查一次远端。
+  // 为什么启动就查: 用户不会主动点「拉取弹幕」, 只靠那条路径等于从不通知。
+  // 为什么分成两次请求: /api/version 立即返回, 顶栏不会空着等网络;
+  //   远端查询单独失败也不影响版本号显示。
+  var verPop = null;
+  var verUpdate = null;      // {version, url} 有新版时才有值
+
+  /** 把 "v1.1.1" 写进版本号元素。用独立 span 而不是直接改 textContent:
+   *  角标与浮层是它的子元素, 直接改 textContent 会把它们一起清掉。
+   *  角标在这里就创建并常驻 —— 用 visibility 控制显隐, 保证顶栏宽度恒定,
+   *  有新版时不会把场次名/时钟往左挤。 */
+  function setVerText(v) {
+    if (!elAppVersion) { return; }
+    var num = elAppVersion.querySelector('.ver-num');
+    if (!num) {
+      num = document.createElement('span');
+      num.className = 'ver-num';
+      elAppVersion.insertBefore(num, elAppVersion.firstChild);
+    }
+    num.textContent = 'v' + v;
+    if (!elAppVersion.querySelector('.ver-dot')) {
+      var dot = document.createElement('span');
+      dot.className = 'ver-dot';
+      elAppVersion.appendChild(dot);
+    }
+  }
+
+  function buildVerPop() {
+    if (!elAppVersion || verPop) { return; }
+    verPop = document.createElement('div');
+    verPop.className = 'ver-pop';
+    verPop.hidden = true;
+    elAppVersion.appendChild(verPop);
+    // 点击版本号切换浮层(触屏没有悬停), 点击外部关闭
+    elAppVersion.addEventListener('click', function (e) {
+      if (e.target.tagName === 'A') { return; }
+      e.stopPropagation();
+      if (verUpdate) { verPop.hidden = !verPop.hidden; }
+    });
+    elAppVersion.addEventListener('mouseenter', function () {
+      if (verUpdate) { verPop.hidden = false; }
+    });
+    elAppVersion.addEventListener('mouseleave', function () {
+      if (verUpdate) { verPop.hidden = true; }
+    });
+    document.addEventListener('click', function () { verPop.hidden = true; });
+  }
+
+  /** 有新版时给版本号加角标与浮层; 没新版就什么都不做。 */
+  function markAppUpdate(info) {
+    if (!elAppVersion || !info || !info.update) {
+      // 无新版: 清掉角标, 标题还原成中性的。浮层留着不删 —— 它已经建好了,
+      // 删了下次再建会丢失事件绑定。
+      if (elAppVersion) {
+        elAppVersion.classList.remove('has-update');
+        elAppVersion.title = '程序版本号';
+        if (verPop) { verPop.hidden = true; }
+      }
+      return;
+    }
+    verUpdate = { version: info.remote, url: info.url || '' };
+    buildVerPop();
+    elAppVersion.classList.add('has-update');
+    elAppVersion.title = '';        // 用自绘浮层, 不用浏览器原生 tooltip
+    verPop.innerHTML =
+      '<b>有新版本 v' + escHtml(info.remote) + '</b><br>' +
+      '当前 v' + escHtml(info.version) + '<br>' +
+      '<a href="' + escHtml(info.url) + '" target="_blank" rel="noopener">' +
+      '打开下载页 →</a>' +
+      '<div class="ver-pop-hint">程序不会自动更新，下载后解压替换整个目录。' +
+      '数据在 data/ 下，不受影响。</div>';
+  }
+
   function loadAppVersion() {
     if (!elAppVersion) { return; }
     getJson('/api/version').then(function (j) {
       if (j && j.ok && j.version) {
-        elAppVersion.textContent = 'v' + j.version;
+        setVerText(j.version);
       }
     }).catch(function () { /* 版本显示失败不该影响任何功能 */ });
+    // 远端版本: 单独一条链路, 失败静默(角标不出现就是"没查到"或"已最新")
+    getJson('/api/app/latest').then(function (j) {
+      if (j && j.ok) { markAppUpdate(j); }
+    }).catch(function () { /* 查不到更新不是错误 */ });
   }
 
   function init() {

@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""build_release.py — 打便携包(轻量版 / 完整版)。
+"""build_release.py — 打便携包(对外只发轻量版, 完整版仅供本机手测)。
 
 用法:
     python tools/build_release.py --slim          # 不含 numpy + ffmpeg(约 63MB)
-    python tools/build_release.py --full          # 含自动校准(约 150MB+)
+    python tools/build_release.py --full          # 含自动校准(约 150MB+), 不发 Release
     python tools/build_release.py --slim --zip    # 额外打 zip
+
+为什么只发轻量版:
+  完整版多带 numpy(51MB) + imageio-ffmpeg(84MB), 而**校准结果已由作者算好并随
+  数据下发**(data/{日期}/align.json)。对普通玩家, 这部分体积换不到任何东西;
+  真需要重算的人本来就有开发环境, 从源码跑更合适。少一份附件, 用户少一次选择。
 
 为什么是"两个包一份代码":
   自动校准要 numpy(51MB) + imageio-ffmpeg(84MB), 而播放、弹幕、手动微调 offset
@@ -12,7 +17,7 @@
   所以"轻量版"只是打包时少放两个目录 —— 不是两套代码, 维护成本接近零。
 
   实测(拔掉 numpy/ffmpeg 起服务): /api/version、/api/days、/api/matchlist 全 ok,
-  选场次能读到 align/ 里的 offset(3122.393), 点播放 currentTime 在推进、
+  选场次能读到 align.json 里的 offset(3122.393), 点播放 currentTime 在推进、
   duration=3051、readyState=4、98 条弹幕在滚 —— 轻量版**真的能播**。
 
 为什么打包便携 Python 而不是要求用户自己装:
@@ -297,46 +302,41 @@ def copy_code(dst: Path) -> None:
 
 def write_notice(dst: Path, full: bool) -> None:
     """包内说明。用户解压后第一眼看到的就是它。"""
-    calib = ("可以（含 numpy + ffmpeg）" if full
-             else "**不可用**（轻量版未包含校准依赖；数据已由作者校准好，直接看即可）")
-    text = f"""弹幕时光机 {VERSION} — {'完整版' if full else '轻量版'}
+    calib = "含自动校准" if full else "本版不含（校准结果随数据下发，直接观看）"
+    title = f"弹幕时光机 {VERSION}" + ("（完整版）" if full else "")
+    text = f"""{title}
 ==============================================
 
 启动
 ----
-1. 解压到任意目录（路径可含中文）
-2. 双击 Start.bat
-3. 浏览器自动打开；若未打开，请手动访问 http://127.0.0.1:8789
-4. 首次使用需下载弹幕：点击底栏右侧「拉取弹幕」
+1. 双击 Start.bat，浏览器打开 http://127.0.0.1:8789
+2. 点击底栏「拉取弹幕」下载比赛数据
 
 停止
 ----
 关闭窗口，或双击 Stop.bat。
 
-手机或平板访问
---------------
-双击 Start-LAN.bat，窗口内会显示二维码。手机需与电脑连接同一 WiFi，
-扫码即可访问。若无法打开，多为 Windows 防火墙未放行，以管理员身份
-运行 PowerShell 执行一次（此后无需重复）：
+手机或平板
+----------
+双击 Start-LAN.bat，终端显示二维码，需与电脑同一 WiFi。
 
-  New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
-
-（仅在本机观看请使用 Start.bat，它不开放局域网。）
-
-数据需自行下载
---------------
-本包不含比赛数据（否则单包体积将达数百 MB，且新数据发布后需重新下载）。
-首次使用点击底栏「拉取弹幕」，从公共镜像下载，速度约 1-2 MB/s。
-
-自动校准：{calib}
+自动校准
+--------
+{calib}
 
 常见问题
 --------
-- 无法下载数据：多为网络问题，请稍后重试或更换时段。
-- 提示「数据校验失败」：说明数据源异常，并非本机故障，请稍后重试。
-- 端口 8789 被占用（提示「端口 8789 已被占用」）：可能上次的窗口未关闭，
-  先关闭旧窗口或运行 Stop.bat。如需更换端口，请复制 danmaku-server\\config.example.json
-  为 config.json，修改其中的 port。
+连不上下载通道      四个通道全不通，换个网络（如手机热点）再试
+数据校验失败        镜像缓存旧文件，程序已自动换通道；反复出现请报 issue
+提示 404            该天数据尚未发布，等待即可
+端口被占用          双击 Stop.bat
+手机打不开          防火墙未放行 8789，见下方命令
+
+下载走镜像(gh-proxy / ghfast / jsDelivr)，国内直连可用，不需要代理。
+报 issue: https://github.com/root9701/danmaku-timewarp/issues
+
+以管理员身份运行 PowerShell 执行一次（放行防火墙 8789）:
+New-NetFirewallRule -DisplayName "弹幕时光机" -Direction Inbound -Protocol TCP -LocalPort 8789 -Action Allow -Profile Private
 
 详见 README.md。
 """

@@ -65,11 +65,50 @@ button, input, select { font-family: inherit; }
   font-size: 12px; white-space: nowrap;
 }
 /* 程序版本: 放在最右侧、最小号、最暗 —— 它的作用是"想查时查得到",
-   不该跟场次名/时钟抢注意力。窄屏直接隐藏(见文末媒体查询)。 */
+   不该跟场次名/时钟抢注意力。窄屏直接隐藏(见文末媒体查询)。
+   有新版本时只加一个小圆点, 不放大字号、不变色块: 顶栏是看比赛的地方,
+   任何横向变宽都会挤动场次名。详细说明在悬停/点击后的浮层里。 */
 #app-version {
   color: var(--text-faint); font-size: 11px; white-space: nowrap;
   font-variant-numeric: tabular-nums; opacity: .7;
+  position: relative;
 }
+/* 角标: 版本号右上角一个小圆点。
+   为什么要 inline 而不是 absolute: absolute 会脱离行盒, 在不同字号/缩放下容易与
+   文字错位; inline 跟着基线走, 永远贴在版本号右侧。
+   为什么不用「有无角标改变宽度」: 顶栏是 flex 布局, 宽度一变整个右侧会横向跳动。
+   所以圆点的位置**常驻占位**(visibility), 只切换可见性。 */
+#app-version .ver-dot {
+  display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--blue);
+  margin-left: 3px;
+  vertical-align: super;
+  visibility: hidden;
+}
+/* 只在有新版时显示。用蓝色而不是红色: 这是"可以看看", 不是故障。 */
+#app-version.has-update { opacity: 1; cursor: pointer; }
+#app-version.has-update .ver-dot { visibility: visible; }
+
+/* 版本浮层: 悬停或点击展开。定位在版本号正下方、右对齐, 不遮挡顶栏其它内容。 */
+.ver-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  width: 260px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
+  font-size: 12px; line-height: 1.6; color: var(--text-dim);
+  white-space: normal; text-align: left;
+}
+/* 浮层与版本号之间有 8px 空隙, 鼠标穿过时父元素会触发 mouseleave 把浮层关掉。
+   这块透明桥接把空隙补上, 让指针始终落在元素内部。 */
+.ver-pop::before {
+  content: ''; position: absolute; top: -8px; left: 0; right: 0; height: 8px;
+}
+.ver-pop[hidden] { display: none; }
+.ver-pop b { color: var(--text); font-weight: 600; }
+.ver-pop a { color: var(--blue); text-decoration: none; }
+.ver-pop a:hover { text-decoration: underline; }
+.ver-pop .ver-pop-hint { color: var(--text-faint); margin-top: 4px; }
 
 /* ---------- 置顶总览 ---------- */
 .dock {

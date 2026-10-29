@@ -261,8 +261,11 @@ def write_index() -> int:
     from datetime import datetime, timezone
     idx["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = ROOT / "data-index.json"
+    # newline="\n" 是必须的: Windows 上 write_text 默认把 \n 转成 \r\n, 而
+    # .gitattributes 规定 *.json 用 LF —— 每次重生成都会留下整份换行 diff,
+    # 且提交后的文件与工作区字节不一致。
     out.write_text(json.dumps(idx, ensure_ascii=False, indent=2) + "\n",
-                   encoding="utf-8")
+                   encoding="utf-8", newline="\n")
     total_mb = sum(v["bytes"] for v in days.values()) / 1024 / 1024
     print(f"生成 {out.relative_to(ROOT)}: {len(days)} 天, "
           f"{sum(len(v['files']) for v in days.values())} 文件, {total_mb:.1f} MB")

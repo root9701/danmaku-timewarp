@@ -108,6 +108,15 @@
                   </select>
                 </label>
                 <label class="cpanel-chk"><input id="chk-dm-stroke" type="checkbox"> 文字描边</label>
+                <!-- 屏蔽词做成 tag: 每个词是一枚可单独删掉的芯片。
+                     为什么不用多行文本框: 想删掉中间某一个词, 文本框里只能手动找、
+                     手动删, 还容易连带删掉换行; 而屏蔽词本来就是一"条"一"条"的。 -->
+                <div class="cpanel-col">
+                  <span>屏蔽词 <em id="block-count"></em></span>
+                  <div id="block-tags" class="dm-tags"></div>
+                  <input id="inp-dm-block" type="text" spellcheck="false" autocomplete="off"
+                         placeholder="输入后按回车添加，例：赌狗">
+                </div>
                 <div class="cpanel-foot">
                   <button id="btn-dm-toggle" type="button" class="btn btn-sm">弹幕: 开</button>
                   <button id="btn-dm-reset" type="button" class="btn btn-sm btn-ghost">恢复默认</button>

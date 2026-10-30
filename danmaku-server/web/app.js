@@ -57,6 +57,7 @@
     area: 0.5, opacity: 0.9, size: 20, density: 1,
     speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
     stroke: false,     // 文字描边
+    block: [],         // 屏蔽词(数组, 每项一个词)。匹配索引见 blockWords / isBlocked
     spoiler: true      // 防剧透(默认开): 隐藏进度条标记、分P 色块、局数文案
   };
   var state = {
@@ -661,6 +662,7 @@
     state.danmaku = parseDanmaku(dmText);
     state.applied = true;
     recomputeRels();
+    recountBlocked();                 // 面板上的"已挡 N 条"要跟着换场次一起更新
     resetDanmakuIndex();
     dmList.innerHTML = ''; hideSc();
     syncTitleForPlayback();
@@ -1140,17 +1142,41 @@
 
   /* ---- 控制条弹出菜单(画质/倍速/弹幕设置) ----
    * 三个菜单共用一套开关逻辑: 同时只开一个, 点外面关掉, Esc 关掉。
-   * 全屏时菜单是 z-index 最高的元素, 不会被控制条的自动隐藏规则影响
-   * (隐藏只作用于 #ctrl-bar 的 opacity, 而菜单在它内部 —— 所以鼠标进菜单时
-   *  要让 fsReveal 持续刷新, 见下面的 hover 判断)。
+   * 菜单在 #ctrl-bar 内部 —— 而控制条的显隐是 hover 驱动的, 所以"菜单开着"
+   * 必须让控制条常亮(见 style.css 的 .menu-open), 否则鼠标一离开菜单就淡出。
    */
   var MENU_IDS = ['menu-quality', 'menu-rate', 'panel-dm-set'];
 
+  function anyMenuOpen() {
+    for (var i = 0; i < MENU_IDS.length; i++) {
+      var el = $(MENU_IDS[i]);
+      if (el && !el.hidden) { return true; }
+    }
+    return false;
+  }
+
+  // 控制条常亮的开关。挂在 .player-wrap 上而不是 #ctrl-bar: 后者是绝对定位的
+  // 子元素, 由父级的 hover/fullscreen 规则统一控制, 加在这里不会被覆盖。
+  function syncMenuState() {
+    var w = videoEl.closest('.player-wrap');
+    if (w) { w.classList.toggle('menu-open', anyMenuOpen()); }
+  }
+
   function closeMenus() {
+    // 面板隐藏后焦点若还留在里面的输入框, isTypingTarget 会让空格/方向键全部失效,
+    // 用户会以为"播放器卡了"。所以关菜单时把焦点一并交出去。
+    var act = document.activeElement;
+    if (act && act !== document.body) {
+      for (var i = 0; i < MENU_IDS.length; i++) {
+        var box = $(MENU_IDS[i]);
+        if (box && box.contains(act)) { act.blur(); break; }
+      }
+    }
     MENU_IDS.forEach(function (id) {
       var el = $(id);
       if (el) { el.hidden = true; }
     });
+    syncMenuState();
   }
   function toggleMenu(id) {
     var el = $(id);
@@ -1161,6 +1187,7 @@
     if (id === 'menu-rate') { renderRateMenu(); }
     if (id === 'menu-quality') { renderQualityMenu(); }
     el.hidden = false;
+    syncMenuState();
   }
   // 点控制条以外的地方关菜单。用 pointerdown 而非 click: 拖进度条时也要收起菜单。
   document.addEventListener('pointerdown', function (e) {
@@ -1394,12 +1421,145 @@
   // settings 的声明已上移到文件顶部(loadMatchList 要读 settings.spoiler, 见那里的注释)。
   // 「恢复默认」用的基准 —— 必须与上面 settings 的初始值一致,
   // 两处写不一样的默认值, 会让"恢复默认"恢复出一个用户从没见过的状态。
-  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false };
+  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false, block: [] };
   // 初始值与 settings 的默认字号一致(20), 免得"加载完成前用 26、之后跳成 20"。
   // L1429 会按 settings.size 重算, 这里只是首帧的占位。
   var FONT = 'bold 20px "Microsoft YaHei", "PingFang SC", sans-serif';
   var TRACK_H = 28;
   var MAX_ONSCREEN = 160;
+
+  /* ---------------- 屏蔽词 ----------------
+   * 判定是「整条丢弃」: 命中后既不上屏, 也不进右侧列表 —— 与「弹幕数量」的抽稀
+   * 走同一个出口(emitDm 开头 return)。为什么不定成"只挡飘屏": 那样会出现
+   * 「屏幕上没有、右侧列表里有」的分裂, 而抽稀本来就是整条丢的, 一套语义更好记。
+   *
+   * 匹配方式选**子串**, 不选正则: 屏蔽是「有人刷屏了, 现场填一手」的救火操作,
+   * 在面板里手滑多打一个 `(` 就整条规则静默失效, 而用户看不出为什么没生效。
+   *
+   * 存储形态是**数组**, 不是一整串文本: 界面上每个词是一枚可单独删掉的 tag,
+   * 而"文本 ↔ tag"的来回转换每次都要处理分隔符与空行, 存数组就没有这层损耗。
+   * settings.block 存**用户原样输入**(用于显示), blockWords 存归一化后的(用于匹配)。
+   */
+  var blockWords = [];                    // 归一化后的屏蔽词, 空串已剔除
+
+  // 全角→半角 + 转小写。B站 弹幕里「ＡＢＣ」「１００」很常见, 不归一化就会
+  // 「填了 abc 却屏蔽不掉 ＡＢＣ」—— 用户只会觉得这功能坏了。
+  function normBlock(s) {
+    return String(s == null ? '' : s)
+      .replace(/[\uff01-\uff5e]/g, function (c) {
+        return String.fromCharCode(c.charCodeAt(0) - 0xfee0);
+      })
+      .replace(/\u3000/g, ' ')
+      .toLowerCase();
+  }
+
+  // 把一整段文本拆成词表。只在**两处**用: 老版本存下的字符串(升级迁移)、
+  // 以及粘贴「一行一个」的批量输入。空格不算分隔 —— "gg ez" 整条才是目标。
+  function parseBlockWords(text) {
+    var raw = String(text == null ? '' : text).split(/[\n\r,，;；]+/);
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var w = raw[i].trim();
+      if (w) { out.push(w); }
+    }
+    return out;
+  }
+
+  // 归一化词表(匹配用): 去重 + 去空 + 长词优先。
+  // 长的优先只影响性能不影响结果, 但先比长的能更早命中 → 高频词少扫几个字符。
+  function buildBlockIndex(words) {
+    var out = [], seen = {};
+    for (var i = 0; i < words.length; i++) {
+      var w = normBlock(words[i]).trim();
+      if (!w || seen[w]) { continue; }
+      seen[w] = 1;
+      out.push(w);
+    }
+    out.sort(function (a, b) { return b.length - a.length; });
+    return out;
+  }
+
+  function isBlocked(d) {
+    if (!blockWords.length) { return false; }
+    var s = d._bn;
+    if (s === undefined) { s = d._bn = normBlock(d.t); }
+    for (var i = 0; i < blockWords.length; i++) {
+      if (s.indexOf(blockWords[i]) >= 0) { return true; }
+    }
+    return false;
+  }
+
+  // 整晚口径的统计(不是"已经播过的"), 让用户填完就知道这条规则挡了多少条。
+  // 场次只有几千条, 一次线性扫描可忽略; 只在换词/换场次时算, 不挂在每帧上。
+  function recountBlocked() {
+    var el = $('block-count');
+    if (!el) { return; }
+    var dm = state.danmaku || [];
+    // 一条弹幕都还没加载时**不说"没有命中"**: 用户刚填完词就被告知"没命中",
+    // 只会以为功能坏了; 而真相是还没选场次。这种情况下留白, 等加载完再说。
+    if (!dm.length) { el.textContent = ''; return; }
+    if (!blockWords.length) { el.textContent = ''; return; }
+    var hit = 0;
+    for (var i = 0; i < dm.length; i++) { if (isBlocked(dm[i])) { hit++; } }
+    el.textContent = hit ? ('已挡 ' + hit + ' / ' + dm.length + ' 条') : '没有命中';
+  }
+
+  // 加一个词。**重复的不加**(归一化后比): 否则「GG」和「gg」会并排出现两枚
+  // 一模一样的 tag, 而它们对匹配毫无区别。
+  function addBlockWord(raw) {
+    var w = String(raw == null ? '' : raw).trim();
+    if (!w) { return false; }
+    var key = normBlock(w);
+    for (var i = 0; i < settings.block.length; i++) {
+      if (normBlock(settings.block[i]) === key) { return false; }
+    }
+    settings.block.push(w);
+    return true;
+  }
+
+  function removeBlockWord(idx) {
+    if (idx < 0 || idx >= settings.block.length) { return; }
+    settings.block.splice(idx, 1);
+  }
+
+  // 词表变了之后统一重建索引 + 重画 tag + 重算统计
+  function refreshBlockUI() {
+    blockWords = buildBlockIndex(settings.block);
+    renderBlockTags();
+    recountBlocked();
+  }
+
+  function renderBlockTags() {
+    var box = $('block-tags');
+    if (!box) { return; }
+    box.innerHTML = '';
+    // 用户原样的写法保留显示(填 GG 就显示 GG), 归一化只用于匹配
+    settings.block.forEach(function (w, i) {
+      var tag = document.createElement('span');
+      tag.className = 'dm-tag';
+      var txt = document.createElement('span');
+      txt.textContent = w;
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = '不再屏蔽「' + w + '」';
+      del.setAttribute('data-idx', String(i));
+      tag.appendChild(txt);
+      tag.appendChild(del);
+      box.appendChild(tag);
+    });
+  }
+
+  // 兼容老版本存下的字符串: 1.2.0 之前 settings.block 是一整段文本。
+  // 读端必须容忍两种形状 —— 用户升级后不该丢掉已经配好的屏蔽词。
+  function normalizeBlockSetting(v) {
+    if (Array.isArray(v)) {
+      return v.filter(function (x) { return typeof x === 'string' && x.trim(); })
+              .map(function (x) { return x.trim(); });
+    }
+    if (typeof v === 'string') { return parseBlockWords(v); }
+    return [];
+  }
 
   function applySettings() {
     try {
@@ -1411,6 +1571,7 @@
         if ([20, 26, 34].indexOf(+saved.size) >= 0) { settings.size = +saved.size; }
         if (isFinite(saved.speed)) { settings.speed = Math.min(2, Math.max(0.6, +saved.speed)); }
         if (typeof saved.stroke === 'boolean') { settings.stroke = saved.stroke; }
+        if (saved.block !== undefined) { settings.block = normalizeBlockSetting(saved.block); }
         if (typeof saved.spoiler === 'boolean') { settings.spoiler = saved.spoiler; }
         if (isFinite(saved.rate) && saved.rate >= 0.25 && saved.rate <= 4) { state.rate = +saved.rate; }
         if (typeof saved.autoAdvance === 'boolean') { state.autoAdvance = saved.autoAdvance; }
@@ -1425,7 +1586,7 @@
       localStorage.setItem('dm-player-settings',
         JSON.stringify({ area: settings.area, opacity: settings.opacity,
           size: settings.size, density: settings.density, speed: settings.speed,
-          stroke: settings.stroke, spoiler: settings.spoiler,
+          stroke: settings.stroke, spoiler: settings.spoiler, block: settings.block,
           rate: state.rate, autoAdvance: state.autoAdvance }));
     } catch (e) {}
   }
@@ -1442,6 +1603,9 @@
     if (spd) { spd.value = String(Math.round(settings.speed * 100)); }
     var chk = $('chk-dm-stroke');
     if (chk) { chk.checked = !!settings.stroke; }
+    // 屏蔽词的派生状态(索引 + tag 列表 + 统计)由 refreshBlockUI 统一重建,
+    // 见下方屏蔽词区块 —— 这里不再单独维护一份, 免得两处不一致。
+    refreshBlockUI();
     syncSpoilerBtn();
     active.length = 0;
     resetTracks();
@@ -1516,6 +1680,10 @@
   }
 
   function emitDm(d) {
+    // 屏蔽词: 放在数量抽稀**之前**。两处都是整条丢弃, 但顺序有讲究 ——
+    // 先筛屏蔽词, 抽稀的哈希分布才是"剩下的弹幕"里的均匀抽样, 而不是
+    // "先抽稀再屏蔽"导致屏蔽率高的文本恰好落在被抽掉的那一半、看起来没生效。
+    if (isBlocked(d)) { return; }
     // 数量抽稀: 按文本哈希判定, 同一条弹幕在任意时间点/来回拖动下判定一致(不闪变)
     if (settings.density < 1) {
       var h = 0, s = d.t;
@@ -2657,6 +2825,8 @@
     fsHideTimer = setTimeout(function () {
       var w2 = fsWrap();
       if (!w2 || !document.fullscreenElement) { return; }
+      // 菜单开着就不自动隐藏: 用户正在面板里点选/输入, 藏掉等于打断操作
+      if (anyMenuOpen()) { return; }
       // 鼠标停在控制条上时不要藏(否则想点按钮它会消失)
       if (w2.matches(':hover') && document.getElementById('ctrl-bar').matches(':hover')) { return; }
       w2.classList.remove('ctrl-visible');
@@ -2797,11 +2967,90 @@
       reflectSettings(); saveSettings();
     });
   }
+  // 屏蔽词: 输入框回车/逗号/分号即添加, Backspace 在空输入时删最后一个。
+  // 为什么这几种键都收: 用户习惯是从别处复制一行一个的列表直接粘进来 ——
+  // 粘贴时浏览器会把换行变成空格或直接触发一次 input, 分号逗号兜住那种情况。
+  var inpDmBlock = $('inp-dm-block');
+  var blockTagsBox = $('block-tags');
+  if (inpDmBlock) {
+    // 输入法组词状态: 组词期间的回车/逗号是**给输入法的**(确认候选词),
+    // 不能当成"添加一枚 tag", 否则打「赌狗」时会先加进去半截拼音。
+    // Safari/部分输入法只在 keydown 上给 isComposing, 也有只给 keyCode 229 的,
+    // 两种都认。
+    var composing = false;
+    inpDmBlock.addEventListener('compositionstart', function () { composing = true; });
+    inpDmBlock.addEventListener('compositionend', function () { composing = false; });
+
+    function commitBlockInput() {
+      var parts = parseBlockWords(inpDmBlock.value);
+      var added = false;
+      for (var i = 0; i < parts.length; i++) { added = addBlockWord(parts[i]) || added; }
+      inpDmBlock.value = '';
+      if (added) {
+        saveSettings();
+        refreshBlockUI();
+      } else if (parts.length) {
+        showToast('「' + parts[0] + '」已经在屏蔽列表里');
+      }
+    }
+    inpDmBlock.addEventListener('keydown', function (e) {
+      if (composing || e.isComposing || e.keyCode === 229) { return; }
+      if (e.key === 'Enter' || e.key === ',' || e.key === '，' ||
+          e.key === ';' || e.key === '；') {
+        e.preventDefault();                       // 逗号不该真的打进输入框
+        commitBlockInput();
+        return;
+      }
+      // 空输入时按退格删最后一枚 tag —— 和主流 tag 输入框手感一致
+      if (e.key === 'Backspace' && !inpDmBlock.value && settings.block.length) {
+        e.preventDefault();
+        removeBlockWord(settings.block.length - 1);
+        saveSettings();
+        refreshBlockUI();
+        return;
+      }
+      // Esc: 只收起面板, 不冒泡到全局的"Esc 关菜单"再走一遍(会多一次焦点处理)
+      if (e.key === 'Escape') { e.stopPropagation(); inpDmBlock.blur(); closeMenus(); }
+    });
+    // 失焦时把没提交的残留也收进去(用户打完词直接点别处, 不该白打)。
+    // **组词中失焦不算完**: 中文输入法切窗口时也会触发 blur, 那时 value 里
+    // 可能只有半截拼音, 提交进去就是一条垃圾屏蔽词。
+    inpDmBlock.addEventListener('blur', function () {
+      if (composing) { return; }
+      if (inpDmBlock.value.trim()) { commitBlockInput(); }
+    });
+    // 粘贴「一行一个」: 默认会被当成一次输入, 这里主动拆开逐条加
+    inpDmBlock.addEventListener('paste', function (e) {
+      var txt = e.clipboardData && e.clipboardData.getData('text');
+      if (!txt || !/[\n\r,，;；]/.test(txt)) { return; }   // 单词粘贴走默认行为
+      e.preventDefault();
+      var parts = parseBlockWords(txt);
+      var added = false;
+      for (var i = 0; i < parts.length; i++) { added = addBlockWord(parts[i]) || added; }
+      if (added) { saveSettings(); refreshBlockUI(); }
+      inpDmBlock.value = '';
+    });
+  }
+  // 删 tag 用事件委托: tag 是动态重建的, 逐个绑定会在每次重画后失效
+  if (blockTagsBox) {
+    blockTagsBox.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button[data-idx]') : null;
+      if (!btn) { return; }
+      removeBlockWord(parseInt(btn.getAttribute('data-idx'), 10));
+      saveSettings();
+      refreshBlockUI();
+    });
+  }
   var btnDmReset = $('btn-dm-reset');
   if (btnDmReset) {
     btnDmReset.addEventListener('click', function () {
-      Object.keys(DM_DEFAULTS).forEach(function (k) { settings[k] = DM_DEFAULTS[k]; });
-      reflectSettings(); saveSettings();
+      Object.keys(DM_DEFAULTS).forEach(function (k) {
+        // block 是数组, 必须拷贝 —— 直接赋值会让 settings.block 与 DM_DEFAULTS.block
+        // 指向同一个数组, 之后再加词就永久污染了"默认值", 下次恢复默认清不掉。
+        var v = DM_DEFAULTS[k];
+        settings[k] = Array.isArray(v) ? v.slice() : v;
+      });
+      reflectSettings(); saveSettings();   // reflectSettings → refreshBlockUI, 统计与 tag 一并归零
       showToast('弹幕设置已恢复默认');
     });
   }

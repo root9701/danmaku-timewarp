@@ -216,10 +216,20 @@ button, input, select { font-family: inherit; }
   opacity: 0; transition: opacity .25s;
 }
 .player-wrap:hover #ctrl-bar { opacity: 1; }
+/* 菜单开着时控制条必须常亮。
+   为什么单靠 :hover 不够: 输入法选词浮窗是**系统窗口**, 鼠标移上去时页面收不到
+   hover, .player-wrap:hover 立刻为假 —— 而弹幕设置面板挂在 #ctrl-bar 内部,
+   于是"正在选词"的那一刻整块面板淡出, 看起来就是"打字时浮窗自己消失了"。
+   .menu-open 由 app.js 的 syncMenuState() 按菜单真实开关状态维护。 */
+.player-wrap.menu-open #ctrl-bar { opacity: 1; }
 .player-wrap:fullscreen #ctrl-bar { opacity: 0; }
 .player-wrap:fullscreen.ctrl-visible #ctrl-bar { opacity: 1; }
+.player-wrap:fullscreen.menu-open #ctrl-bar { opacity: 1; }
 .player-wrap:fullscreen.ctrl-hidden,
 .player-wrap:fullscreen.ctrl-hidden * { cursor: none; }
+/* 控制条隐藏时不该把「隐藏」传给菜单: 上面两条已保证菜单开着时不隐藏,
+   这里再兜一层 —— 菜单自身始终按 display 显隐, 不吃父级的 opacity。 */
+.player-wrap.menu-open .cmenu { opacity: 1; }
 
 #prog-row { display: flex; align-items: center; width: 100%; }
 #btn-row { display: flex; align-items: center; gap: 8px; min-height: 28px; flex-wrap: wrap; }
@@ -379,6 +389,44 @@ button, input, select { font-family: inherit; }
   padding: 8px 2px 6px; font-size: 12px; color: #b9bfc9; cursor: pointer;
 }
 .cpanel-chk input { accent-color: var(--blue); }
+/* 屏蔽词 tag: 芯片式, 每个词一枚。
+   min-height 给 20px 是为了"一个词都没有"时这块不塌成 0 高 —— 否则失焦后
+   面板高度会跳一下(用户会以为点坏了)。 */
+.cpanel-col {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 2px 2px; font-size: 12px; color: #b9bfc9;
+}
+.cpanel-col em { font-style: normal; color: var(--blue); font-weight: 400; }
+.dm-tags {
+  display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px;
+  max-height: 96px; overflow-y: auto;
+}
+.dm-tags:empty::before {
+  content: "还没有屏蔽词"; color: #5c5f66; font-size: 12px; align-self: center;
+}
+.dm-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 100%; padding: 2px 4px 2px 8px;
+  background: rgba(91, 140, 255, .16); border: 1px solid rgba(91, 140, 255, .38);
+  border-radius: 10px; color: #cdd8f5; font-size: 12px; line-height: 1.5;
+}
+.dm-tag span {
+  max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-tag button {
+  flex: none; width: 14px; height: 14px; padding: 0; border: none;
+  border-radius: 50%; background: none; color: #8fa4d6;
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.dm-tag button:hover { background: rgba(255, 255, 255, .16); color: #fff; }
+.cpanel-col input[type="text"] {
+  width: 100%;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 5px 7px; font: inherit; font-size: 12px;
+}
+.cpanel-col input[type="text"]::placeholder { color: #5c5f66; }
+.cpanel-col input[type="text"]:focus { outline: none; border-color: var(--blue); }
 .cpanel-foot {
   display: flex; gap: 8px; padding-top: 6px;
   border-top: 1px solid var(--line); margin-top: 4px;

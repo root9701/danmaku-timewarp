@@ -2447,10 +2447,14 @@
     setAlignStatus('正在获取 Riot 赛程并搜索B站官方回放（约数秒到十几秒）…', '');
     getJson('/api/discover?date=' + enc(date)).then(function (j) {
       if (j && j.ok && Array.isArray(j.matches)) {
-        var matched = 0;
-        j.matches.forEach(function (m) { if (m && m.found) { matched++; } });
+        var matched = 0, missing = 0;
+        j.matches.forEach(function (m) {
+          if (m && m.found) { matched++; } else { missing++; }
+        });
+        var added = j.added || 0;
         setAlignStatus('发现 ' + (j.riot_count || 0) + ' 场, 已匹配 ' + matched +
-          ' 个回放BV' + (matched < (j.matches.length) ? '（其余回放未上传或未搜到，稍后可再点刷新回填）' : ''), 'ok');
+          ' 个回放BV' + (added > 0 ? '，新增 ' + added + ' 场到列表' : '') +
+          (missing > 0 ? '（' + missing + ' 场回放未上传或未搜到，稍后可再点刷新回填）' : ''), 'ok');
         loadMatchList(date);   // 重载场次下拉
       } else {
         setAlignStatus('赛程刷新失败: ' + (j && j.error ? j.error : '未知错误'), 'err');

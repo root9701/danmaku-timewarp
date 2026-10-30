@@ -1440,8 +1440,8 @@ def _matchlist_for_session(date: str, lists: dict):
 # 数据链: ① Riot getSchedule(Worlds) 取"北京时间 date 当天 01:00-09:00"的比赛块生成
 # 场次草稿(队名顺序按 Riot 返回顺序) -> ② B站 web 搜索(带 buvid3 预热+浏览器UA)
 # 官方账号 哔哩哔哩英雄联盟赛事(mid=50329118) 的单场回放, 标题同时含两队名(词边界+
-# 大小写/英文别名不敏感)取 BV -> ③ 写回 matches.json: 列表缺失/为空才整体写入,
-# 已存在只回填空 bv 条目, 绝不覆盖已有 bv/offset_sec/title。
+# 大小写/英文别名不敏感)取 BV -> ③ 写回 matches.json: 列表缺失/为空整体写入草稿;
+# 已存在则回填空 bv/缺失 start_ms, 并把列表尚未收录的场次追加进去, 绝不覆盖已有 bv/offset_sec/title。
 # 全部网络请求走阻塞 urllib + asyncio.to_thread, 8 秒超时, 不堵事件循环。
 # Riot API key: 优先取环境变量 RIOT_API_KEY; 未设置时回落到下面这个公开社区 key
 # (vickz84259 社区文档里公开的 key, 非私密凭据, 调研时实测可用)。
@@ -1771,6 +1771,98 @@ def _title_teams(title) -> tuple | None:
     return (a, b) if a and b else None
 
 
+def _teams_key(title) -> frozenset | None:
+    """标题里的对阵双方(小写集合), 用于判"这两条是不是同一场"。顺序无关:
+    同一天两场的 Riot 顺序与官方回放标题顺序常常相反。"""
+    teams = _title_teams(title)
+    return frozenset(t.lower() for t in teams) if teams else None
+
+
+def _same_match(entry: dict, m: dict) -> bool:
+    """已有条目与草稿是不是同一场: 队名集合相同, 或赛程开始时间相同。
+
+    时间这一条是兜底: 标题被改成别的写法(解析不出队名)时, 仅靠队名判重会
+    把同一场当新场再追加一条, 列表里就出现两条同名比赛。
+    """
+    ks = _teams_key(entry.get("title"))
+    if ks is not None and ks == frozenset(t.lower() for t in m["teams"]):
+        return True
+    sm = entry.get("start_ms")
+    return (isinstance(sm, (int, float)) and not isinstance(sm, bool)
+            and int(sm) == int(m["start"].timestamp() * 1000))
+
+
+def _discover_need(lst: list, draft: list) -> bool:
+    """要不要落盘: 有空 bv/缺 start_ms 的可识别条目, 或 draft 里有列表尚未收录的场次。
+
+    最后一条是必须的 —— 旧实现只问"有没有要回填的", 于是当天第二场回放上线后,
+    列表里第一场已经完整, 判据恒为 False, 新场次永远刷不进来。
+    """
+    if not lst:
+        return bool(draft)
+    for e in lst:
+        if not _teams_key(e.get("title")):
+            continue
+        if (not str(e.get("bv") or "").strip()
+                or not isinstance(e.get("start_ms"), (int, float))):
+            return True
+    return any(not any(_same_match(e, m) for e in lst) for m in draft)
+
+
+def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None:
+    """把 Riot 草稿合进 matches["lists"][date]。
+
+    已有条目只补**空** bv 与缺失的 start_ms, 绝不覆盖用户/对齐已产生的值;
+    草稿里列表还没有的场次追加进去(第二场回放上线后必须能刷出来)。
+    追加后按赛程开始时间重排, 否则新场次会挂在末尾、与开赛顺序不一致。
+    """
+    def stamp(m) -> int:
+        return int(m["start"].timestamp() * 1000)
+
+    lst = matches["lists"].get(date)
+    if not lst:
+        if draft:
+            matches["lists"][date] = [
+                {"title": m["title"], "bv": m["bv"], "offset_sec": 0,
+                 "start_ms": stamp(m)} for m in draft]
+            result["created"] = len(draft)
+        return
+
+    for m in draft:
+        if any(_same_match(e, m) for e in lst):
+            continue
+        lst.append({"title": m["title"], "bv": m["bv"], "offset_sec": 0,
+                    "start_ms": stamp(m)})
+        result["added"] += 1
+
+    if result["added"]:
+        # 缺 start_ms 的旧条目沉到末尾并保持原相对顺序(stable sort)
+        lst.sort(key=lambda e: (not isinstance(e.get("start_ms"), (int, float)),
+                                e.get("start_ms") or 0))
+
+    for entry in lst:
+        # 回填赛程开始时间(按队名匹配)。这是"该场次应该发生在直播的哪一段"的
+        # 唯一权威来源: 对齐算法用它排除早上重播/回顾里的伪峰。
+        if not isinstance(entry.get("start_ms"), (int, float)):
+            want0 = _teams_key(entry.get("title"))
+            if want0:
+                for m in draft:
+                    if frozenset(t.lower() for t in m["teams"]) == want0:
+                        entry["start_ms"] = stamp(m)
+                        result["time_filled"] += 1
+                        break
+        if str(entry.get("bv") or "").strip():
+            continue
+        want = _teams_key(entry.get("title"))
+        if not want:
+            continue
+        for m in draft:
+            if frozenset(t.lower() for t in m["teams"]) == want and m["bv"]:
+                entry["bv"] = m["bv"]
+                result["backfilled"] += 1
+                break
+
+
 async def handle_discover(request: web.Request) -> web.Response:
     raw_date = (request.query.get("date") or "").strip()
     if not DATE_RE.fullmatch(raw_date):
@@ -1788,57 +1880,23 @@ async def handle_discover(request: web.Request) -> web.Response:
     for m in draft:
         m["bv"] = await asyncio.to_thread(
             bili_search_replay, m["teams"][0], m["teams"][1], date)
-    # c) 写回: 列表缺失/为空 -> 整体写入草稿; 已存在 -> 只回填空 bv/开始时间, 其余字段不动
-    result = {"created": 0, "backfilled": 0, "time_filled": 0}
+    # c) 写回: 已有条目只补空 bv/缺失 start_ms, 草稿里列表还没有的场次追加进去
+    result = {"created": 0, "added": 0, "backfilled": 0, "time_filled": 0}
 
     def _mut(matches):
-        lst = matches["lists"].get(date)
-        if not lst:
-            if draft:
-                matches["lists"][date] = [
-                    {"title": m["title"], "bv": m["bv"], "offset_sec": 0,
-                     "start_ms": int(m["start"].timestamp() * 1000)} for m in draft]
-                result["created"] = len(draft)
-            return
-        for entry in lst:
-            # 回填赛程开始时间(按队名匹配)。这是"该场次应该发生在直播的哪一段"的
-            # 唯一权威来源: 对齐算法用它排除早上重播/回顾里的伪峰。
-            if not isinstance(entry.get("start_ms"), (int, float)):
-                teams = _title_teams(entry.get("title"))
-                if teams:
-                    want0 = {t.lower() for t in teams}
-                    for m in draft:
-                        if {t.lower() for t in m["teams"]} == want0:
-                            entry["start_ms"] = int(m["start"].timestamp() * 1000)
-                            result["time_filled"] += 1
-                            break
-            if str(entry.get("bv") or "").strip():
-                continue
-            teams = _title_teams(entry.get("title"))
-            if not teams:
-                continue
-            want = {t.lower() for t in teams}
-            for m in draft:
-                if {t.lower() for t in m["teams"]} == want and m["bv"]:
-                    entry["bv"] = m["bv"]
-                    result["backfilled"] += 1
-                    break
+        _apply_discover(matches, date, draft, result)
 
     if draft:
         # 无变更就不落盘(省一次写); 有变更走锁内 read-modify-write
         probe = await asyncio.to_thread(load_matches)
-        need = (not probe["lists"].get(date)) or any(
-            (not str(e.get("bv") or "").strip() and _title_teams(e.get("title")))
-            or (not isinstance(e.get("start_ms"), (int, float)) and _title_teams(e.get("title")))
-            for e in (probe["lists"].get(date) or []))
-        if need:
+        if _discover_need(probe["lists"].get(date) or [], draft):
             if not await asyncio.to_thread(update_matches, _mut):
                 raise ApiError("matches.json 写入失败")
     out = [{"idx": i, "title": m["title"], "bv": m["bv"], "found": bool(m["bv"])}
            for i, m in enumerate(draft)]
     return api_ok(matches=out, riot_count=len(draft), date=date, data_date=raw_date,
-                  created=result["created"], backfilled=result["backfilled"],
-                  time_filled=result["time_filled"])
+                  created=result["created"], added=result["added"],
+                  backfilled=result["backfilled"], time_filled=result["time_filled"])
 
 
 # ---- /api/playurl: 通过B站网页接口取 mp4 直链 ----

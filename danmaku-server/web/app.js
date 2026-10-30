@@ -2311,7 +2311,8 @@
         appNotice = '；程序版本没查到（' + j.app_update_error +
           '），是否有新版未知';
       }
-      if (!j.need && !(j.afp_fix_days || []).length) {
+      var alignFix = (j.align_fix_days || []);
+      if (!j.need && !(j.afp_fix_days || []).length && !alignFix.length) {
         setUpdateStatus('弹幕已是最新（本地 ' + (j.local_days || []).length +
           ' 天，远端最新 ' + (j.remote_latest || '?') + '）' + appNotice,
           appNotice ? 'warn' : 'ok');
@@ -2319,10 +2320,15 @@
       }
       var days = (j.new_days || []).join('、');
       if (!j.need) {
-        // 只剩音频指纹没补齐: 说清"补什么", 否则用户以为数据没变却又要下载
-        setUpdateStatus('补齐 ' + (j.afp_fix_days || []).length +
-          ' 天的音频指纹（' + fmtMB(j.new_bytes) + '）：' +
-          (j.afp_fix_days || []).join('、') + '。开始下载…', '');
+        // 只剩补指纹/补校准: 说清"补什么", 否则用户以为数据没变却又要下载
+        var extra = [];
+        if ((j.afp_fix_days || []).length) {
+          extra.push('补齐 ' + j.afp_fix_days.length + ' 天的音频指纹');
+        }
+        if (alignFix.length) {
+          extra.push('更新 ' + alignFix.length + ' 天的校准结果');
+        }
+        setUpdateStatus(extra.join('，') + '（' + fmtMB(j.new_bytes) + '）。开始下载…', '');
       } else {
         setUpdateStatus('远端有 ' + j.need + ' 天新弹幕（' + fmtMB(j.new_bytes) +
           '）：' + days + '。开始下载…', '');

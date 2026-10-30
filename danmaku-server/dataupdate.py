@@ -110,10 +110,20 @@ def plan(index: dict, have: dict) -> list:
     return datalist.plan(index, have)
 
 
-def afp_fix_days(index: dict, have: dict, data_dir: Path,
-                 want_afp: bool) -> list:
+def afp_fix_days(index: dict, have: dict, data_dir: Path, want_afp: bool) -> list:
     """已有日期里缺 afp 的那些。见 datalist.afp_fix_days。"""
     return datalist.afp_fix_days(index, have, data_dir.parent, want_afp)
+
+
+def align_fix_days(index: dict, have: dict, data_dir: Path) -> list:
+    """已有日期里 align.json 内容过期的那些。见 datalist.stale_align_days。
+
+    发布版不带校准能力, 作者重算的对齐结果必须能自动到老用户手里; plan()
+    只看 manifest 在不在, 已下过的整天会被永久跳过, 故单独按 sha256 比对。
+    """
+    root = data_dir.parent
+    local = {rel: _sha_of(root / rel) for rel in datalist.only_aligns(index)}
+    return datalist.stale_align_days(index, have, local)
 
 
 def _safe_rel(rel: str) -> str:
@@ -137,6 +147,13 @@ def _sha256_file(p: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
+def _sha_of(p: Path) -> str:
+    """文件存在则返回 sha256, 否则空串(缺文件即"内容对不上")。"""
+    try:
+        return _sha256_file(p) if p.is_file() else ""
+    except OSError:
+        return ""
 
 def _local_ok(p: Path, want, sha, rel: str) -> bool:
     """本地已有文件是否可直接用(不必重下)。
@@ -263,18 +280,23 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
     have = local_days(data_dir)
     todo = plan(idx, have)
     fix = afp_fix_days(idx, have, data_dir, want_afp)
+    redo = align_fix_days(idx, have, data_dir)
     new_bytes = 0
     for _, entry in todo:
         total, afp = datalist.day_bytes(entry)
         new_bytes += total if want_afp else total - afp
     for _day, entry in fix:
         new_bytes += datalist.day_bytes(entry)[1]
+    for _day, entry in redo:
+        new_bytes += sum(int(f.get("bytes") or 0)
+                         for f in (entry.get("file_sizes") or []))
     return {
         "remote_latest": idx.get("latest"),
         "remote_app_version": idx.get("app_version") or None,
         "local_days": sorted(have),
         "new_days": [d for d, _ in todo],
         "afp_fix_days": [d for d, _ in fix],
+        "align_fix_days": [d for d, _ in redo],
         "new_bytes": new_bytes,
         "need": len(todo),
         "want_afp": want_afp,
@@ -284,19 +306,20 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
 def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
     """执行增量更新。返回结果摘要。
 
-    先下整日(plan), 再给已有日期补指纹(afp_fix_days)。两步共用同一套
-    幂等与原子落盘, 补指纹只碰 afp 文件, 不会重下弹幕。
+    三类补充共用同一套幂等与原子落盘, 各自只碰自己的文件: 整日下载(plan)、
+    补指纹(afp_fix_days)、补对齐(align_fix_days)。补对齐只有几 KB, 不重下弹幕。
     """
     idx = fetch_index()
     have = local_days(data_dir)
     todo = plan(idx, have)
     fix = afp_fix_days(idx, have, data_dir, want_afp)
-    if not todo and not fix:
+    redo = align_fix_days(idx, have, data_dir)
+    if not todo and not fix and not redo:
         return {"updated": [], "bytes": 0, "message": "已是最新"}
 
     done, nbytes = [], 0
-    total = len(todo) + len(fix)
-    for i, (day, entry) in enumerate(todo + fix, 1):
+    total = len(todo) + len(fix) + len(redo)
+    for i, (day, entry) in enumerate(todo + fix + redo, 1):
         if on_progress:
             on_progress(i, total, day)
         def _cb(rel, n, _d=day, _i=i):
@@ -310,16 +333,14 @@ def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
             raise
         except OSError as e:
             raise UpdateError(f"{day} 写入失败: {e}") from e
-    filled = total - len(todo)
+    parts = []
     if done:
-        msg = f"已新增 {len(done)} 天"
-        if filled:
-            msg += f"，并补齐 {filled} 天的音频指纹"
-    elif filled:
-        msg = f"补齐了 {filled} 天的音频指纹"
-    else:
-        msg = "已是最新"
-    return {"updated": done, "bytes": nbytes, "message": msg}
+        parts.append(f"已新增 {len(done)} 天")
+    if fix:
+        parts.append(f"补齐 {len(fix)} 天的音频指纹")
+    if redo:
+        parts.append(f"更新 {len(redo)} 天的校准结果")
+    return {"updated": done, "bytes": nbytes, "message": "，并".join(parts) or "已是最新"}
 
 
 def _manifests_for_day(day_dir: Path) -> list:

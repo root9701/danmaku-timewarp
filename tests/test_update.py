@@ -75,6 +75,14 @@ def make_fake_remote(tmp: Path) -> tuple:
         sizes.append({"name": afp_rel, "bytes": ap.stat().st_size,
                       "sha256": hashlib.sha256(ap.read_bytes()).hexdigest()})
         total += ap.stat().st_size
+        # 对齐结果: 作者之后会重算它, 老用户必须能单独拿到(见 stale_align_days)
+        al_rel = f"data/{day}/align.json"
+        ap2 = remote / al_rel
+        ap2.write_bytes(json.dumps({"align": {}, "lists": {}}).encode())
+        files.append(al_rel)
+        sizes.append({"name": al_rel, "bytes": ap2.stat().st_size,
+                      "sha256": hashlib.sha256(ap2.read_bytes()).hexdigest()})
+        total += ap2.stat().st_size
         days[day] = {"files": files, "file_sizes": sizes, "bytes": total}
     idx = {"schema_version": 1, "latest": max(days), "days": days}
     (remote / "data-index.json").write_text(
@@ -304,6 +312,73 @@ def main() -> int:
               "manifest 落盘了 -> 会被误判为'这天已有数据'")
         check("切片失败时 local_days 不认为这天存在",
               day0 not in dataupdate.local_days(tmp2 / "data"))
+
+        print("\n[作者重算对齐 -> 老用户能拿到]")
+        # 发布版不带校准能力: 作者补算的分P 结果必须能自动下发, 否则老用户
+        # 永远停在旧对齐。plan() 只看 manifest 在不在, 挡不住这种"同一天内容变了"。
+        daya = "2026-01-01"
+        al_rel = f"data/{daya}/align.json"
+        before, _ = dataupdate._file_meta(idx["days"][daya], al_rel)
+        al_file = remote / al_rel
+
+        idx2 = json.loads(json.dumps(idx))
+        idx2["days"][daya]["file_sizes"] = [
+            ({"name": f["name"], "bytes": f["bytes"],
+              "sha256": "0" * 64} if f["name"] == al_rel else f)
+            for f in idx2["days"][daya]["file_sizes"]]
+        saved_fetch = dataupdate.fetch_index
+        try:
+            dataupdate.fetch_index = lambda: idx2
+            c = dataupdate.check(local, want_afp=False)
+            check("align 内容变了会报 align_fix_days",
+                  daya in (c.get("align_fix_days") or []), c.get("align_fix_days"))
+        finally:
+            dataupdate.fetch_index = saved_fetch
+
+        # 只有 align 变了时, 不该把它算成"整天新数据"(会重下几 MB)
+        saved_fetch = dataupdate.fetch_index
+        try:
+            dataupdate.fetch_index = lambda: idx2
+            c = dataupdate.check(local, want_afp=False)
+            check("不把 align 变化算成整天待下载", c.get("need") == 0, c.get("need"))
+            check("align 补抓体积只有一个文件",
+                  c.get("new_bytes") == al_file.stat().st_size, c.get("new_bytes"))
+        finally:
+            dataupdate.fetch_index = saved_fetch
+
+        # 真的跑一次 update: 只写 align.json, 不碰弹幕。
+        # 造"内容确实变了"的真实场景: 远端 align.json 改写 -> 清单里的 sha 跟着变,
+        # 而本地还是旧内容。这样下载能通过校验(不是拿假 sha 去骗哈希)。
+        al_file.write_bytes(json.dumps({"align": {"x": 1}, "lists": {}}).encode())
+        new_bytes = al_file.stat().st_size
+        new_sha = hashlib.sha256(al_file.read_bytes()).hexdigest()
+        idx3 = json.loads(json.dumps(idx))
+        idx3["days"][daya]["files"] = list(idx["days"][daya]["files"])
+        idx3["days"][daya]["file_sizes"] = [
+            ({"name": f["name"], "bytes": new_bytes, "sha256": new_sha}
+             if f["name"] == al_rel else f)
+            for f in idx3["days"][daya]["file_sizes"]]
+
+        dmgz = local / daya / "123" / "x0.jsonl.gz"
+        gz_before = dmgz.stat().st_mtime_ns
+        saved_fetch = dataupdate.fetch_index
+        try:
+            dataupdate.fetch_index = lambda: idx3
+            res = dataupdate.update(local, want_afp=False)
+            check("update 报告更新了校准结果",
+                  "校准结果" in (res.get("message") or ""), res.get("message"))
+            check("弹幕切片没被重下", dmgz.stat().st_mtime_ns == gz_before)
+            check("align.json 落成了远端的新内容",
+                  json.loads((local / daya / "align.json").read_text(
+                      encoding="utf-8")) == {"align": {"x": 1}, "lists": {}})
+            # 幂等: 本地已与清单一致, 再查不该报过期
+            c2 = dataupdate.check(local, want_afp=False)
+            check("补完后 align 不再报过期",
+                  daya not in (c2.get("align_fix_days") or []),
+                  c2.get("align_fix_days"))
+        finally:
+            dataupdate.fetch_index = saved_fetch
+        _ = before
 
         print("\n[镜像降级链]")
         # 官方地址应排在最后(有代理时它最可靠), 镜像在前(国内直连最快)

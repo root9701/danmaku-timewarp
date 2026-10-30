@@ -49,6 +49,28 @@ def only_afp(entry: dict) -> dict:
     }
 
 
+def is_align(rel: str) -> bool:
+    """清单路径是否为某天的对齐文件(data/{日期}/align.json)。"""
+    return str(rel).replace("\\", "/").endswith("/align.json")
+
+
+def only_align(entry: dict) -> dict:
+    """只保留 align.json 的清单子集(用于给已有日期补发作者重算的对齐结果)。"""
+    return {
+        "files": [r for r in (entry.get("files") or []) if is_align(r)],
+        "file_sizes": [f for f in (entry.get("file_sizes") or [])
+                       if is_align(f.get("name") or "")],
+    }
+
+
+def only_aligns(index: dict) -> list:
+    """清单里全部 align.json 的相对路径(调用方据此算本地哈希)。"""
+    out = []
+    for entry in (index.get("days") or {}).values():
+        out.extend(only_align(entry).get("files") or [])
+    return out
+
+
 def plan(index: dict, have: dict) -> list:
     """算出要整日下载的日期。返回 [(日期, 条目)] 升序。"""
     todo = []
@@ -57,6 +79,38 @@ def plan(index: dict, have: dict) -> list:
             continue
         todo.append((day, index["days"][day]))
     return todo
+
+
+def stale_align_days(index: dict, have: dict, local_sha: dict) -> list:
+    """已有日期里 align.json **内容对不上清单**的那些。返回 [(日期, 仅含 align 的条目)]。
+
+    存在的意义: plan() 只看"manifest 在不在", 于是作者之后重算的对齐结果
+    (补一局分P、修正一处偏差)永远到不了老用户手里 —— 他们已经下过那天,
+    整天被跳过, 只能删掉目录重下。而发布版不带校准能力, 用户自己补不了。
+
+    align.json 只有几 KB, 单独按 sha256 比对即可; 下载成本远低于整天重下
+    (一天 4~12 MB, 其中大半是弹幕切片与指纹)。
+
+    local_sha: {清单里的相对路径: 本地文件 sha256}。**由调用方算好传进来**:
+    本模块不做 IO, 读文件算哈希是调用方的活。
+    """
+    out = []
+    for day in sorted(index.get("days") or {}):
+        if day not in have:
+            continue                       # 整日还没下, plan() 会处理
+        sub = only_align(index["days"][day])
+        if not sub.get("files"):
+            continue                       # 那天没有对齐文件(老清单), 无事可做
+        for rel in sub["files"]:
+            want = ""
+            for f in sub.get("file_sizes") or []:
+                if f.get("name") == rel:
+                    want = str(f.get("sha256") or "").strip().lower()
+                    break
+            if want and local_sha.get(rel) != want:
+                out.append((day, sub))
+                break
+    return out
 
 
 def afp_fix_days(index: dict, have: dict, root: Path, want_afp: bool) -> list:

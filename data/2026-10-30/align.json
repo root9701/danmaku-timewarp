@@ -1,0 +1,160 @@
+{
+  "align": {
+    "2026-10-30|7734200": {
+      "bv": "BV148xw6DEKP",
+      "bvs": [
+        "BV148xw6DEKP",
+        "BV17XxP6CE7n"
+      ],
+      "date": "2026-10-30",
+      "file": "7734200",
+      "offset_sec": 43.103,
+      "title": "KC vs CFO"
+    },
+    "2026-10-30|7734200|BV148xw6DEKP": {
+      "auto": {
+        "confidence": 7.473,
+        "method": "audiofp",
+        "ts": "2026-10-30T09:00:48"
+      },
+      "bv": "BV148xw6DEKP",
+      "date": "2026-10-30",
+      "file": "7734200",
+      "offset_sec": 43.103,
+      "page_errors": {
+        "3": "该分P 的音频在直播里找不到自洽位置(最多 2/8 段指向同一处, 最强票 conf=1.12); 可能是这场直播没有转播, 或采集期间音频断流"
+      },
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 7.473,
+          "duration": 2752,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 43.103,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-30T09:00:48",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 8.983,
+          "duration": 5446,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 2918.268,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-30T09:00:48",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月30日 CFO vs KC",
+      "total_pages": 3
+    },
+    "2026-10-30|7734200|BV17XxP6CE7n": {
+      "auto": {
+        "confidence": 7.266,
+        "method": "audiofp",
+        "ts": "2026-10-30T09:13:46"
+      },
+      "bv": "BV17XxP6CE7n",
+      "date": "2026-10-30",
+      "file": "7734200",
+      "offset_sec": 8653.106,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 7.266,
+          "duration": 2932,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 8653.106,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-30T09:13:46",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 6.681,
+          "duration": 3271,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 11809.11,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-30T09:13:46",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 6.412,
+          "duration": 2480,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 15319.105,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-30T09:13:46",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月30日 BLG vs TES",
+      "total_pages": 3
+    }
+  },
+  "lists": {
+    "2026-10-30": [
+      {
+        "bv": "BV148xw6DEKP",
+        "offset_sec": 43.103,
+        "pages": {
+          "1": {
+            "confidence": 7.473,
+            "offset_sec": 43.103,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 8.983,
+            "offset_sec": 2918.268,
+            "part": "第二局"
+          }
+        },
+        "start_ms": 1793304000000,
+        "title": "KC vs CFO",
+        "total_pages": 3
+      },
+      {
+        "bv": "BV17XxP6CE7n",
+        "offset_sec": 8653.106,
+        "pages": {
+          "1": {
+            "confidence": 7.266,
+            "offset_sec": 8653.106,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 6.681,
+            "offset_sec": 11809.11,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 6.412,
+            "offset_sec": 15319.105,
+            "part": "第三局"
+          }
+        },
+        "start_ms": 1793314800000,
+        "title": "BLG vs TES",
+        "total_pages": 3
+      }
+    ]
+  }
+}

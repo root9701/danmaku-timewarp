@@ -1142,17 +1142,41 @@
 
   /* ---- 控制条弹出菜单(画质/倍速/弹幕设置) ----
    * 三个菜单共用一套开关逻辑: 同时只开一个, 点外面关掉, Esc 关掉。
-   * 全屏时菜单是 z-index 最高的元素, 不会被控制条的自动隐藏规则影响
-   * (隐藏只作用于 #ctrl-bar 的 opacity, 而菜单在它内部 —— 所以鼠标进菜单时
-   *  要让 fsReveal 持续刷新, 见下面的 hover 判断)。
+   * 菜单在 #ctrl-bar 内部 —— 而控制条的显隐是 hover 驱动的, 所以"菜单开着"
+   * 必须让控制条常亮(见 style.css 的 .menu-open), 否则鼠标一离开菜单就淡出。
    */
   var MENU_IDS = ['menu-quality', 'menu-rate', 'panel-dm-set'];
 
+  function anyMenuOpen() {
+    for (var i = 0; i < MENU_IDS.length; i++) {
+      var el = $(MENU_IDS[i]);
+      if (el && !el.hidden) { return true; }
+    }
+    return false;
+  }
+
+  // 控制条常亮的开关。挂在 .player-wrap 上而不是 #ctrl-bar: 后者是绝对定位的
+  // 子元素, 由父级的 hover/fullscreen 规则统一控制, 加在这里不会被覆盖。
+  function syncMenuState() {
+    var w = videoEl.closest('.player-wrap');
+    if (w) { w.classList.toggle('menu-open', anyMenuOpen()); }
+  }
+
   function closeMenus() {
+    // 面板隐藏后焦点若还留在里面的输入框, isTypingTarget 会让空格/方向键全部失效,
+    // 用户会以为"播放器卡了"。所以关菜单时把焦点一并交出去。
+    var act = document.activeElement;
+    if (act && act !== document.body) {
+      for (var i = 0; i < MENU_IDS.length; i++) {
+        var box = $(MENU_IDS[i]);
+        if (box && box.contains(act)) { act.blur(); break; }
+      }
+    }
     MENU_IDS.forEach(function (id) {
       var el = $(id);
       if (el) { el.hidden = true; }
     });
+    syncMenuState();
   }
   function toggleMenu(id) {
     var el = $(id);
@@ -1163,6 +1187,7 @@
     if (id === 'menu-rate') { renderRateMenu(); }
     if (id === 'menu-quality') { renderQualityMenu(); }
     el.hidden = false;
+    syncMenuState();
   }
   // 点控制条以外的地方关菜单。用 pointerdown 而非 click: 拖进度条时也要收起菜单。
   document.addEventListener('pointerdown', function (e) {
@@ -2800,6 +2825,8 @@
     fsHideTimer = setTimeout(function () {
       var w2 = fsWrap();
       if (!w2 || !document.fullscreenElement) { return; }
+      // 菜单开着就不自动隐藏: 用户正在面板里点选/输入, 藏掉等于打断操作
+      if (anyMenuOpen()) { return; }
       // 鼠标停在控制条上时不要藏(否则想点按钮它会消失)
       if (w2.matches(':hover') && document.getElementById('ctrl-bar').matches(':hover')) { return; }
       w2.classList.remove('ctrl-visible');
@@ -2946,6 +2973,14 @@
   var inpDmBlock = $('inp-dm-block');
   var blockTagsBox = $('block-tags');
   if (inpDmBlock) {
+    // 输入法组词状态: 组词期间的回车/逗号是**给输入法的**(确认候选词),
+    // 不能当成"添加一枚 tag", 否则打「赌狗」时会先加进去半截拼音。
+    // Safari/部分输入法只在 keydown 上给 isComposing, 也有只给 keyCode 229 的,
+    // 两种都认。
+    var composing = false;
+    inpDmBlock.addEventListener('compositionstart', function () { composing = true; });
+    inpDmBlock.addEventListener('compositionend', function () { composing = false; });
+
     function commitBlockInput() {
       var parts = parseBlockWords(inpDmBlock.value);
       var added = false;
@@ -2959,6 +2994,7 @@
       }
     }
     inpDmBlock.addEventListener('keydown', function (e) {
+      if (composing || e.isComposing || e.keyCode === 229) { return; }
       if (e.key === 'Enter' || e.key === ',' || e.key === '，' ||
           e.key === ';' || e.key === '；') {
         e.preventDefault();                       // 逗号不该真的打进输入框
@@ -2971,10 +3007,16 @@
         removeBlockWord(settings.block.length - 1);
         saveSettings();
         refreshBlockUI();
+        return;
       }
+      // Esc: 只收起面板, 不冒泡到全局的"Esc 关菜单"再走一遍(会多一次焦点处理)
+      if (e.key === 'Escape') { e.stopPropagation(); inpDmBlock.blur(); closeMenus(); }
     });
-    // 失焦时把没提交的残留也收进去(用户打完词直接点别处, 不该白打)
+    // 失焦时把没提交的残留也收进去(用户打完词直接点别处, 不该白打)。
+    // **组词中失焦不算完**: 中文输入法切窗口时也会触发 blur, 那时 value 里
+    // 可能只有半截拼音, 提交进去就是一条垃圾屏蔽词。
     inpDmBlock.addEventListener('blur', function () {
+      if (composing) { return; }
       if (inpDmBlock.value.trim()) { commitBlockInput(); }
     });
     // 粘贴「一行一个」: 默认会被当成一次输入, 这里主动拆开逐条加

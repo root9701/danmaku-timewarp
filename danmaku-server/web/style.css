@@ -379,6 +379,20 @@ button, input, select { font-family: inherit; }
   padding: 8px 2px 6px; font-size: 12px; color: #b9bfc9; cursor: pointer;
 }
 .cpanel-chk input { accent-color: var(--blue); }
+/* 多行输入: 屏蔽词要能填一列, 横排的 label+input 塞不下第三行以后的内容 */
+.cpanel-col {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 6px 2px 2px; font-size: 12px; color: #b9bfc9;
+}
+.cpanel-col em { font-style: normal; color: var(--blue); }
+.cpanel-col textarea {
+  width: 100%; resize: vertical; min-height: 52px; max-height: 140px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 5px 7px; font: inherit; font-size: 12px; line-height: 1.45;
+}
+.cpanel-col textarea::placeholder { color: #5c5f66; }
+.cpanel-col textarea:focus { outline: none; border-color: var(--blue); }
 .cpanel-foot {
   display: flex; gap: 8px; padding-top: 6px;
   border-top: 1px solid var(--line); margin-top: 4px;

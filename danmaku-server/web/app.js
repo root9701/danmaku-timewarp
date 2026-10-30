@@ -57,6 +57,7 @@
     area: 0.5, opacity: 0.9, size: 20, density: 1,
     speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
     stroke: false,     // 文字描边
+    block: '',         // 屏蔽词原文(一行一个)。派生值见 blockWords, 匹配逻辑见 isBlocked
     spoiler: true      // 防剧透(默认开): 隐藏进度条标记、分P 色块、局数文案
   };
   var state = {
@@ -661,6 +662,7 @@
     state.danmaku = parseDanmaku(dmText);
     state.applied = true;
     recomputeRels();
+    recountBlocked();                 // 面板上的"已挡 N 条"要跟着换场次一起更新
     resetDanmakuIndex();
     dmList.innerHTML = ''; hideSc();
     syncTitleForPlayback();
@@ -1394,12 +1396,87 @@
   // settings 的声明已上移到文件顶部(loadMatchList 要读 settings.spoiler, 见那里的注释)。
   // 「恢复默认」用的基准 —— 必须与上面 settings 的初始值一致,
   // 两处写不一样的默认值, 会让"恢复默认"恢复出一个用户从没见过的状态。
-  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false };
+  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false, block: '' };
   // 初始值与 settings 的默认字号一致(20), 免得"加载完成前用 26、之后跳成 20"。
   // L1429 会按 settings.size 重算, 这里只是首帧的占位。
   var FONT = 'bold 20px "Microsoft YaHei", "PingFang SC", sans-serif';
   var TRACK_H = 28;
   var MAX_ONSCREEN = 160;
+
+  /* ---------------- 屏蔽词 ----------------
+   * 判定是「整条丢弃」: 命中后既不上屏, 也不进右侧列表 —— 与「弹幕数量」的抽稀
+   * 走同一个出口(emitDm 开头 return)。为什么不定成"只挡飘屏": 那样会出现
+   * 「屏幕上没有、右侧列表里有」的分裂, 而抽稀本来就是整条丢的, 一套语义更好记。
+   *
+   * 匹配方式选**子串**, 不选正则: 屏蔽是「有人刷屏了, 现场填一手」的救火操作,
+   * 在面板里手滑多打一个 `(` 就整条规则静默失效, 而用户看不出为什么没生效。
+   */
+  var blockWords = [];                    // 归一化后的屏蔽词, 空串已剔除
+  var blockStats = { hit: 0, total: 0 };  // 当前场次的统计, 只用于面板上的一句话反馈
+
+  // 全角→半角 + 转小写。B站 弹幕里「ＡＢＣ」「１００」很常见, 不归一化就会
+  // 「填了 abc 却屏蔽不掉 ＡＢＣ」—— 用户只会觉得这功能坏了。
+  function normBlock(s) {
+    return String(s == null ? '' : s)
+      .replace(/[\uff01-\uff5e]/g, function (c) {
+        return String.fromCharCode(c.charCodeAt(0) - 0xfee0);
+      })
+      .replace(/\u3000/g, ' ')
+      .toLowerCase();
+  }
+
+  // 一行一个; 逗号、分号也当分隔(手机上打换行麻烦)。**空格不算分隔** ——
+  // "gg ez" 这类英文短语整条才是要屏蔽的目标, 拆开就变成误杀。
+  function parseBlockWords(text) {
+    var raw = normBlock(text).split(/[\n\r,，;；]+/);
+    var out = [], seen = {};
+    for (var i = 0; i < raw.length; i++) {
+      var w = raw[i].trim();
+      if (!w || seen[w]) { continue; }
+      seen[w] = 1;
+      out.push(w);
+    }
+    // 长的优先只影响性能不影响结果, 但先比长的能更早命中 → 高频词少扫几个字符
+    out.sort(function (a, b) { return b.length - a.length; });
+    return out;
+  }
+
+  function isBlocked(d) {
+    if (!blockWords.length) { return false; }
+    var s = d._bn;
+    if (s === undefined) { s = d._bn = normBlock(d.t); }
+    for (var i = 0; i < blockWords.length; i++) {
+      if (s.indexOf(blockWords[i]) >= 0) { return true; }
+    }
+    return false;
+  }
+
+  // 整晚口径的统计(不是"已经播过的"), 让用户填完就知道这条规则挡了多少条。
+  // 场次只有几千条, 一次线性扫描可忽略; 只在换词/换场次时算, 不挂在每帧上。
+  function recountBlocked() {
+    var dm = state.danmaku || [];
+    var hit = 0;
+    for (var i = 0; i < dm.length; i++) { if (isBlocked(dm[i])) { hit++; } }
+    blockStats.hit = hit;
+    blockStats.total = dm.length;
+    var el = $('block-count');
+    if (!el) { return; }
+    if (!blockWords.length) { el.textContent = ''; return; }
+    el.textContent = hit ? ('已挡 ' + hit + ' / ' + dm.length + ' 条') : '没有命中';
+  }
+
+  // 改词: 只更新派生值, 不动其它设置(字号/速度等不该被一次输入连累)
+  function applyBlockWords(text) {
+    settings.block = String(text == null ? '' : text);
+    blockWords = parseBlockWords(settings.block);
+  }
+
+  // 把 settings.block 回填到输入框。**值相同就不写**: 用户正在打字时
+  // 每写一次 value 都会把光标弹到末尾(reflectSettings 由 input 事件触发)。
+  function syncBlockInput() {
+    var inp = $('inp-dm-block');
+    if (inp && inp.value !== settings.block) { inp.value = settings.block; }
+  }
 
   function applySettings() {
     try {
@@ -1411,6 +1488,7 @@
         if ([20, 26, 34].indexOf(+saved.size) >= 0) { settings.size = +saved.size; }
         if (isFinite(saved.speed)) { settings.speed = Math.min(2, Math.max(0.6, +saved.speed)); }
         if (typeof saved.stroke === 'boolean') { settings.stroke = saved.stroke; }
+        if (typeof saved.block === 'string') { settings.block = saved.block; }
         if (typeof saved.spoiler === 'boolean') { settings.spoiler = saved.spoiler; }
         if (isFinite(saved.rate) && saved.rate >= 0.25 && saved.rate <= 4) { state.rate = +saved.rate; }
         if (typeof saved.autoAdvance === 'boolean') { state.autoAdvance = saved.autoAdvance; }
@@ -1425,7 +1503,7 @@
       localStorage.setItem('dm-player-settings',
         JSON.stringify({ area: settings.area, opacity: settings.opacity,
           size: settings.size, density: settings.density, speed: settings.speed,
-          stroke: settings.stroke, spoiler: settings.spoiler,
+          stroke: settings.stroke, spoiler: settings.spoiler, block: settings.block,
           rate: state.rate, autoAdvance: state.autoAdvance }));
     } catch (e) {}
   }
@@ -1442,6 +1520,8 @@
     if (spd) { spd.value = String(Math.round(settings.speed * 100)); }
     var chk = $('chk-dm-stroke');
     if (chk) { chk.checked = !!settings.stroke; }
+    syncBlockInput();
+    blockWords = parseBlockWords(settings.block);   // 派生值随设置一起刷新, 见上方屏蔽词区块
     syncSpoilerBtn();
     active.length = 0;
     resetTracks();
@@ -1516,6 +1596,10 @@
   }
 
   function emitDm(d) {
+    // 屏蔽词: 放在数量抽稀**之前**。两处都是整条丢弃, 但顺序有讲究 ——
+    // 先筛屏蔽词, 抽稀的哈希分布才是"剩下的弹幕"里的均匀抽样, 而不是
+    // "先抽稀再屏蔽"导致屏蔽率高的文本恰好落在被抽掉的那一半、看起来没生效。
+    if (isBlocked(d)) { return; }
     // 数量抽稀: 按文本哈希判定, 同一条弹幕在任意时间点/来回拖动下判定一致(不闪变)
     if (settings.density < 1) {
       var h = 0, s = d.t;
@@ -2797,11 +2881,28 @@
       reflectSettings(); saveSettings();
     });
   }
+  // 屏蔽词: input 事件即时生效(边打边看效果), 但**不重算统计** ——
+  // 面板上那句"已挡 N 条"要扫全场次, 每敲一个字符都扫一遍会明显卡手。
+  // 统计改在 blur 时算一次, 那是用户"填完了"的自然信号。
+  var inpDmBlock = $('inp-dm-block');
+  if (inpDmBlock) {
+    inpDmBlock.addEventListener('input', function () {
+      applyBlockWords(inpDmBlock.value);
+      saveSettings();
+    });
+    inpDmBlock.addEventListener('blur', function () { recountBlocked(); });
+    // Esc 收面板由全局 keydown 负责(见 closeMenus 上方); 这里只把焦点交出去,
+    // 否则面板隐藏后焦点仍留在 textarea 里 —— 接着按空格想暂停, 打出的是空格。
+    inpDmBlock.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { this.blur(); }
+    });
+  }
   var btnDmReset = $('btn-dm-reset');
   if (btnDmReset) {
     btnDmReset.addEventListener('click', function () {
       Object.keys(DM_DEFAULTS).forEach(function (k) { settings[k] = DM_DEFAULTS[k]; });
       reflectSettings(); saveSettings();
+      recountBlocked();                // 屏蔽词也被恢复成空, 面板上的"已挡 N 条"要跟着清零
       showToast('弹幕设置已恢复默认');
     });
   }

@@ -108,6 +108,14 @@
                   </select>
                 </label>
                 <label class="cpanel-chk"><input id="chk-dm-stroke" type="checkbox"> 文字描边</label>
+                <!-- 屏蔽词: 一行一个(逗号、分号、空格也当分隔), 命中即整条不上屏、也不进右侧列表。
+                     和上面「弹幕数量」的抽稀一样是"整条丢弃", 不做只挡飘屏的半套。
+                     放在面板最下方: 它是低频的"救火"设置(有人刷屏才来填一次), 不像字号/速度要边看边调。 -->
+                <label class="cpanel-col">
+                  <span>屏蔽词 <em id="block-count"></em></span>
+                  <textarea id="inp-dm-block" rows="3" spellcheck="false" autocomplete="off"
+                            placeholder="一行一个，命中即屏蔽。例：赌狗&#10;返场&#10;抽奖"></textarea>
+                </label>
                 <div class="cpanel-foot">
                   <button id="btn-dm-toggle" type="button" class="btn btn-sm">弹幕: 开</button>
                   <button id="btn-dm-reset" type="button" class="btn btn-sm btn-ghost">恢复默认</button>

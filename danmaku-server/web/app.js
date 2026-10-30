@@ -57,7 +57,7 @@
     area: 0.5, opacity: 0.9, size: 20, density: 1,
     speed: 1,          // 弹幕滚动速度倍率(0.6~2.0), 与播放倍速无关
     stroke: false,     // 文字描边
-    block: '',         // 屏蔽词原文(一行一个)。派生值见 blockWords, 匹配逻辑见 isBlocked
+    block: [],         // 屏蔽词(数组, 每项一个词)。匹配索引见 blockWords / isBlocked
     spoiler: true      // 防剧透(默认开): 隐藏进度条标记、分P 色块、局数文案
   };
   var state = {
@@ -1396,7 +1396,7 @@
   // settings 的声明已上移到文件顶部(loadMatchList 要读 settings.spoiler, 见那里的注释)。
   // 「恢复默认」用的基准 —— 必须与上面 settings 的初始值一致,
   // 两处写不一样的默认值, 会让"恢复默认"恢复出一个用户从没见过的状态。
-  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false, block: '' };
+  var DM_DEFAULTS = { area: 0.5, opacity: 0.9, size: 20, density: 1, speed: 1, stroke: false, block: [] };
   // 初始值与 settings 的默认字号一致(20), 免得"加载完成前用 26、之后跳成 20"。
   // L1429 会按 settings.size 重算, 这里只是首帧的占位。
   var FONT = 'bold 20px "Microsoft YaHei", "PingFang SC", sans-serif';
@@ -1410,9 +1410,12 @@
    *
    * 匹配方式选**子串**, 不选正则: 屏蔽是「有人刷屏了, 现场填一手」的救火操作,
    * 在面板里手滑多打一个 `(` 就整条规则静默失效, 而用户看不出为什么没生效。
+   *
+   * 存储形态是**数组**, 不是一整串文本: 界面上每个词是一枚可单独删掉的 tag,
+   * 而"文本 ↔ tag"的来回转换每次都要处理分隔符与空行, 存数组就没有这层损耗。
+   * settings.block 存**用户原样输入**(用于显示), blockWords 存归一化后的(用于匹配)。
    */
   var blockWords = [];                    // 归一化后的屏蔽词, 空串已剔除
-  var blockStats = { hit: 0, total: 0 };  // 当前场次的统计, 只用于面板上的一句话反馈
 
   // 全角→半角 + 转小写。B站 弹幕里「ＡＢＣ」「１００」很常见, 不归一化就会
   // 「填了 abc 却屏蔽不掉 ＡＢＣ」—— 用户只会觉得这功能坏了。
@@ -1425,18 +1428,28 @@
       .toLowerCase();
   }
 
-  // 一行一个; 逗号、分号也当分隔(手机上打换行麻烦)。**空格不算分隔** ——
-  // "gg ez" 这类英文短语整条才是要屏蔽的目标, 拆开就变成误杀。
+  // 把一整段文本拆成词表。只在**两处**用: 老版本存下的字符串(升级迁移)、
+  // 以及粘贴「一行一个」的批量输入。空格不算分隔 —— "gg ez" 整条才是目标。
   function parseBlockWords(text) {
-    var raw = normBlock(text).split(/[\n\r,，;；]+/);
-    var out = [], seen = {};
+    var raw = String(text == null ? '' : text).split(/[\n\r,，;；]+/);
+    var out = [];
     for (var i = 0; i < raw.length; i++) {
       var w = raw[i].trim();
+      if (w) { out.push(w); }
+    }
+    return out;
+  }
+
+  // 归一化词表(匹配用): 去重 + 去空 + 长词优先。
+  // 长的优先只影响性能不影响结果, 但先比长的能更早命中 → 高频词少扫几个字符。
+  function buildBlockIndex(words) {
+    var out = [], seen = {};
+    for (var i = 0; i < words.length; i++) {
+      var w = normBlock(words[i]).trim();
       if (!w || seen[w]) { continue; }
       seen[w] = 1;
       out.push(w);
     }
-    // 长的优先只影响性能不影响结果, 但先比长的能更早命中 → 高频词少扫几个字符
     out.sort(function (a, b) { return b.length - a.length; });
     return out;
   }
@@ -1454,28 +1467,73 @@
   // 整晚口径的统计(不是"已经播过的"), 让用户填完就知道这条规则挡了多少条。
   // 场次只有几千条, 一次线性扫描可忽略; 只在换词/换场次时算, 不挂在每帧上。
   function recountBlocked() {
-    var dm = state.danmaku || [];
-    var hit = 0;
-    for (var i = 0; i < dm.length; i++) { if (isBlocked(dm[i])) { hit++; } }
-    blockStats.hit = hit;
-    blockStats.total = dm.length;
     var el = $('block-count');
     if (!el) { return; }
+    var dm = state.danmaku || [];
+    // 一条弹幕都还没加载时**不说"没有命中"**: 用户刚填完词就被告知"没命中",
+    // 只会以为功能坏了; 而真相是还没选场次。这种情况下留白, 等加载完再说。
+    if (!dm.length) { el.textContent = ''; return; }
     if (!blockWords.length) { el.textContent = ''; return; }
+    var hit = 0;
+    for (var i = 0; i < dm.length; i++) { if (isBlocked(dm[i])) { hit++; } }
     el.textContent = hit ? ('已挡 ' + hit + ' / ' + dm.length + ' 条') : '没有命中';
   }
 
-  // 改词: 只更新派生值, 不动其它设置(字号/速度等不该被一次输入连累)
-  function applyBlockWords(text) {
-    settings.block = String(text == null ? '' : text);
-    blockWords = parseBlockWords(settings.block);
+  // 加一个词。**重复的不加**(归一化后比): 否则「GG」和「gg」会并排出现两枚
+  // 一模一样的 tag, 而它们对匹配毫无区别。
+  function addBlockWord(raw) {
+    var w = String(raw == null ? '' : raw).trim();
+    if (!w) { return false; }
+    var key = normBlock(w);
+    for (var i = 0; i < settings.block.length; i++) {
+      if (normBlock(settings.block[i]) === key) { return false; }
+    }
+    settings.block.push(w);
+    return true;
   }
 
-  // 把 settings.block 回填到输入框。**值相同就不写**: 用户正在打字时
-  // 每写一次 value 都会把光标弹到末尾(reflectSettings 由 input 事件触发)。
-  function syncBlockInput() {
-    var inp = $('inp-dm-block');
-    if (inp && inp.value !== settings.block) { inp.value = settings.block; }
+  function removeBlockWord(idx) {
+    if (idx < 0 || idx >= settings.block.length) { return; }
+    settings.block.splice(idx, 1);
+  }
+
+  // 词表变了之后统一重建索引 + 重画 tag + 重算统计
+  function refreshBlockUI() {
+    blockWords = buildBlockIndex(settings.block);
+    renderBlockTags();
+    recountBlocked();
+  }
+
+  function renderBlockTags() {
+    var box = $('block-tags');
+    if (!box) { return; }
+    box.innerHTML = '';
+    // 用户原样的写法保留显示(填 GG 就显示 GG), 归一化只用于匹配
+    settings.block.forEach(function (w, i) {
+      var tag = document.createElement('span');
+      tag.className = 'dm-tag';
+      var txt = document.createElement('span');
+      txt.textContent = w;
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = '不再屏蔽「' + w + '」';
+      del.setAttribute('data-idx', String(i));
+      tag.appendChild(txt);
+      tag.appendChild(del);
+      box.appendChild(tag);
+    });
+  }
+
+  // 兼容老版本存下的字符串: 1.2.0 之前 settings.block 是一整段文本。
+  // 读端必须容忍两种形状 —— 用户升级后不该丢掉已经配好的屏蔽词。
+  function normalizeBlockSetting(v) {
+    if (Array.isArray(v)) {
+      return v.filter(function (x) { return typeof x === 'string' && x.trim(); })
+              .map(function (x) { return x.trim(); });
+    }
+    if (typeof v === 'string') { return parseBlockWords(v); }
+    return [];
   }
 
   function applySettings() {
@@ -1488,7 +1546,7 @@
         if ([20, 26, 34].indexOf(+saved.size) >= 0) { settings.size = +saved.size; }
         if (isFinite(saved.speed)) { settings.speed = Math.min(2, Math.max(0.6, +saved.speed)); }
         if (typeof saved.stroke === 'boolean') { settings.stroke = saved.stroke; }
-        if (typeof saved.block === 'string') { settings.block = saved.block; }
+        if (saved.block !== undefined) { settings.block = normalizeBlockSetting(saved.block); }
         if (typeof saved.spoiler === 'boolean') { settings.spoiler = saved.spoiler; }
         if (isFinite(saved.rate) && saved.rate >= 0.25 && saved.rate <= 4) { state.rate = +saved.rate; }
         if (typeof saved.autoAdvance === 'boolean') { state.autoAdvance = saved.autoAdvance; }
@@ -1520,8 +1578,9 @@
     if (spd) { spd.value = String(Math.round(settings.speed * 100)); }
     var chk = $('chk-dm-stroke');
     if (chk) { chk.checked = !!settings.stroke; }
-    syncBlockInput();
-    blockWords = parseBlockWords(settings.block);   // 派生值随设置一起刷新, 见上方屏蔽词区块
+    // 屏蔽词的派生状态(索引 + tag 列表 + 统计)由 refreshBlockUI 统一重建,
+    // 见下方屏蔽词区块 —— 这里不再单独维护一份, 免得两处不一致。
+    refreshBlockUI();
     syncSpoilerBtn();
     active.length = 0;
     resetTracks();
@@ -2881,28 +2940,75 @@
       reflectSettings(); saveSettings();
     });
   }
-  // 屏蔽词: input 事件即时生效(边打边看效果), 但**不重算统计** ——
-  // 面板上那句"已挡 N 条"要扫全场次, 每敲一个字符都扫一遍会明显卡手。
-  // 统计改在 blur 时算一次, 那是用户"填完了"的自然信号。
+  // 屏蔽词: 输入框回车/逗号/分号即添加, Backspace 在空输入时删最后一个。
+  // 为什么这几种键都收: 用户习惯是从别处复制一行一个的列表直接粘进来 ——
+  // 粘贴时浏览器会把换行变成空格或直接触发一次 input, 分号逗号兜住那种情况。
   var inpDmBlock = $('inp-dm-block');
+  var blockTagsBox = $('block-tags');
   if (inpDmBlock) {
-    inpDmBlock.addEventListener('input', function () {
-      applyBlockWords(inpDmBlock.value);
-      saveSettings();
-    });
-    inpDmBlock.addEventListener('blur', function () { recountBlocked(); });
-    // Esc 收面板由全局 keydown 负责(见 closeMenus 上方); 这里只把焦点交出去,
-    // 否则面板隐藏后焦点仍留在 textarea 里 —— 接着按空格想暂停, 打出的是空格。
+    function commitBlockInput() {
+      var parts = parseBlockWords(inpDmBlock.value);
+      var added = false;
+      for (var i = 0; i < parts.length; i++) { added = addBlockWord(parts[i]) || added; }
+      inpDmBlock.value = '';
+      if (added) {
+        saveSettings();
+        refreshBlockUI();
+      } else if (parts.length) {
+        showToast('「' + parts[0] + '」已经在屏蔽列表里');
+      }
+    }
     inpDmBlock.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { this.blur(); }
+      if (e.key === 'Enter' || e.key === ',' || e.key === '，' ||
+          e.key === ';' || e.key === '；') {
+        e.preventDefault();                       // 逗号不该真的打进输入框
+        commitBlockInput();
+        return;
+      }
+      // 空输入时按退格删最后一枚 tag —— 和主流 tag 输入框手感一致
+      if (e.key === 'Backspace' && !inpDmBlock.value && settings.block.length) {
+        e.preventDefault();
+        removeBlockWord(settings.block.length - 1);
+        saveSettings();
+        refreshBlockUI();
+      }
+    });
+    // 失焦时把没提交的残留也收进去(用户打完词直接点别处, 不该白打)
+    inpDmBlock.addEventListener('blur', function () {
+      if (inpDmBlock.value.trim()) { commitBlockInput(); }
+    });
+    // 粘贴「一行一个」: 默认会被当成一次输入, 这里主动拆开逐条加
+    inpDmBlock.addEventListener('paste', function (e) {
+      var txt = e.clipboardData && e.clipboardData.getData('text');
+      if (!txt || !/[\n\r,，;；]/.test(txt)) { return; }   // 单词粘贴走默认行为
+      e.preventDefault();
+      var parts = parseBlockWords(txt);
+      var added = false;
+      for (var i = 0; i < parts.length; i++) { added = addBlockWord(parts[i]) || added; }
+      if (added) { saveSettings(); refreshBlockUI(); }
+      inpDmBlock.value = '';
+    });
+  }
+  // 删 tag 用事件委托: tag 是动态重建的, 逐个绑定会在每次重画后失效
+  if (blockTagsBox) {
+    blockTagsBox.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button[data-idx]') : null;
+      if (!btn) { return; }
+      removeBlockWord(parseInt(btn.getAttribute('data-idx'), 10));
+      saveSettings();
+      refreshBlockUI();
     });
   }
   var btnDmReset = $('btn-dm-reset');
   if (btnDmReset) {
     btnDmReset.addEventListener('click', function () {
-      Object.keys(DM_DEFAULTS).forEach(function (k) { settings[k] = DM_DEFAULTS[k]; });
-      reflectSettings(); saveSettings();
-      recountBlocked();                // 屏蔽词也被恢复成空, 面板上的"已挡 N 条"要跟着清零
+      Object.keys(DM_DEFAULTS).forEach(function (k) {
+        // block 是数组, 必须拷贝 —— 直接赋值会让 settings.block 与 DM_DEFAULTS.block
+        // 指向同一个数组, 之后再加词就永久污染了"默认值", 下次恢复默认清不掉。
+        var v = DM_DEFAULTS[k];
+        settings[k] = Array.isArray(v) ? v.slice() : v;
+      });
+      reflectSettings(); saveSettings();   // reflectSettings → refreshBlockUI, 统计与 tag 一并归零
       showToast('弹幕设置已恢复默认');
     });
   }

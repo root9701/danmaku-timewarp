@@ -379,20 +379,44 @@ button, input, select { font-family: inherit; }
   padding: 8px 2px 6px; font-size: 12px; color: #b9bfc9; cursor: pointer;
 }
 .cpanel-chk input { accent-color: var(--blue); }
-/* 多行输入: 屏蔽词要能填一列, 横排的 label+input 塞不下第三行以后的内容 */
+/* 屏蔽词 tag: 芯片式, 每个词一枚。
+   min-height 给 20px 是为了"一个词都没有"时这块不塌成 0 高 —— 否则失焦后
+   面板高度会跳一下(用户会以为点坏了)。 */
 .cpanel-col {
-  display: flex; flex-direction: column; gap: 5px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 6px 2px 2px; font-size: 12px; color: #b9bfc9;
 }
-.cpanel-col em { font-style: normal; color: var(--blue); }
-.cpanel-col textarea {
-  width: 100%; resize: vertical; min-height: 52px; max-height: 140px;
+.cpanel-col em { font-style: normal; color: var(--blue); font-weight: 400; }
+.dm-tags {
+  display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px;
+  max-height: 96px; overflow-y: auto;
+}
+.dm-tags:empty::before {
+  content: "还没有屏蔽词"; color: #5c5f66; font-size: 12px; align-self: center;
+}
+.dm-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 100%; padding: 2px 4px 2px 8px;
+  background: rgba(91, 140, 255, .16); border: 1px solid rgba(91, 140, 255, .38);
+  border-radius: 10px; color: #cdd8f5; font-size: 12px; line-height: 1.5;
+}
+.dm-tag span {
+  max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-tag button {
+  flex: none; width: 14px; height: 14px; padding: 0; border: none;
+  border-radius: 50%; background: none; color: #8fa4d6;
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.dm-tag button:hover { background: rgba(255, 255, 255, .16); color: #fff; }
+.cpanel-col input[type="text"] {
+  width: 100%;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--radius-sm);
-  padding: 5px 7px; font: inherit; font-size: 12px; line-height: 1.45;
+  padding: 5px 7px; font: inherit; font-size: 12px;
 }
-.cpanel-col textarea::placeholder { color: #5c5f66; }
-.cpanel-col textarea:focus { outline: none; border-color: var(--blue); }
+.cpanel-col input[type="text"]::placeholder { color: #5c5f66; }
+.cpanel-col input[type="text"]:focus { outline: none; border-color: var(--blue); }
 .cpanel-foot {
   display: flex; gap: 8px; padding-top: 6px;
   border-top: 1px solid var(--line); margin-top: 4px;

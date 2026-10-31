@@ -99,7 +99,7 @@ BP/解说段天然不独特（低到 1.1），但不代表位置错。实测 T1 
 
 ## 文件
 
-- `audiofp.py`：指纹算法（0.4s 窗 33 对数频带能量 + L2 归一化）与 afp 解析、FFT 互相关对齐。
+- `audiofp.py`：指纹算法（参数见 `SCHEMA.md` §4）与 afp 解析、FFT 互相关对齐。
 - `matches.json`：`align`（`赛事日|文件[|BV]` → bv/offset/pages）+ `lists`（`赛事日` → 场次数组）。原子写入。
 - `web/`：无框架原生 JS。canvas 弹幕引擎 + 当晚总览 + 场次点选。
 

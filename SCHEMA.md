@@ -50,11 +50,19 @@ data/
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `schema_version` | int | 契约版本。**结构变更必须 +1** |
+| `room` | int | 房间号，用于校验与展示；不要从目录名反推 |
 | `match_date` | str | 赛事日 `YYYY-MM-DD` |
+| `is_test` | bool | 测试会话标记；正式日期列表会把它分到 `_test` 组 |
 | `start_ms` / `end_ms` | int | 真实起止（毫秒墙钟），**从弹幕 ts 算**，不是 record_start |
+| `dm_count` | int | 整目录弹幕条数（跨多次重启累计；不是最后一次会话） |
+| `sc_count` | int | 醒目留言条数 |
 | `files` | [str] | 本会话的弹幕切片文件名 |
 | `afp` | obj\|null | 指纹文件与参数；`null` 表示未采集 |
+| `meta` | str | 人类可读摘要文件名；**不得作为权威源** |
+| `collector_version` | str | 写这份 manifest 时的采集端版本（历史快照，不是当前版本） |
 | `ended_by` | str | 结束原因 |
+
+示例里的 `collector_version` 是 2026-10-26 当时的值，不代表当前版本；版本号以根目录 `VERSION` 为准。
 
 **读不到 manifest** 时服务端必须退化为目录扫描：按 `{room}` 前缀匹配，剥掉 `_sHHMM`/`_runN` 归并。
 

@@ -1,0 +1,40 @@
+{
+  "cover": ["danmaku-server", "danmaku-collector", "tools", "*.md"],
+  "size_suffix": [".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".gd", ".kt", ".java", ".css", ".html", ".md"],
+  "docs_cover": ["**/*.md"],
+  "links": true,
+  "file_lines": 400,
+  "file_bytes": 0,
+  "func_lines": 60,
+  "skip": [],
+  "exempt": {
+    "file_lines": [
+      "danmaku-collector/collector.py",
+      "danmaku-collector/dashboard.py",
+      "danmaku-collector/live_audiofp.py",
+      "danmaku-server/server.py",
+      "danmaku-server/web/app.js",
+      "danmaku-server/web/style.css",
+      "tools/build_release.py",
+      "tools/release.py"
+    ],
+    "func_lines": [
+      "danmaku-collector/collector.py::finalize",
+      "danmaku-server/audiofp.py::align",
+      "danmaku-server/audiofp.py::read_afp",
+      "danmaku-server/server.py::bili_playurl_mp4",
+      "danmaku-server/server.py::get_replay_fingerprint",
+      "danmaku-server/server.py::handle_overview",
+      "danmaku-server/server.py::_align_one_page",
+      "danmaku-server/server.py::run_autocalign",
+      "danmaku-server/server.py::_build",
+      "danmaku-server/server.py::_mut",
+      "danmaku-server/server.py::scan_days",
+      "tools/split_matches.py::main"
+    ]
+  },
+  "commands": [
+    {"name": "架构闸门", "cmd": ["python", "tools\\quality_gate.py"]},
+    {"name": "前端语法", "cmd": ["node", "--check", "danmaku-server\\web\\app.js"]}
+  ]
+}

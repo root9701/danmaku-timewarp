@@ -301,6 +301,21 @@ def check_gh():
 
 # ---------------- 2. 质量与数据 ----------------
 
+def check_align_distributed():
+    """本地层里还有没搬进 data/ 的对齐记录时, 不准发布。
+
+    为什么: matches.json 是本地层且不入库, 漏搬不会让 git status 变脏 ——
+    打出来的包与 tag 里没有重算结果, 用户永远拿不到, 而作者以为发过了。
+    """
+    ok, out = _py("tools/split_matches.py", "--check", timeout=60)
+    if not ok:
+        tail = "\n".join(out.splitlines()[-3:])
+        raise StepFailed(
+            f"有对齐记录还没分发到 data/:\n{tail}\n"
+            "  先跑 python tools/split_matches.py --apply, 提交 data/ 下的改动, 再发布")
+    say("  ✓ 对齐已全部分发")
+
+
 def run_quality():
     # 规范/ 是本机镜像(.gitignore 不入库)。有镜像时走统一入口: 它在此脚本之外
     # 还查文件/函数行数、文档死链; 没有镜像的机器回退到 quality_gate.py,
@@ -542,6 +557,15 @@ def publish(zips, dry_run):
 
 # ---------------- 主流程 ----------------
 
+def preflight(publish):
+    check_clean_tree()
+    check_version_shape()
+    check_tag_available()
+    check_align_distributed()
+    if publish:
+        check_gh()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--publish", action="store_true",
@@ -559,11 +583,7 @@ def main():
 
     try:
         say("[1/{}] {}".format(len(steps), steps[0]))
-        check_clean_tree()
-        check_version_shape()
-        check_tag_available()
-        if args.publish:
-            check_gh()
+        preflight(args.publish)
 
         say("\n[2/{}] {}".format(len(steps), steps[1]))
         run_quality()

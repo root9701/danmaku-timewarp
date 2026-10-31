@@ -38,7 +38,10 @@ def key_date(key: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true", help="真正写入(默认只干跑)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="真正写入(默认只干跑)")
+    mode.add_argument("--check", action="store_true",
+                      help="只检查是否还有待分发记录, 有待分发退出码 1")
     args = ap.parse_args()
 
     if not MATCHES.is_file():
@@ -88,6 +91,22 @@ def main() -> int:
     if unassigned["align"] or unassigned["lists"]:
         print(f"无法归日(留在本地层): {len(unassigned['align'])} 条记录, "
               f"{len(unassigned['lists'])} 天 lists")
+
+    if args.check:
+        # 只算"有数据目录、真能写进去"的天: 没有目录的日期 apply 会跳过,
+        # 拿它拦住发布会让人无路可走。
+        pending_a = pending_l = 0
+        for d, e in per_day.items():
+            if not (DATA / d).is_dir():
+                print(f"  跳过 {d}: data/{d}/ 不存在, 无法分发")
+                continue
+            pending_a += len(e["align"])
+            pending_l += len(e["lists"])
+        if pending_a or pending_l:
+            print(f"\n[检查] 有 {pending_a} 条对齐 / {pending_l} 天 lists 待在 data/ 分发")
+            return 1
+        print("\n[检查] 本地层没有待分发记录")
+        return 0
 
     if not args.apply:
         print("\n[干跑] 加 --apply 才写入")

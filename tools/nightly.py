@@ -13,6 +13,7 @@
 """
 import argparse
 import asyncio
+import contextlib
 import json
 import subprocess
 import sys
@@ -117,6 +118,9 @@ def publish(day: str, dry_run: bool = False) -> bool:
               f"pack_data --index --staged, git commit")
         return False
     _run_py("tools/split_matches.py", "--apply")
+    # split 成功后本地层已清空, 它留下的 .bak 不再需要(现场纪律: 不留 .bak)
+    with contextlib.suppress(OSError):
+        (ROOT / "danmaku-server" / "matches.json.bak").unlink()
     rels = [p.relative_to(ROOT).as_posix() for p in paths]
     if rels:
         _git("add", "--", *rels)
@@ -192,6 +196,13 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
     active = [only_date] if only_date else running_days()
     if not active:
         print("没有正在采集的会话")
+    days = sorted(set(active) | set(dirty_days()))
+    if dry_run:
+        # 真 dry-run: 不联网、不校准、不写本地层, 只打印将要发布的日期
+        print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
+        for day in days:
+            publish(day, dry_run=True)
+        return
     async with aiohttp.ClientSession() as session:
         for day in active:
             try:
@@ -200,9 +211,9 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
                 print(f"{day}: 刷新赛程失败({e})")
             await calibrate_day(day, session)
     # 收尾后的数据不在 running_days 里, 但 afp/meta 还没提交 —— 一并发布
-    for day in sorted(set(active) | set(dirty_days())):
+    for day in days:
         try:
-            publish(day, dry_run=dry_run)
+            publish(day, dry_run=False)
         except Exception as e:
             print(f"{day}: 发布失败({e})")
 

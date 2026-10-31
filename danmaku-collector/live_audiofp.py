@@ -199,7 +199,7 @@ async def _pick_low_qn_flv(session, room_id):
 
     streams, qn_desc = await call(0)
     if streams and qn_desc:
-        low, low_desc = await call(min(qn_desc))
+        low, _ = await call(min(qn_desc))
         if low:
             streams = low
     if not streams:

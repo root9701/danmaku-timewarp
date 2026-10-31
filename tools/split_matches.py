@@ -26,10 +26,6 @@ SRV = ROOT / "danmaku-server"
 MATCHES = SRV / "matches.json"
 DATA = ROOT / "data"
 ALIGN_NAME = "align.json"
-# 旧布局: danmaku-server/align/{日期}.json。迁移后不再写入, 仅用于一次性搬迁。
-LEGACY_ALIGN = SRV / "align"
-
-DATE_KEYS = ("date", "data_date", "match_date")
 
 
 def key_date(key: str):

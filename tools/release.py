@@ -302,7 +302,13 @@ def check_gh():
 # ---------------- 2. 质量与数据 ----------------
 
 def run_quality():
-    ok, out = _py("tools/quality_gate.py")
+    # 规范/ 是本机镜像(.gitignore 不入库)。有镜像时走统一入口: 它在此脚本之外
+    # 还查文件/函数行数、文档死链; 没有镜像的机器回退到 quality_gate.py,
+    # 仍能查语法、死代码、复杂度, 但行数账要靠人工对照 架构总览.md。
+    if (ROOT / "规范" / "gate.py").is_file():
+        ok, out = _py("规范/gate.py", "--config", "tools/gate.json")
+    else:
+        ok, out = _py("tools/quality_gate.py")
     tail = "\n".join(out.splitlines()[-4:])
     if not ok:
         raise StepFailed(f"质量闸门未通过:\n{tail}")

@@ -1,23 +1,28 @@
 # -*- coding: utf-8 -*-
-"""quality_gate.py — 架构与质量闸门，靠退出码说话。
+"""quality_gate.py — 复杂度 / 死代码 / 未用名闸门，靠退出码说话。
 
 用法: python tools/quality_gate.py [--json]
 
 退出码:
-  0  全过
-  1  有超限(函数 60 行 / 文件 400 行 / 圈复杂度 15 / 死代码)
+  0  死代码、未用名、语法错误均为 0（圈复杂度超限只报数，属已登记存量债）
+  1  有语法错误 / 死代码 / 未用名
+
+分工（避免同一件事两处各数一遍）:
+  文件 400 行、函数 60 行、链接与文档总量由 规范/gate.py + tools/gate.json 判;
+  本脚本只管需要工具链取数的三项。发布时 release.py 优先走 规范/gate.py
+  （本机有镜像），没有镜像的机器回退到本脚本，仍能查语法、死代码与复杂度。
 
 判据与取数手段同尺:
-  函数行数   AST 行跨度(end_lineno - lineno + 1), 不用 PLR0915(那数的是语句数)
-  文件行数   物理行数
+  语法       ast.parse 每个 .py
   圈复杂度   ruff C901, 阈值 15
-  死代码     vulture 60% 置信
+  死代码     vulture 60% 置信（框架回调按名忽略：它们由基类分发，静态分析看不到调用点）
   未用名     ruff F401,F841
 
 超标项必须登记在 架构总览.md 的「架构债」表里, 只减不增;
 本脚本只报数, 不判是否可接受 —— 让数字可复现, 别靠回忆。
 """
 import argparse
+import ast
 import json
 import pathlib
 import re
@@ -31,9 +36,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CODE_DIRS = ("danmaku-server", "danmaku-collector", "tools")
 SKIP = ("__pycache__", ".venv", "tests")
 
-FUNC_MAX_LINES = 60
-FILE_MAX_LINES = 400
 MAX_COMPLEXITY = 15
+# BaseHTTPRequestHandler 按方法名分发 do_GET/do_POST/log_message, 静态分析看不见调用点。
+VULTURE_IGNORE_NAMES = "do_GET,do_POST,log_message"
 
 
 def iter_py():
@@ -45,42 +50,19 @@ def iter_py():
             yield p
 
 
-def iter_js():
-    for p in sorted((ROOT / "danmaku-server" / "web").rglob("*.js")):
-        if "__pycache__" not in str(p):
-            yield p
-
-
-def ast_findings():
-    """函数行数超限清单。"""
-    import ast
-
+def syntax_findings():
+    """语法错误清单。它必须让闸门变红 —— 语法错时行数/死代码都不可信。"""
     bad = []
     for p in iter_py():
         try:
-            tree = ast.parse(p.read_text(encoding="utf-8"))
+            ast.parse(p.read_text(encoding="utf-8"))
         except SyntaxError as e:
-            bad.append((p, f"<语法错误>", e.lineno or 0, 0, "syntax"))
-            continue
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                span = n.end_lineno - n.lineno + 1
-                if span > FUNC_MAX_LINES:
-                    bad.append((p, n.name, n.lineno, span, "func_lines"))
-    return bad
-
-
-def file_findings():
-    bad = []
-    for p in list(iter_py()) + list(iter_js()):
-        n = len(p.read_text(encoding="utf-8").splitlines())
-        if n > FILE_MAX_LINES:
-            bad.append((p, p.name, 1, n, "file_lines"))
+            bad.append(f"{p.relative_to(ROOT)}:{e.lineno or 0} 语法错误: {e.msg}")
     return bad
 
 
 def ruff_complexity():
-    """ruff C901, 阈值 15。返回 [(文件, 函数名, 复杂度)]。"""
+    """ruff C901, 阈值 15。返回 [(函数名, 复杂度)]。"""
     cmd = [sys.executable, "-m", "ruff", "check", "--no-cache",
            "--select", "C901",
            "--config", f"lint.mccabe.max-complexity={MAX_COMPLEXITY}",
@@ -100,22 +82,40 @@ def ruff_complexity():
     return out
 
 
+def parse_vulture_line(line):
+    """vulture 输出是 `路径:行: 消息`（只有两个冒号），不是 columns 四段。
+
+    返回 (路径, 行号, 消息)；不是结果行返回 None。
+    单独抽出来是因为这里曾把三段切成四段、全部静默丢弃，让"死代码 0"变成假绿灯。
+    """
+    line = line.strip()
+    if not line or ":" not in line:
+        return None
+    parts = line.split(":", 2)
+    if len(parts) != 3:
+        return None
+    f, ln, msg = parts[0], parts[1], parts[2]
+    if not ln.isdigit():
+        return None
+    return f, ln, msg.strip()
+
+
 def vulture_findings():
-    cmd = [sys.executable, "-m", "vulture", *CODE_DIRS, "--min-confidence", "60"]
+    cmd = [sys.executable, "-m", "vulture", *CODE_DIRS,
+           "--min-confidence", "60",
+           "--ignore-names", VULTURE_IGNORE_NAMES,
+           "--exclude", ".venv,__pycache__"]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     rows = []
     for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
+        parsed = parse_vulture_line(line)
+        if not parsed:
             continue
-        parts = line.split(":", 3)
-        if len(parts) < 4:
-            continue
-        f, ln, msg = parts[0], parts[1], parts[3]
+        f, ln, msg = parsed
         if any(x in f.replace("\\", "/") for x in SKIP):
             continue
-        rows.append((f, ln, msg.strip()))
+        rows.append((f, ln, msg))
     return rows
 
 
@@ -137,19 +137,14 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    funcs = ast_findings()
-    files = file_findings()
+    syntax = syntax_findings()
     cx = ruff_complexity()
     dead = vulture_findings()
     unused = ruff_unused()
 
     if args.json:
         print(json.dumps({
-            "func_over": [{"file": str(p.relative_to(ROOT)), "name": n,
-                           "line": ln, "span": s}
-                          for p, n, ln, s, _ in funcs],
-            "file_over": [{"file": str(p.relative_to(ROOT)), "lines": s}
-                          for p, _, _, s, _ in files],
+            "syntax": syntax,
             "complexity_over": [{"name": n, "value": v} for n, v in cx],
             "dead_code": [{"file": f, "line": ln, "msg": m} for f, ln, m in dead],
             "unused": unused,
@@ -166,23 +161,20 @@ def main() -> int:
         return True
 
     red = False
-    red |= section(f"函数 > {FUNC_MAX_LINES} 行 ({len(funcs)})",
-                   [f"{p.relative_to(ROOT)}:{ln} {n} {s} 行"
-                    for p, n, ln, s, _ in funcs])
-    red |= section(f"文件 > {FILE_MAX_LINES} 行 ({len(files)})",
-                   [f"{p.relative_to(ROOT)} {s} 行" for p, _, _, s, _ in files])
+    red |= section(f"语法错误 ({len(syntax)})", syntax)
     red |= section(f"圈复杂度 > {MAX_COMPLEXITY} ({len(cx)})",
                    [f"{n} {v}" for n, v in cx])
     red |= section(f"死代码 ({len(dead)})",
                    [f"{f}:{ln} {m}" for f, ln, m in dead])
     red |= section(f"未用导入/变量 ({len(unused)})", unused)
 
-    total = len(funcs) + len(files) + len(cx) + len(dead) + len(unused)
+    total = len(syntax) + len(cx) + len(dead) + len(unused)
     if red:
         # 存量超限已在 架构总览.md「架构债」登记, 是"只减不增"的账, 不等于回归失败。
-        # 真正的红线是死代码与未用名: 那两项必须为 0。
-        if dead or unused:
-            print(f"\nFAIL: {total} 项超限, 其中死代码 {len(dead)} / 未用名 {len(unused)} 必须清零")
+        # 真正的红线是语法错误、死代码与未用名: 那三项必须为 0。
+        if syntax or dead or unused:
+            print(f"\nFAIL: {total} 项超限, 其中语法错误 {len(syntax)} / "
+                  f"死代码 {len(dead)} / 未用名 {len(unused)} 必须清零")
             return 1
         print(f"\nDEBT: {total} 项存量超限(已登记, 只减不增); 死代码与未用名均为 0")
         return 0

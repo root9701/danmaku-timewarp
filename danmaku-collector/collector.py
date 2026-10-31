@@ -292,7 +292,7 @@ class SingleInstanceLock:
 
 
 def install_signals(stop_event, reason):
-    def on_sig(signum, frame):
+    def on_sig(*_):
         if not stop_event.is_set():
             reason["value"] = "interrupt"
             stop_event.set()

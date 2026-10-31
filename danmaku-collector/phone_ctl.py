@@ -160,7 +160,7 @@ def _log_lines():
         return []
 
 
-def inject(cmd, keep_screen_on_during=True, mark=None):
+def inject(cmd, mark=None):
     """把命令打进 Termux 终端并回车; 自动处理 亮屏/解锁/焦点/IME/灭屏 全流程。
     返回本次注入的标记(整数, 单调递增), 调用方应把该标记拼进回调 URL(如 /CB{mark}),
     这样 wait_cb 只认注入之后新出现的行, 不会命中历史旧回调。"""

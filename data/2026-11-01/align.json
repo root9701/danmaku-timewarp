@@ -2,17 +2,72 @@
   "align": {
     "2026-11-01|7734200": {
       "bvs": [
-        "BV1jpxJ6JEtF"
+        "BV1jpxJ6JEtF",
+        "BV1gqxH6mEo2"
       ],
       "date": "2026-11-01",
       "file": "7734200",
       "offset_sec": 45.492
     },
+    "2026-11-01|7734200|BV1gqxH6mEo2": {
+      "auto": {
+        "confidence": 4.748,
+        "method": "audiofp",
+        "ts": "2026-11-01T06:47:02"
+      },
+      "bv": "BV1gqxH6mEo2",
+      "date": "2026-11-01",
+      "file": "7734200",
+      "offset_sec": 6476.57,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 4.748,
+          "duration": 3230,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 6476.57,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、5 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T06:47:02",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 8.074,
+          "duration": 3760,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 9941.492,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T06:47:02",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 4.049,
+          "duration": 3076,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 13970.538,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、4 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T06:47:02",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月1日 LOS vs LYON",
+      "total_pages": 3
+    },
     "2026-11-01|7734200|BV1jpxJ6JEtF": {
       "auto": {
         "confidence": 12.043,
         "method": "audiofp",
-        "ts": "2026-11-01T05:46:19"
+        "ts": "2026-11-01T06:46:47"
       },
       "bv": "BV1jpxJ6JEtF",
       "date": "2026-11-01",
@@ -29,7 +84,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-01T05:46:19",
+          "ts": "2026-11-01T06:46:47",
           "votes": 8
         },
         "2": {
@@ -42,7 +97,7 @@
           "part": "第二局",
           "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-01T05:46:19",
+          "ts": "2026-11-01T06:46:47",
           "votes": 8
         }
       },

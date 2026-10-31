@@ -1,7 +1,7 @@
 """夜间流水线: 每小时巡检 -> 校准 -> 分发 -> 提交。
 
 用法:
-    python tools/nightly.py --once          # 跑一轮(适合交给计划任务)
+    python tools/nightly.py                # 跑一轮(适合交给计划任务)
     python tools/nightly.py --loop          # 常驻, 每 --interval 秒一轮
     python tools/nightly.py --date 2026-10-31 --dry-run
 

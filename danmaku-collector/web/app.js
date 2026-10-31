@@ -292,7 +292,9 @@ async function refreshStatus() {
   const pill = $('status');
   pill.textContent = running ? '采集中' : (queued ? '队列待命' : '空闲');
   pill.className = 'pill' + (running ? ' run' : (queued ? '' : ''));
-  $('queue-info').textContent = queued ? '队列运行中' : '队列未启动';
+  $('queue-info').textContent = queued
+    ? ('队列运行中' + (j.pipeline_running ? ' · 发布流水线运行中' : ' · 发布流水线未运行'))
+    : '队列未启动';
 
   const t = j.current_task;
   $('current-task').textContent = t

@@ -5,6 +5,7 @@
 import asyncio
 import contextlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -18,9 +19,14 @@ import tasks
 PORT = 8787
 STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
-         "deadline": None, "current_task": None, "manual_stop": False}
+         "deadline": None, "current_task": None, "manual_stop": False,
+         "pipeline": None, "pipeline_log": None}
 TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
 WEB_DIR = collector.SCRIPT_DIR / "web"
+ROOT = collector.SCRIPT_DIR.parent
+NIGHTLY = ROOT / "tools" / "nightly.py"
+PIPELINE_INTERVAL = 3600     # 每小时巡检一次
+
 
 def _read_json_config():
     path = collector.SCRIPT_DIR / "config.json"
@@ -332,11 +338,56 @@ async def _pause(stop_event, seconds: float) -> None:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
 
 
+def _pipeline_start() -> bool:
+    """随队列启动夜间发布(独立子进程)。发布失败不影响采集 —— 这是硬边界。"""
+    proc = STATE.get("pipeline")
+    if proc is not None and proc.poll() is None:
+        return True
+    if not NIGHTLY.is_file():
+        collector.log.warning("夜间发布不可用: 缺少 %s", NIGHTLY)
+        return False
+    log_path = collector.SCRIPT_DIR / "logs" / "nightly.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "ab")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        STATE["pipeline"] = subprocess.Popen(
+            [sys.executable, str(NIGHTLY), "--loop", "--interval", str(PIPELINE_INTERVAL)],
+            cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
+            creationflags=flags,
+            env=dict(os.environ, PYTHONUNBUFFERED="1"))
+    except OSError as e:
+        collector.log.warning("夜间发布启动失败(采集继续): %s", e)
+        log_file.close()
+        return False
+    STATE["pipeline_log"] = log_file
+    collector.log.info("夜间发布已启动(PID %s)", STATE["pipeline"].pid)
+    return True
+
+
+def _pipeline_stop() -> None:
+    """停止夜间发布子进程; 只影响发布, 不碰采集。"""
+    proc, STATE["pipeline"] = STATE.get("pipeline"), None
+    if proc is not None and proc.poll() is None:
+        with contextlib.suppress(Exception):
+            proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    log_file = STATE.pop("pipeline_log", None)
+    if log_file is not None:
+        with contextlib.suppress(Exception):
+            log_file.close()
+
+
 async def _queue_loop() -> None:
     """队列守护: 取下一场 -> 等开始 -> 跑完 -> 再取。关窗或停止队列时退出。"""
     qstop = STATE["queue_stop"]
     collector.set_keep_awake(True)      # 等待下一场时也不让电脑睡
     lock = STATE.get("lock")
+    _pipeline_start()
     try:
         while not qstop.is_set():
             if STATE["task"] and not STATE["task"].done():
@@ -355,6 +406,7 @@ async def _queue_loop() -> None:
                 continue
             await _queue_task(nxt)
     finally:
+        _pipeline_stop()
         STATE["queue_task"] = None
         collector.set_keep_awake(False)
         if lock is not None:
@@ -467,10 +519,13 @@ async def api_status(request):
         except (OSError, ValueError):
             pass
     queue_running = bool(STATE.get("queue_task") and not STATE["queue_task"].done())
+    proc = STATE.get("pipeline")
+    pipeline_running = bool(proc is not None and proc.poll() is None)
     deadline = STATE.get("deadline")
     return web.json_response({"running": running, "mode": STATE["mode"],
                               "started_at": STATE["started_at"],
                               "queue_running": queue_running,
+                              "pipeline_running": pipeline_running,
                               "current_task": STATE.get("current_task"),
                               "deadline": deadline.at.strftime("%H:%M") if deadline else None,
                               "finished_reason": STATE["reason"]["value"] if (not running and STATE["reason"]) else None,
@@ -478,6 +533,7 @@ async def api_status(request):
 
 
 async def on_shutdown(app):
+    _pipeline_stop()
     qstop = STATE.get("queue_stop")
     if qstop is not None:
         qstop.set()

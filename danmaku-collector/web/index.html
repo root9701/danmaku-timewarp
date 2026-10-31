@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>弹幕采集控制台</title>
+<link rel="stylesheet" href="/web/style.css">
+<script src="/web/app.js" defer></script>
+</head>
+<body>
+<div class="wrap">
+  <h1>
+    弹幕采集控制台
+    <span id="status" class="pill">加载中</span>
+    <span id="queue-info" class="sub grow"></span>
+    <span class="sub">http://127.0.0.1:8787</span>
+  </h1>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>采集任务（按日期排队，一次可排多晚）</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th><th>开始</th><th>截止</th><th>房间号</th>
+              <th>写入</th><th>状态</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="task-rows"></tbody>
+        </table>
+        <div class="empty" id="task-empty" hidden>还没有任务。点「新增任务」排一晚。</div>
+        <div class="btns">
+          <button id="btn-add-task">新增任务</button>
+          <button id="btn-save-tasks" class="primary">保存任务</button>
+          <button id="btn-queue-start">启动队列</button>
+          <button id="btn-queue-stop" class="danger">停止队列</button>
+        </div>
+        <div class="hint">截止早于开始时按跨零点处理；「写入」是按结束时刻归的数据日。</div>
+      </div>
+
+      <div class="card">
+        <h2>运行控制</h2>
+        <div class="kv">
+          <span class="k">当前任务</span><span id="current-task">无</span>
+          <span class="k">预计收尾</span><span id="deadline">—</span>
+        </div>
+        <div class="btns">
+          <button id="btn-stop-task" class="danger" disabled>结束本次</button>
+          <button id="btn-extend-30" disabled>延长 30 分钟</button>
+          <button id="btn-extend-60" disabled>延长 1 小时</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button id="btn-test">测试采集</button>
+          <input id="test-sec" type="number" min="10" max="600" value="60" class="narrow">
+          <span class="hint" style="margin:0">秒（使用下面的默认房间）</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>默认配置（仅测试与单次挂机用；队列任务自带房间）</h2>
+        <div class="row">
+          <div class="grow">
+            <label>默认房间号（多个用英文逗号分隔）</label>
+            <input id="cfg-rooms" placeholder="例如 7734200">
+          </div>
+          <div>
+            <label>轮询间隔（秒）</label>
+            <input id="cfg-poll" type="number" min="5" class="narrow">
+          </div>
+          <button id="btn-save-config" style="align-self:flex-end">保存配置</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>运行日志</h2>
+        <div id="log" class="log">等待中…</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>官方赛程 <span id="schedule-date" class="sub"></span></h2>
+        <table>
+          <thead>
+            <tr><th>开赛</th><th>对阵</th><th>回放</th><th>对齐</th></tr>
+          </thead>
+          <tbody id="schedule-rows"></tbody>
+        </table>
+        <div class="empty" id="schedule-empty" hidden>还没有赛程。点「刷新赛程」。</div>
+        <div class="btns">
+          <button id="btn-refresh-schedule">刷新赛程</button>
+        </div>
+        <div class="hint">赛程来自 Riot，回放 BV 由 B 站搜索；搜不到时可手动补。</div>
+      </div>
+
+      <div class="card">
+        <h2>最近一次结果</h2>
+        <div class="kv" id="result">
+          <span class="k">状态</span><span>暂无</span>
+        </div>
+        <div class="btns">
+          <button id="btn-danmaku">查看弹幕内容</button>
+        </div>
+        <div id="dm-list" class="dm" hidden></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+</body>
+</html>

@@ -5,6 +5,7 @@
 import asyncio
 import contextlib
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,221 +20,7 @@ STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
          "deadline": None, "current_task": None, "manual_stop": False}
 TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
-
-INDEX_HTML = r"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>弹幕采集控制台</title>
-<style>
-  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --txt:#e6e9ef; --dim:#8b93a3;
-          --acc:#4c8dff; --ok:#3fb96f; --warn:#e0a23c; --err:#e05c5c; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--txt); font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif; padding:24px; }
-  .wrap { max-width:980px; margin:0 auto; }
-  h1 { font-size:20px; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-  .pill { font-size:12px; padding:3px 12px; border-radius:999px; background:#2a2f3a; color:var(--dim); }
-  .pill.run { background:#12351f; color:var(--ok); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:16px; }
-  .card h2 { font-size:15px; margin-bottom:12px; color:var(--dim); font-weight:600; }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 20px; }
-  label { display:block; font-size:12px; color:var(--dim); margin-bottom:4px; }
-  input { width:100%; background:#10131a; color:var(--txt); border:1px solid var(--line);
-          border-radius:6px; padding:8px 10px; font-size:14px; }
-  input:focus { outline:none; border-color:var(--acc); }
-  .hint { font-size:12px; color:var(--dim); margin-top:4px; }
-  .btns { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
-  button { border:none; border-radius:6px; padding:10px 20px; font-size:14px; cursor:pointer;
-           color:#fff; background:#3a4150; }
-  button:hover { filter:brightness(1.15); }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  #btn-night { background:var(--acc); }
-  #btn-test { background:var(--ok); }
-  #btn-stop { background:var(--err); }
-  .row { display:flex; gap:10px; align-items:center; }
-  #log { background:#0a0c10; border:1px solid var(--line); border-radius:6px; padding:10px;
-         font:12px/1.5 Consolas,monospace; height:260px; overflow-y:auto; white-space:pre-wrap;
-         word-break:break-all; color:#9fb0c8; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  td { padding:4px 8px; border-bottom:1px solid var(--line); }
-  td:first-child { color:var(--dim); width:130px; }
-  .warn { color:var(--warn); font-size:13px; }
-  #toast { position:fixed; top:16px; right:16px; background:#2a2f3a; border-left:3px solid var(--acc);
-           padding:10px 16px; border-radius:6px; display:none; font-size:13px; }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>弹幕采集控制台 <span id="status" class="pill">加载中</span></h1>
-
-  <div class="card">
-    <h2>采集配置（保存后对下一次启动生效）</h2>
-    <div class="grid">
-      <div>
-        <label>直播间房间号（多个用英文逗号分隔）</label>
-        <input id="cfg-rooms" placeholder="例如 7734200">
-        <div class="hint">填你要采集的直播间房间号；B站直播间地址里的数字即房间号</div>
-      </div>
-      <div>
-        <label>最早开始时刻</label>
-        <div class="row">
-          <input id="cfg-start" placeholder="00:30">
-          <button style="padding:8px 10px" onclick="setStart('00:30')">今晚00:30</button>
-          <button style="padding:8px 10px" onclick="setStart('now')">立即</button>
-        </div>
-        <div class="hint">格式 HH:MM（到点才开始轮询）/ now（立即）/ +5m（5分钟后）</div>
-      </div>
-      <div>
-        <label>最晚结束时刻（留空 = 不自动停）</label>
-        <input id="cfg-end" placeholder="09:00">
-        <div class="hint">到点自动收尾；也可随时点"停止"</div>
-      </div>
-      <div>
-        <label>轮询间隔（秒，未开播时多久查一次）</label>
-        <input id="cfg-poll" type="number" min="5" placeholder="30">
-      </div>
-    </div>
-    <div class="btns">
-      <button onclick="saveConfig()">保存配置</button>
-      <span class="hint" id="cfg-saved" style="align-self:center"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>运行控制</h2>
-    <div class="btns" style="margin-top:0">
-      <button id="btn-night" onclick="start('night')">开始今晚挂机</button>
-      <div class="row">
-        <button id="btn-test" onclick="start('test')">测试采集</button>
-        <input id="test-sec" type="number" min="10" max="600" value="60" style="width:80px">
-        <span class="hint">秒（房间用上面配置里的第一个）</span>
-      </div>
-      <button id="btn-stop" onclick="stopRun()" disabled>停止</button>
-    </div>
-    <div class="warn" style="margin-top:10px" id="run-warn" hidden>
-      采集运行期间请勿关闭黑色控制台窗口（可最小化）。
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>实时日志</h2>
-    <div id="log">等待中…</div>
-  </div>
-
-  <div class="card">
-    <h2>最近一次结果</h2>
-    <table id="result"><tr><td>暂无</td><td></td></tr></table>
-    <div class="btns" style="margin-top:10px">
-      <button onclick="showDanmaku()">查看弹幕内容（最近一次采集）</button>
-    </div>
-    <div id="dm-list" style="margin-top:10px; background:#0a0c10; border:1px solid var(--line);
-         border-radius:6px; padding:10px; font:12px/1.8 Consolas,monospace; max-height:240px;
-         overflow-y:auto" hidden></div>
-  </div>
-</div>
-<div id="toast"></div>
-<script>
-let timer = null;
-const $ = id => document.getElementById(id);
-
-function toast(msg, ok) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.style.borderLeftColor = ok ? "var(--ok)" : "var(--err)";
-  t.style.display = "block";
-  setTimeout(() => t.style.display = "none", 3000);
-}
-function setStart(v) { $("cfg-start").value = v; }
-
-async function loadConfig() {
-  const r = await (await fetch("/api/config")).json();
-  if (r.ok) {
-    $("cfg-rooms").value = (r.config.rooms || []).join(",");
-    $("cfg-start").value = r.config.earliest_start ?? "";
-    $("cfg-end").value = r.config.latest_end ?? "";
-    $("cfg-poll").value = r.config.poll_interval_sec ?? 30;
-  }
-}
-async function saveConfig() {
-  const body = {
-    rooms: $("cfg-rooms").value.split(/[,，\s]+/).filter(Boolean),
-    earliest_start: $("cfg-start").value.trim() || "now",
-    latest_end: $("cfg-end").value.trim() || "",
-    poll_interval_sec: parseInt($("cfg-poll").value || "30", 10),
-  };
-  const r = await (await fetch("/api/config", {method: "POST",
-    headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})).json();
-  toast(r.ok ? "配置已保存" : "保存失败: " + r.error, r.ok);
-  if (r.ok) $("cfg-saved").textContent = "已保存 " + new Date().toLocaleTimeString();
-}
-
-async function start(mode) {
-  const body = mode === "test" ? {mode: "test", seconds: parseInt($("test-sec").value || "60", 10)}
-                               : {mode: "night"};
-  const r = await (await fetch("/api/start", {method: "POST",
-    headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})).json();
-  toast(r.ok ? (mode === "test" ? "测试已开始" : "挂机已开始") : "启动失败: " + r.error, r.ok);
-  refresh();
-}
-async function stopRun() {
-  if (!confirm("确定停止采集？已录数据会正常收尾。")) return;
-  const r = await (await fetch("/api/stop", {method: "POST"})).json();
-  toast(r.ok ? "已发出停止指令，正在收尾…" : "失败: " + r.error, r.ok);
-}
-
-async function refresh() {
-  try {
-    const s = await (await fetch("/api/status")).json();
-    const pill = $("status");
-    if (s.running) {
-      pill.className = "pill run";
-      pill.textContent = "运行中 · " + (s.mode === "test" ? "测试采集" : "今晚挂机") +
-        (s.started_at ? " · 自 " + s.started_at : "");
-    } else {
-      pill.className = "pill";
-      pill.textContent = s.finished_reason ? "已结束 · " + s.finished_reason : "空闲";
-    }
-    $("btn-stop").disabled = !s.running;
-    $("btn-night").disabled = s.running;
-    $("btn-test").disabled = s.running;
-    $("run-warn").hidden = !s.running || s.mode !== "night";
-    const logBox = $("log");
-    logBox.textContent = s.log_tail || "（暂无日志）";
-    logBox.scrollTop = logBox.scrollHeight;
-    const tb = $("result");
-    if (s.last_result) {
-      const m = s.last_result;
-      tb.innerHTML = [
-        ["弹幕条数", m.dm_count], ["SC 条数", m.sc_count], ["断线重连", m.reconnect_count],
-        ["录制起", m.record_start], ["录制止", m.record_end],
-        ["结束原因", m.ended_by], ["房间", m.room], ["数据文件", m.gz_path || "-"],
-      ].map(x => "<tr><td>" + x[0] + "</td><td>" + x[1] + "</td></tr>").join("");
-    }
-  } catch (e) { /* 忽略单次轮询失败 */ }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
-}
-async function showDanmaku() {
-  const box = $("dm-list");
-  box.hidden = false;
-  box.textContent = "加载中…";
-  const r = await (await fetch("/api/danmaku?n=50")).json();
-  if (!r.ok) { box.textContent = r.error; return; }
-  box.innerHTML = "<div style='color:var(--dim)'>文件: " + escapeHtml(r.file) +
-    "（显示最近 " + r.count + " 条，新的在前）</div>" +
-    r.rows.map(x => "<div>" + (x.ty === "sc" ? "[SC] " : "") + escapeHtml(x.time) + " " +
-      escapeHtml(x.un || "") + ": " + escapeHtml(x.t || "") + "</div>").join("");
-}
-
-loadConfig();
-refresh();
-timer = setInterval(refresh, 2000);
-</script>
-</body>
-</html>"""
-
+WEB_DIR = collector.SCRIPT_DIR / "web"
 
 def _read_json_config():
     path = collector.SCRIPT_DIR / "config.json"
@@ -564,6 +351,61 @@ async def api_queue_stop(request):
     return web.json_response({"ok": True})
 
 
+def _latest_data_date() -> str:
+    """最近一个带 align.json 的数据日。"""
+    data_dir = _data_dir()
+    if not data_dir.is_dir():
+        return ""
+    for day in sorted(data_dir.iterdir(), reverse=True):
+        if (day.is_dir() and len(day.name) == 10
+                and (day / "align.json").is_file()):
+            return day.name
+    return ""
+
+
+def _load_schedule() -> dict:
+    """读分发层的赛程(align.json 的 lists)。读不到就是空, 不报错。"""
+    day = _latest_data_date()
+    if not day:
+        return {"ok": True, "date": "", "lists": {}}
+    try:
+        d = json.loads((_data_dir() / day / "align.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": True, "date": day, "lists": {}}
+    return {"ok": True, "date": day, "lists": d.get("lists") or {}}
+
+
+async def api_schedule(request):
+    return web.json_response(_load_schedule())
+
+
+async def api_schedule_refresh(request):
+    """调夜间流水线的赛程发现(子进程, 不 import 播放端)。"""
+    root = collector.SCRIPT_DIR.parent
+    script = root / "tools" / "nightly.py"
+    if not script.is_file():
+        return web.json_response(
+            {"ok": False, "error": "当前不是仓库布局, 无法刷新赛程(缺 tools/nightly.py)"})
+    day = _latest_data_date() or datetime.now().strftime("%Y-%m-%d")
+
+    def _run():
+        return subprocess.run(
+            [sys.executable, str(script), "--discover-only", "--date", day],
+            cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+            timeout=300)
+
+    try:
+        r = await asyncio.to_thread(_run)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"刷新赛程失败: {e}"})
+    if r.returncode != 0:
+        tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
+        return web.json_response({"ok": False, "error": f"刷新赛程失败: {tail}"})
+    data = _load_schedule()
+    data["output"] = (r.stdout or "").strip()[-500:]
+    return web.json_response(data)
+
+
 async def api_status(request):
     running = bool(STATE["task"] and not STATE["task"].done())
     log_tail = ""
@@ -626,7 +468,8 @@ def main():
     if os.environ.get("NO_BROWSER") != "1":
         threading.Timer(1.5, _open_browser).start()
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text=INDEX_HTML, content_type="text/html"))
+    app.router.add_get("/", lambda r: web.FileResponse(WEB_DIR / "index.html"))
+    app.router.add_static("/web/", WEB_DIR)
     app.router.add_route("*", "/api/config", api_config)
     app.router.add_post("/api/start", api_start)
     app.router.add_post("/api/stop", api_stop)
@@ -636,6 +479,8 @@ def main():
     app.router.add_post("/api/queue/stop", api_queue_stop)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/danmaku", api_danmaku)
+    app.router.add_get("/api/schedule", api_schedule)
+    app.router.add_post("/api/schedule/refresh", api_schedule_refresh)
     app.on_shutdown.append(on_shutdown)
     print("=" * 46)
     print("  弹幕采集控制台已启动")

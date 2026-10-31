@@ -207,16 +207,29 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
             print(f"{day}: 发布失败({e})")
 
 
+async def discover_days(days: list) -> None:
+    """只刷新赛程(采集控制台的「刷新赛程」按钮用)。"""
+    for day in days:
+        try:
+            await discover(day)
+        except Exception as e:
+            print(f"{day}: 刷新赛程失败({e})")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="夜间巡检: 校准 + 分发 + 本地提交")
     ap.add_argument("--date", default="", help="只处理这一天(默认扫描正在采集的日期)")
     ap.add_argument("--loop", action="store_true", help="常驻, 按 --interval 循环")
     ap.add_argument("--interval", type=int, default=3600, help="巡检间隔(秒)")
     ap.add_argument("--dry-run", action="store_true", help="只打印动作, 不写不改不提交")
+    ap.add_argument("--discover-only", action="store_true", help="只刷新赛程, 不校准/发布")
     args = ap.parse_args()
     if args.date and not _valid_day(args.date):
         print(f"日期格式不对: {args.date}")
         return 2
+    if args.discover_only:
+        asyncio.run(discover_days([args.date] if args.date else running_days()))
+        return 0
     while True:
         asyncio.run(tick(args.dry_run, args.date))
         if not args.loop:

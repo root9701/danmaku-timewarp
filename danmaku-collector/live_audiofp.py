@@ -316,7 +316,7 @@ class AudioFingerprinter:
         """跑一段 ffmpeg 直到退出/断流/停止; 返回段存活秒数。"""
         self._begin_segment()
         t_start = time.monotonic()
-        # Termux 等环境用系统 ffmpeg; Windows 无系统 ffmpeg 时回落到 imageio-ffmpeg 自带二进制
+        # 非 Windows 环境用系统 ffmpeg; Windows 无系统 ffmpeg 时回落到 imageio-ffmpeg 自带二进制
         exe = shutil.which("ffmpeg")
         if exe is None:
             try:

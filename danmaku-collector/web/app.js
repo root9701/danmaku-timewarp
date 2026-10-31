@@ -126,6 +126,19 @@ function addTask() {
   renderTasks(taskCache, dataDates);
 }
 
+async function draftTasks() {
+  try {
+    const j = await api('/api/tasks/draft', { method: 'POST' });
+    const have = new Set(taskCache.map((t) => t.date));
+    const added = (j.tasks || []).filter((t) => !have.has(t.date));
+    if (!added.length) { toast('没有新的赛程草稿'); return; }
+    added.forEach((t) => dataDates.push(''));
+    taskCache = taskCache.concat(added);
+    renderTasks(taskCache, dataDates);
+    toast('已生成 ' + added.length + ' 条草稿，确认后点「保存任务」');
+  } catch (e) { toast(e.message, false); }
+}
+
 /* ---------- 运行控制 ---------- */
 async function startQueue() {
   try {
@@ -316,6 +329,7 @@ async function showDanmaku() {
 
 function bind() {
   $('btn-add-task').addEventListener('click', addTask);
+  $('btn-draft-tasks').addEventListener('click', draftTasks);
   $('btn-save-tasks').addEventListener('click', saveTasks);
   $('btn-queue-start').addEventListener('click', startQueue);
   $('btn-queue-stop').addEventListener('click', stopQueue);

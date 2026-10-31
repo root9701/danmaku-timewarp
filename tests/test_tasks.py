@@ -73,10 +73,30 @@ def test_validate():
     check("空房间被拦住", bool(tasks.validate(bad_room)))
 
 
+def test_draft_from_lists():
+    t1 = int(datetime(2026, 11, 1, 1, 0).timestamp() * 1000)
+    t2 = int(datetime(2026, 11, 1, 4, 0).timestamp() * 1000)
+    lists = {"2026-11-01": [
+        {"title": "A", "start_ms": t1, "total_pages": 2},
+        {"title": "B", "start_ms": t2, "total_pages": 2}]}
+    drafts = tasks.draft_from_lists(lists, [7734200])
+    check("按赛程生成一条草稿", len(drafts) == 1, str(drafts))
+    d = drafts[0]
+    check("开始提前 30 分钟", d["start"] == "00:30", d["start"])
+    check("Bo3 截止 = 末场 + 4.5 小时", d["end"] == "08:30", d["end"])
+    check("草稿带房间与待执行状态",
+          d["rooms"] == [7734200] and d["status"] == "pending", str(d))
+
+    bo5 = {"2026-11-01": [{"title": "A", "start_ms": t1, "total_pages": 4}]}
+    d5 = tasks.draft_from_lists(bo5, [7734200])[0]
+    check("Bo5 按 6.5 小时预留", d5["end"] == "07:30", d5["end"])
+
+
 def main() -> int:
     print("采集任务表回归")
     test_window_and_data_date()
     test_next_task()
+    test_draft_from_lists()
     test_validate()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项失败: {', '.join(FAILED)}")

@@ -262,6 +262,18 @@ async def api_tasks(request):
     return web.json_response({"ok": True})
 
 
+async def api_tasks_draft(request):
+    """按赛程生成任务草稿(不落盘; UI 确认后随「保存任务」一起提交)。"""
+    data = _load_schedule()
+    if not data.get("lists"):
+        return web.json_response({"ok": False, "error": "还没有赛程，先点「刷新赛程」"})
+    rooms = collector.load_config(collector.parse_args([]))["rooms"]
+    if not rooms:
+        return web.json_response({"ok": False, "error": "先在默认配置里填房间号"})
+    return web.json_response({"ok": True,
+                              "tasks": tasks.draft_from_lists(data["lists"], rooms)})
+
+
 async def api_extend(request):
     """延长本次采集。截止后不允许续: 会话已 finalize, 再延长只能开新会话。"""
     try:
@@ -474,6 +486,7 @@ def main():
     app.router.add_post("/api/start", api_start)
     app.router.add_post("/api/stop", api_stop)
     app.router.add_route("*", "/api/tasks", api_tasks)
+    app.router.add_post("/api/tasks/draft", api_tasks_draft)
     app.router.add_post("/api/extend", api_extend)
     app.router.add_post("/api/queue/start", api_queue_start)
     app.router.add_post("/api/queue/stop", api_queue_stop)

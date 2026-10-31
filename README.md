@@ -96,8 +96,8 @@ lol延时直播/
 ├── tests/                                    ← 对齐算法、分层、布局、清单、更新、版本、字节一致性
 ├── data/                                     ← 采集产物（两端共用，见 SCHEMA.md）
 │   {赛事日}/{房间号}/ manifest + 弹幕切片 + afp
-├── danmaku-collector/                        ← 采集端（可单独拷到手机）
-│   collector.py / live_audiofp.py / dashboard.py / phone_ctl.py
+├── danmaku-collector/                        ← 采集端（独立进程）
+│   collector.py / live_audiofp.py / dashboard.py / tasks.py / web/
 │   启动采集.bat / 启动控制台.bat / 退出控制台.bat
 └── danmaku-server/                           ← 播放端（Python aiohttp + 原生 JS）
     server.py / audiofp.py / srcfetch.py / dataupdate.py / web/
@@ -110,7 +110,7 @@ lol延时直播/
 
 | 项 | 说明 |
 |---|---|
-| 平台 | **仅 Windows**（启动脚本为 `.bat`）。采集端可单独部署到手机 Termux，播放端未做跨平台适配 |
+| 平台 | **仅 Windows**（启动脚本为 `.bat`）。两端为独立进程，采集端可单独运行，播放端未做跨平台适配 |
 | Python | 需 3.12+，依赖版本已在 `requirements.txt` 精确锁定 |
 | 网络 | 视频不落地，播放时直连 B 站 CDN，**需要联网**且受 B 站地区限制 |
 | 回放来源 | 仅对「B 站官方账号上传的回放」自动搜索 BV，其他来源需手动填写 |
@@ -277,13 +277,12 @@ flowchart TD
 
 **质检命令以 `业务约束.md` §质检与冒烟 为准**，本文不复制（复制必然漂移）。
 
-## 手机备份节点（可选）
+### 作者侧工具
 
-PC 与手机同时采集同一房间，数据独立落盘，单节点故障不致丢失当晚弹幕。
-
-| 项 | 说明 |
+| 命令 | 用途 |
 |---|---|
-| 环境 | Termux + python / numpy / ffmpeg，代码经 `adb reverse` 隧道拉取 |
-| 保活 | `termux-wake-lock` + Doze 白名单；vivo 的 ABE 后台管理需手工豁免 |
-| 管理 | `phone_ctl.py status\|start\|stop\|log\|pull\|test` |
-| 已知限制 | Termux 的 Python 与 numpy 存在 ABI 兼容问题，指纹可能降级（弹幕不受影响） |
+| `python tools/calibrate.py --date 2026-10-31` | 无头校准：不启动播放端，直接对官方回放算 offset |
+| `python tools/nightly.py --loop` | 夜间流水线：每小时巡检，有回放就校准、落 `data/`、本地提交（不推送） |
+| `python tools/nightly.py --discover-only --date 2026-10-31` | 只刷新赛程与回放 BV |
+| `python tools/pack_data.py --index --staged` | 按 git 暂存区生成数据清单（夜间发布用） |
+| `python tools/split_matches.py --apply` | 把本地层对齐记录搬进 `data/{日期}/align.json` |

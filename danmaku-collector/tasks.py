@@ -72,6 +72,40 @@ def next_task(tasks: list, now: datetime) -> dict:
     return best[1]
 
 
+def draft_from_lists(lists: dict, rooms: list, lead_min: int = 30,
+                     tail_min: int = 60) -> list:
+    """把赛程 lists 转成任务草稿(只返回, 不落盘; 由 UI 确认后保存)。
+
+    开始 = 首场开赛前 lead_min; 截止 = 末场开赛 + 预计时长 + tail_min。
+    Bo5(任一场分P >= 4)按 5.5 小时, 其余按 3.5 小时 —— 只是草稿, 可再改。
+    """
+    out = []
+    for match_date, items in sorted((lists or {}).items()):
+        valid = [it for it in items or []
+                 if isinstance(it, dict) and it.get("start_ms")]
+        if not valid:
+            continue
+        valid.sort(key=lambda it: it["start_ms"])
+        first, last = valid[0], valid[-1]
+        pages = max(int(it.get("total_pages") or 0) for it in valid)
+        hours = 5.5 if pages >= 4 else 3.5
+        start = (datetime.fromtimestamp(first["start_ms"] / 1000)
+                 - timedelta(minutes=lead_min))
+        end = (datetime.fromtimestamp(last["start_ms"] / 1000)
+               + timedelta(hours=hours, minutes=tail_min))
+        titles = " / ".join(str(it.get("title") or "") for it in valid)
+        out.append({
+            "date": start.strftime("%Y-%m-%d"),
+            "start": start.strftime("%H:%M"),
+            "end": end.strftime("%H:%M"),
+            "rooms": list(rooms or []),
+            "enabled": True,
+            "status": "pending",
+            "note": titles,
+        })
+    return out
+
+
 def validate(tasks: list) -> list:
     """校验任务表。返回问题列表; 空 = 可以保存。"""
     problems = []

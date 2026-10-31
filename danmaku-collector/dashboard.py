@@ -12,9 +12,13 @@ from pathlib import Path
 from aiohttp import web
 
 import collector
+import tasks
 
 PORT = 8787
-STATE = {"task": None, "stop_event": None, "reason": None, "mode": None, "started_at": None}
+STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
+         "started_at": None, "queue_task": None, "queue_stop": None,
+         "deadline": None, "current_task": None, "manual_stop": False}
+TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -276,6 +280,8 @@ async def api_config(request):
 
 
 async def api_start(request):
+    if STATE.get("queue_task") and not STATE["queue_task"].done():
+        return web.json_response({"ok": False, "error": "队列正在运行，请先停止队列"})
     if STATE["task"] and not STATE["task"].done():
         return web.json_response({"ok": False, "error": "已有任务在运行，请先停止"})
     data = await request.json()
@@ -308,8 +314,21 @@ async def api_start(request):
 
 
 async def api_stop(request):
-    if not (STATE["task"] and not STATE["task"].done()):
+    """结束本次(task, 默认) 或 停止整个队列(queue)。两者都会触发收尾。"""
+    scope = (request.query.get("scope") or "task").strip()
+    running = bool(STATE["task"] and not STATE["task"].done())
+    if scope == "queue":
+        qstop = STATE.get("queue_stop")
+        if qstop is None:
+            return web.json_response({"ok": False, "error": "当前没有运行中的队列"})
+        qstop.set()
+        if running:
+            STATE["manual_stop"] = True
+            STATE["stop_event"].set()
+        return web.json_response({"ok": True})
+    if not running:
         return web.json_response({"ok": False, "error": "当前没有运行中的任务"})
+    STATE["manual_stop"] = True
     STATE["stop_event"].set()
     return web.json_response({"ok": True})
 
@@ -382,6 +401,169 @@ async def api_danmaku(request):
                               "count": len(rows), "rows": rows})
 
 
+def _load_tasks() -> dict:
+    """读任务表; 文件不存在/损坏时返回空表(不阻断控制台启动)。"""
+    try:
+        data = json.loads(TASKS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"tasks": []}
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        return {"tasks": []}
+    return data
+
+
+def _save_tasks(data: dict) -> None:
+    """原子写任务表: 写到一半被杀不会留下半截 JSON。
+
+    路径在 run/ 下(整目录不入库): 任务带房间号与状态, 属于本机运行状态,
+    不进仓库, 也不需要为此改 .gitignore。
+    """
+    TASKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = TASKS_PATH.with_name(TASKS_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(TASKS_PATH)
+
+
+def _mark_task(task: dict, status: str) -> None:
+    """按 (date,start,end) 定位并改状态。UI 编辑任务时请避开正在跑的那条。"""
+    data = _load_tasks()
+    for t in data["tasks"]:
+        if (t.get("date"), t.get("start"), t.get("end")) == (
+                task.get("date"), task.get("start"), task.get("end")):
+            t["status"] = status
+            break
+    _save_tasks(data)
+
+
+def _reset_stale_tasks() -> None:
+    """控制台启动时把上一次异常退出留下的 running 改成 stopped。
+
+    否则队列会永远认为"有任务在跑", 再也不会开下一场。
+    """
+    data = _load_tasks()
+    changed = False
+    for t in data["tasks"]:
+        if t.get("status") == "running":
+            t["status"] = "stopped"
+            changed = True
+    if changed:
+        _save_tasks(data)
+
+
+async def api_tasks(request):
+    if request.method == "GET":
+        data = _load_tasks()
+        dates = []
+        for t in data["tasks"]:
+            try:
+                dates.append(tasks.data_date(t))
+            except (ValueError, TypeError):
+                dates.append("")
+        return web.json_response({"ok": True, "tasks": data["tasks"],
+                                  "data_dates": dates})
+    try:
+        data = await request.json()
+        items = data.get("tasks")
+        if not isinstance(items, list):
+            raise ValueError("tasks 必须是数组")
+        problems = tasks.validate(items)
+        if problems:
+            return web.json_response({"ok": False, "error": "；".join(problems)})
+    except (ValueError, TypeError) as e:
+        return web.json_response({"ok": False, "error": str(e)})
+    _save_tasks({"tasks": items})
+    return web.json_response({"ok": True})
+
+
+async def api_extend(request):
+    """延长本次采集。截止后不允许续: 会话已 finalize, 再延长只能开新会话。"""
+    try:
+        minutes = int((await request.json()).get("minutes") or 0)
+    except (ValueError, TypeError):
+        return web.json_response({"ok": False, "error": "minutes 必须是整数"})
+    if minutes <= 0:
+        return web.json_response({"ok": False, "error": "延长分钟数必须大于 0"})
+    deadline = STATE.get("deadline")
+    running = bool(STATE["task"] and not STATE["task"].done())
+    if not running or deadline is None:
+        return web.json_response({"ok": False, "error": "当前没有运行中的任务"})
+    deadline.extend(minutes)
+    return web.json_response({"ok": True, "end": deadline.at.strftime("%H:%M")})
+
+
+async def _queue_task(task: dict) -> None:
+    """跑一条任务: 到点开录 -> 到截止收尾 -> 标记完成。"""
+    cfg = collector.load_config(collector.parse_args([]))
+    cfg = dict(cfg, rooms=[int(r) for r in task["rooms"]],
+               earliest_start="now", latest_end="")
+    _, end = tasks.window(task)
+    deadline = collector.Deadline(end) if end else None
+    stop_event, reason = asyncio.Event(), {"value": None}
+    STATE.update(task=None, stop_event=stop_event, reason=reason, mode="queue",
+                 started_at=datetime.now().strftime("%H:%M:%S"),
+                 deadline=deadline, current_task=task, manual_stop=False)
+    _mark_task(task, "running")
+    try:
+        STATE["task"] = asyncio.create_task(
+            collector.amain(cfg, collector.parse_args([]), stop_event, reason,
+                            deadline=deadline))
+        await STATE["task"]
+    finally:
+        qstop = STATE.get("queue_stop")
+        status = "stopped" if STATE.get("manual_stop") or (qstop and qstop.is_set()) else "done"
+        _mark_task(task, status)
+        STATE.update(deadline=None, current_task=None, task=None)
+
+
+async def _pause(stop_event, seconds: float) -> None:
+    """等待指定秒数, 期间被要求停止就提前返回。"""
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+
+
+async def _queue_loop() -> None:
+    """队列守护: 取下一场 -> 等开始 -> 跑完 -> 再取。关窗或停止队列时退出。"""
+    qstop = STATE["queue_stop"]
+    try:
+        while not qstop.is_set():
+            if STATE["task"] and not STATE["task"].done():
+                await _pause(qstop, 10)
+                continue
+            nxt = tasks.next_task(_load_tasks()["tasks"], datetime.now())
+            if not nxt:
+                await _pause(qstop, 20)
+                continue
+            if nxt["action"] == "missed":
+                _mark_task(nxt, "missed")
+                continue
+            if nxt["action"] == "wait":
+                start, _end = tasks.window(nxt)
+                await collector.wait_until(start, "等待任务开始", qstop)
+                continue
+            await _queue_task(nxt)
+    finally:
+        STATE["queue_task"] = None
+
+
+async def api_queue_start(request):
+    if STATE.get("queue_task") and not STATE["queue_task"].done():
+        return web.json_response({"ok": False, "error": "队列已在运行"})
+    STATE["queue_stop"] = asyncio.Event()
+    STATE["queue_task"] = asyncio.create_task(_queue_loop())
+    return web.json_response({"ok": True})
+
+
+async def api_queue_stop(request):
+    qstop = STATE.get("queue_stop")
+    if qstop is None:
+        return web.json_response({"ok": False, "error": "当前没有运行中的队列"})
+    qstop.set()
+    if STATE["task"] and not STATE["task"].done():
+        STATE["manual_stop"] = True
+        STATE["stop_event"].set()
+    return web.json_response({"ok": True})
+
+
 async def api_status(request):
     running = bool(STATE["task"] and not STATE["task"].done())
     log_tail = ""
@@ -405,13 +587,21 @@ async def api_status(request):
                            "gz_path": str(gz) if gz.exists() else None}
         except (OSError, ValueError):
             pass
+    queue_running = bool(STATE.get("queue_task") and not STATE["queue_task"].done())
+    deadline = STATE.get("deadline")
     return web.json_response({"running": running, "mode": STATE["mode"],
                               "started_at": STATE["started_at"],
+                              "queue_running": queue_running,
+                              "current_task": STATE.get("current_task"),
+                              "deadline": deadline.at.strftime("%H:%M") if deadline else None,
                               "finished_reason": STATE["reason"]["value"] if (not running and STATE["reason"]) else None,
                               "log_tail": log_tail, "last_result": last_result})
 
 
 async def on_shutdown(app):
+    qstop = STATE.get("queue_stop")
+    if qstop is not None:
+        qstop.set()
     if STATE["task"] and not STATE["task"].done():
         STATE["stop_event"].set()
         with contextlib.suppress(asyncio.TimeoutError):
@@ -424,6 +614,7 @@ def main():
             stream.reconfigure(encoding="utf-8")
     cfg = collector.load_config(collector.parse_args([]))
     collector.setup_logging(cfg["log_dir"])
+    _reset_stale_tasks()
     import os
     import threading
     import webbrowser
@@ -439,6 +630,10 @@ def main():
     app.router.add_route("*", "/api/config", api_config)
     app.router.add_post("/api/start", api_start)
     app.router.add_post("/api/stop", api_stop)
+    app.router.add_route("*", "/api/tasks", api_tasks)
+    app.router.add_post("/api/extend", api_extend)
+    app.router.add_post("/api/queue/start", api_queue_start)
+    app.router.add_post("/api/queue/stop", api_queue_stop)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/danmaku", api_danmaku)
     app.on_shutdown.append(on_shutdown)

@@ -302,14 +302,35 @@ def install_signals(stop_event, reason):
             signal.signal(sig, on_sig)
 
 
-async def run_deadline_timer(delay_sec, label, stop_event, reason):
+class Deadline:
+    """可变截止时刻: 夜间任务允许"延长本次采集"。
+
+    为什么不是一次性定时器: 到点前改截止必须能生效。后台每 ≤15 秒复核一次,
+    到点置停止事件; 已经收尾后再延长没有意义(会话已 finalize), 由调用方禁用。
+    """
+
+    def __init__(self, at: datetime):
+        self.at = at
+
+    def extend(self, minutes: int) -> datetime:
+        self.at += timedelta(minutes=int(minutes))
+        return self.at
+
+    def remaining(self) -> float:
+        return (self.at - datetime.now()).total_seconds()
+
+
+async def run_deadline_watch(deadline, label, stop_event, reason):
+    """按可变截止时刻收尾。每 ≤15 秒复核, 延长立即生效。"""
     try:
-        if delay_sec > 0:
-            await asyncio.sleep(delay_sec)
-        if not stop_event.is_set():
-            reason["value"] = label
-            stop_event.set()
-            log.info("触发收尾: %s", label)
+        while not stop_event.is_set():
+            remain = deadline.remaining()
+            if remain <= 0:
+                reason["value"] = label
+                stop_event.set()
+                log.info("触发收尾: %s (%s)", label, fmt_dt(deadline.at))
+                return
+            await asyncio.sleep(min(15.0, max(0.5, remain)))
     except asyncio.CancelledError:
         pass
 
@@ -1265,7 +1286,7 @@ class Recorder:
                     tmp.unlink()  # 不留 .tmp 残留
 
 
-async def amain(cfg, args, stop_event, reason):
+async def amain(cfg, args, stop_event, reason, deadline=None):
     timers = []
     try:
         async with aiohttp.ClientSession(
@@ -1273,8 +1294,9 @@ async def amain(cfg, args, stop_event, reason):
             if args.test is not None:
                 room = args.room if args.room else cfg["rooms"][0]
                 log.info("测试模式: 房间 %s, 时长 %s 秒", room, args.test)
+                deadline = deadline or Deadline(datetime.now() + timedelta(seconds=args.test))
                 timers.append(asyncio.create_task(
-                    run_deadline_timer(args.test, "test_done", stop_event, reason)))
+                    run_deadline_watch(deadline, "test_done", stop_event, reason)))
                 await Recorder(session, room, cfg, stop_event, reason,
                                is_test=True, meta_name=None).run()
                 return
@@ -1283,12 +1305,12 @@ async def amain(cfg, args, stop_event, reason):
                              "等待最早开始时刻", stop_event)
             if stop_event.is_set():
                 return
-            if cfg["latest_end"]:
-                end_at = next_occurrence(cfg["latest_end"], datetime.now())
-                log.info("最晚结束时刻: %s", fmt_dt(end_at))
+            if deadline is None and cfg["latest_end"]:
+                deadline = Deadline(next_occurrence(cfg["latest_end"], datetime.now()))
+            if deadline is not None:
+                log.info("最晚结束时刻: %s", fmt_dt(deadline.at))
                 timers.append(asyncio.create_task(
-                    run_deadline_timer((end_at - datetime.now()).total_seconds(),
-                                       "latest_end", stop_event, reason)))
+                    run_deadline_watch(deadline, "latest_end", stop_event, reason)))
             # 数据文件同名的 .meta.json: 正式 {room}.meta.json, 测试 test_HHMMSS_{room}.meta.json
             recs = [Recorder(session, r, cfg, stop_event, reason, is_test=False,
                              meta_name=None) for r in rooms]

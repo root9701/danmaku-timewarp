@@ -52,6 +52,7 @@ def make_recorder(sess_dir: Path, slice_name: str, start_ms: int, n_dm: int):
     r._afp_path = None
     r._afp_enabled = False
     r._afp_task = None
+    r._snapshot_task = None
     r.afp = None
     r.file = None
     r._dir_day = sess_dir.parent.name        # 锁死赛事日, 免得依赖当前时间
@@ -176,7 +177,7 @@ def test_live_snapshot_manifest() -> None:
         # 正在写的 raw 片: 还没封口, 不得进快照(否则用户端会校验缺文件)
         write_slices(sess, [("7734200_s0000.jsonl", 5, 1_792_943_000_000)])
         r = make_recorder(sess, "7734200_s0000.jsonl", 1_792_942_000_000, 15)
-        r._write_live_manifest()
+        r._write_live_manifest(sess)
 
         mf = json.loads((sess / "manifest.json").read_text(encoding="utf-8"))
         check("快照只列已封口 gz", mf["files"] == ["7734200_s2300.jsonl.gz"],

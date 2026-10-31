@@ -372,6 +372,8 @@ class Recorder:
         # 音频指纹 sidecar(live_audiofp): 增强功能, 任何失败不得影响弹幕采集
         self._afp_enabled = bool(cfg.get("audio_fp", True))
         self.afp, self._afp_path, self._afp_task = None, None, None
+        # manifest 快照的后台任务: 扫描+解析历史 gz 可能耗时, 不能堵在收包循环里
+        self._snapshot_task = None
 
     async def run(self):
         ended = None
@@ -616,10 +618,10 @@ class Recorder:
             except Exception as e:
                 log.error("滚动切片 gzip 失败(保留 raw 原地, 服务端仍可读): %s", e)
                 self._parts.append(old_path.name)
-        if wrote_completed:
+        if wrote_completed and old_path is not None:
             # 有了新封口片就刷新 manifest 快照: 夜间流水线与用户端靠它看到增量。
-            # 在读端看来这天的数据是"可用的", 但还在增长(ended_by=running)。
-            self._write_live_manifest()
+            # 必须放后台线程: 这里要扫目录里全部已完成 gz, 同步跑会卡住收包循环。
+            self._start_snapshot(old_path.parent)
         try:
             self._open_slice()
         except Exception as e:
@@ -1078,6 +1080,11 @@ class Recorder:
                 self.file.flush()
                 self.file.close()
             self.file = None
+        # 等后台 manifest 快照写完, 否则它可能与最终 manifest 抢同一文件
+        snap, self._snapshot_task = self._snapshot_task, None
+        if snap is not None:
+            with contextlib.suppress(Exception):
+                await snap
         ended = ended_hint or self.reason.get("value") or "interrupt"
         gz_path = None
         meta_path = self._meta_target_path()
@@ -1189,20 +1196,20 @@ class Recorder:
                 continue                  # 坏文件跳过, 不让整个 manifest 失败
         return parts, dms, first, last
 
-    def _write_manifest_atomic(self, meta_path, afp_gz, meta, snapshot=False):
+    def _write_manifest_atomic(self, meta_path, afp_gz, meta, snapshot=False, target=None):
         """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。
 
         snapshot=True 是采集期间的快照: 只含已封口切片, afp/meta 置空,
         ended_by="running"; 收尾时 finalize 会用最终版覆盖它。快照覆盖快照不归档,
-        否则每滚一小时就多一份 manifest_runN.json。
+        否则每滚一小时就多一份 manifest_runN.json。target 由快照线程传入(后台线程
+        不能再读会被改写的 self.file_path)。
         """
-        manifest_path = self._manifest_target_path()
+        manifest_path = target or self._manifest_target_path()
         if manifest_path is None:
             return
         try:
             day = self._session_dirname(self.record_end or self.record_start)
             sess_dir = manifest_path.parent
-            # files/计数/起止一律按**目录实际内容**重算, 见 _scan_session_files 的说明。
             files, dm_total, first_ms, last_ms = self._scan_session_files(
                 sess_dir, completed_only=snapshot)
             if snapshot and not files:
@@ -1258,14 +1265,22 @@ class Recorder:
         except (OSError, ValueError):
             return False
 
-    def _write_live_manifest(self):
-        """滚动切片成功后刷新 manifest 快照。
+    def _write_live_manifest(self, sess_dir):
+        """刷新 manifest 快照(在后台线程执行)。
 
+        只含已封口 gz, 不含正在写的 raw 与 afp(它们还没发布)。
         为什么由采集端写而不是夜间流水线: manifest 是权威索引, 流水线再扫一遍目录
         等于把同一份契约实现两遍; 而且"哪些片已封口"只有采集端知道。
-        只含已封口 gz, 不含正在写的 raw 与 afp(它们还没发布)。
         """
-        self._write_manifest_atomic(None, None, {}, snapshot=True)
+        self._write_manifest_atomic(None, None, {}, snapshot=True,
+                                    target=Path(sess_dir) / "manifest.json")
+
+    def _start_snapshot(self, sess_dir):
+        """启动一次快照刷新; 上一次还没跑完就跳过(不排队堆积)。"""
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        self._snapshot_task = asyncio.create_task(
+            asyncio.to_thread(self._write_live_manifest, sess_dir))
 
     def _write_meta_atomic(self, meta_path, meta):
         """归档已存在的 meta(无论来源) -> tmp 原子写入 -> Path.replace 顶上。

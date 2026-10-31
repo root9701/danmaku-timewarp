@@ -66,6 +66,13 @@ async def api_config(request):
     return web.json_response({"ok": True})
 
 
+def _acquire_collector_lock():
+    """拿采集单实例锁; 拿不到返回 None(已有采集进程在写同一目录)。"""
+    cfg = collector.load_config(collector.parse_args([]))
+    lock = collector.SingleInstanceLock(Path(cfg["log_dir"]) / "collector.lock")
+    return lock if lock.acquire() else None
+
+
 async def api_start(request):
     if STATE.get("queue_task") and not STATE["queue_task"].done():
         return web.json_response({"ok": False, "error": "队列正在运行，请先停止队列"})
@@ -75,6 +82,10 @@ async def api_start(request):
     mode = data.get("mode")
     if mode not in ("night", "test"):
         return web.json_response({"ok": False, "error": "mode 必须是 night 或 test"})
+    lock = _acquire_collector_lock()
+    if lock is None:
+        return web.json_response(
+            {"ok": False, "error": "另一个采集进程正在运行（锁被占用），请先确认没有双开"})
     args = collector.parse_args([])
     if mode == "test":
         args.test = min(600, max(10, int(data.get("seconds") or 60)))
@@ -94,6 +105,7 @@ async def api_start(request):
         finally:
             if keep:
                 collector.set_keep_awake(False)
+            lock.release()
 
     STATE.update(task=asyncio.create_task(runner()), stop_event=stop_event, reason=reason,
                  mode=mode, started_at=datetime.now().strftime("%H:%M:%S"))
@@ -324,6 +336,7 @@ async def _queue_loop() -> None:
     """队列守护: 取下一场 -> 等开始 -> 跑完 -> 再取。关窗或停止队列时退出。"""
     qstop = STATE["queue_stop"]
     collector.set_keep_awake(True)      # 等待下一场时也不让电脑睡
+    lock = STATE.get("lock")
     try:
         while not qstop.is_set():
             if STATE["task"] and not STATE["task"].done():
@@ -344,11 +357,21 @@ async def _queue_loop() -> None:
     finally:
         STATE["queue_task"] = None
         collector.set_keep_awake(False)
+        if lock is not None:
+            lock.release()
+            STATE["lock"] = None
 
 
 async def api_queue_start(request):
     if STATE.get("queue_task") and not STATE["queue_task"].done():
         return web.json_response({"ok": False, "error": "队列已在运行"})
+    if STATE["task"] and not STATE["task"].done():
+        return web.json_response({"ok": False, "error": "已有任务在运行，请先停止"})
+    lock = _acquire_collector_lock()
+    if lock is None:
+        return web.json_response(
+            {"ok": False, "error": "另一个采集进程正在运行（锁被占用），请先确认没有双开"})
+    STATE["lock"] = lock
     STATE["queue_stop"] = asyncio.Event()
     STATE["queue_task"] = asyncio.create_task(_queue_loop())
     return web.json_response({"ok": True})
@@ -462,6 +485,14 @@ async def on_shutdown(app):
         STATE["stop_event"].set()
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(STATE["task"], timeout=20)
+    qt = STATE.get("queue_task")
+    if qt is not None and not qt.done():
+        with contextlib.suppress(asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(qt, timeout=5)
+    lock = STATE.get("lock")
+    if lock is not None:                 # 队列没来得及走 finally 时的兜底
+        lock.release()
+        STATE["lock"] = None
 
 
 def main():

@@ -323,6 +323,7 @@ async def _pause(stop_event, seconds: float) -> None:
 async def _queue_loop() -> None:
     """队列守护: 取下一场 -> 等开始 -> 跑完 -> 再取。关窗或停止队列时退出。"""
     qstop = STATE["queue_stop"]
+    collector.set_keep_awake(True)      # 等待下一场时也不让电脑睡
     try:
         while not qstop.is_set():
             if STATE["task"] and not STATE["task"].done():
@@ -342,6 +343,7 @@ async def _queue_loop() -> None:
             await _queue_task(nxt)
     finally:
         STATE["queue_task"] = None
+        collector.set_keep_awake(False)
 
 
 async def api_queue_start(request):

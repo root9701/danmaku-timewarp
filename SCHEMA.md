@@ -33,7 +33,10 @@ data/
 
 ## 2. manifest.json
 
-由**采集器在 finalize 时写出**，是读取数据的首选来源。
+由**采集器写出**，是读取数据的首选来源。收尾时写最终版；采集期间每小时滚完一片后
+还会写一份**运行中快照**（`ended_by: "running"`）：`files` 只列已封口的 `.jsonl.gz`，
+`afp` / `meta` 为 `null`，收尾时覆盖为最终版。读端应把它当作「可用但仍在增长」，
+**不要据此判断这一天已经结束**。
 
 ```json
 {
@@ -54,13 +57,13 @@ data/
 | `match_date` | str | 赛事日 `YYYY-MM-DD` |
 | `is_test` | bool | 测试会话标记；正式日期列表会把它分到 `_test` 组 |
 | `start_ms` / `end_ms` | int | 真实起止（毫秒墙钟），**从弹幕 ts 算**，不是 record_start |
-| `dm_count` | int | 整目录弹幕条数（跨多次重启累计；不是最后一次会话） |
+| `dm_count` | int | 整目录弹幕条数（跨多次重启累计；运行中快照只算已封口片） |
 | `sc_count` | int | 醒目留言条数 |
-| `files` | [str] | 本会话的弹幕切片文件名 |
-| `afp` | obj\|null | 指纹文件与参数；`null` 表示未采集 |
-| `meta` | str | 人类可读摘要文件名；**不得作为权威源** |
+| `files` | [str] | 已可发布的弹幕切片文件名；运行中快照只含已封口 `.jsonl.gz` |
+| `afp` | obj\|null | 指纹文件与参数；`null` 表示未采集或仍在写（快照） |
+| `meta` | str\|null | 人类可读摘要文件名；**不得作为权威源**；快照为 `null` |
 | `collector_version` | str | 写这份 manifest 时的采集端版本（历史快照，不是当前版本） |
-| `ended_by` | str | 结束原因 |
+| `ended_by` | str | 结束原因；`"running"` = 采集中的快照（见上） |
 
 示例里的 `collector_version` 是 2026-10-26 当时的值，不代表当前版本；版本号以根目录 `VERSION` 为准。
 

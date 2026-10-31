@@ -168,11 +168,37 @@ def test_afp_not_counted_as_danmaku() -> None:
         check("afp 的 ts 不算进 dm_count", mf["dm_count"] == 10, str(mf["dm_count"]))
 
 
+def test_live_snapshot_manifest() -> None:
+    """采集期间的 manifest 快照: 只含已封口片, afp/meta 置空, 收尾时不归档。"""
+    with tempfile.TemporaryDirectory(prefix="dmk_mf_") as td:
+        sess = Path(td) / "2026-10-31" / "7734200"
+        write_slices(sess, [("7734200_s2300.jsonl.gz", 10, 1_792_942_000_000)])
+        # 正在写的 raw 片: 还没封口, 不得进快照(否则用户端会校验缺文件)
+        write_slices(sess, [("7734200_s0000.jsonl", 5, 1_792_943_000_000)])
+        r = make_recorder(sess, "7734200_s0000.jsonl", 1_792_942_000_000, 15)
+        r._write_live_manifest()
+
+        mf = json.loads((sess / "manifest.json").read_text(encoding="utf-8"))
+        check("快照只列已封口 gz", mf["files"] == ["7734200_s2300.jsonl.gz"],
+              str(mf["files"]))
+        check("快照计数只算已封口片", mf["dm_count"] == 10, str(mf["dm_count"]))
+        check("快照不指向 afp", mf["afp"] is None, str(mf["afp"]))
+        check("快照不指向 meta", mf["meta"] is None, str(mf["meta"]))
+        check("快照标记仍在采集", mf["ended_by"] == "running", str(mf["ended_by"]))
+
+        run_finalize(r)             # 收尾: 覆盖快照, 不应把它归档成 manifest_runN
+        mf2 = json.loads((sess / "manifest.json").read_text(encoding="utf-8"))
+        check("收尾后的 manifest 不是快照", mf2["ended_by"] != "running", str(mf2["ended_by"]))
+        archived = sorted(p.name for p in sess.glob("manifest_run*.json"))
+        check("快照不产生归档文件", not archived, str(archived))
+
+
 def main() -> int:
     print("manifest 权威性回归")
     for fn in (test_second_session_keeps_first,
                test_no_data_no_manifest,
-               test_afp_not_counted_as_danmaku):
+               test_afp_not_counted_as_danmaku,
+               test_live_snapshot_manifest):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

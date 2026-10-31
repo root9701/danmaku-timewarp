@@ -2910,7 +2910,7 @@ def _schedule_window_for_bv(date: str, bv: str):
 
 
 async def run_autocalign(date: str, file: str, bv: str, page: int, session,
-                         local_audio=None) -> dict:
+                         local_audio=None, record_failures: bool = True) -> dict:
     """自动对齐全流程(读 afp -> 逐分P 回放指纹 -> 互相关 -> 写 matches)。
 
     **逐分P 独立对齐**: 官方回放把一场比赛拆成多个分P(第一局/赛后采访/赛前评论),
@@ -3021,10 +3021,14 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 失败: {e}", flush=True)
 
     if not page_results:
+        err_text = "; ".join(f"P{k}: {v}" for k, v in page_errors.items())
+        if not record_failures:
+            # 夜间流水线反复跑: 回放还没上传时不应把"失败"写进分发层,
+            # 否则用户会看到一场从未对齐过的比赛被标成"直播可能未转播"。
+            raise ApiError("所有分P 都无法对齐: " + err_text)
         # 全部失败: 记录失败原因(供前端显示"为什么这场没对齐"), 但**不动**已有的
         # offset —— 不能因为一次失败就把用户之前手工校准的结果清掉。
         fail_key = f"{date}|{file}|{bv}"
-        err_text = "; ".join(f"P{k}: {v}" for k, v in page_errors.items())
 
         def _mark_fail(matches):
             e = dict(matches["align"].get(fail_key) or {})
@@ -3082,8 +3086,12 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
             }
         # 只把"最终仍然没有 offset"的页记进 page_errors: 有旧值且只是暂时取不到
         # 音频的页继续用旧值, 不写失败标记(否则前端会以为那局没有对齐结果)。
-        new_errors = {str(k): str(v)[:300] for k, v in page_errors.items()
-                      if str(k) not in pages_map}
+        # record_failures=False 时完全不写(夜间流水线用, 避免把临时失败带进分发层)。
+        if record_failures:
+            new_errors = {str(k): str(v)[:300] for k, v in page_errors.items()
+                          if str(k) not in pages_map}
+        else:
+            new_errors = {}
         if new_errors:
             entry["page_errors"] = new_errors
         else:

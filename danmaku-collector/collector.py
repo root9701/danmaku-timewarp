@@ -579,6 +579,7 @@ class Recorder:
             with contextlib.suppress(Exception):
                 f.flush()
                 f.close()
+        wrote_completed = False
         if old_path is not None and old_path.exists():
             gz_path = Path(str(old_path) + ".gz")
             try:
@@ -588,11 +589,16 @@ class Recorder:
                     shutil.copyfileobj(src_f, dst_f)
                 old_path.unlink()  # gz 完整写出后移除 raw, 保持目录整洁; 失败则保留
                 self._parts.append(old_path.name)
+                wrote_completed = True
                 log.info("滚动切片: %s -> %s (已完成片数 %d)", old_path.name, gz_path.name,
                          len(self._parts))
             except Exception as e:
                 log.error("滚动切片 gzip 失败(保留 raw 原地, 服务端仍可读): %s", e)
                 self._parts.append(old_path.name)
+        if wrote_completed:
+            # 有了新封口片就刷新 manifest 快照: 夜间流水线与用户端靠它看到增量。
+            # 在读端看来这天的数据是"可用的", 但还在增长(ended_by=running)。
+            self._write_live_manifest()
         try:
             self._open_slice()
         except Exception as e:
@@ -1109,7 +1115,7 @@ class Recorder:
         return mp.parent / "manifest.json" if mp is not None else None
 
     @staticmethod
-    def _scan_session_files(sess_dir):
+    def _scan_session_files(sess_dir, completed_only=False):
         """扫会话目录里**全部**弹幕数据片, 返回 (files, dm_count, first_ms, last_ms)。
 
         为什么要扫目录而不是只写本会话的 self._parts / self.dm_count:
@@ -1119,13 +1125,17 @@ class Recorder:
           走目录扫描仍能播), 但权威索引失真、dm_count 少记。
         所以 manifest 的语义是"这个目录里有什么", 而不是"本次进程写了什么"。
 
+        completed_only=True 用于采集期间的 manifest 快照: 只认已封口的 .jsonl.gz,
+        正在写的 raw 切片不计入 —— 它还没发布, 算进去会让用户端校验"缺文件"。
+
         只数 ty=="dm"(与 server.count_dm_lines 口径一致); 半行/坏行跳过不抛错。
         """
         parts, dms, first, last = [], 0, None, None
         try:
             cands = sorted(p for p in sess_dir.iterdir()
-                           if p.is_file() and (p.name.endswith(".jsonl.gz")
-                                               or p.name.endswith(".jsonl"))
+                           if p.is_file()
+                           and (p.name.endswith(".jsonl.gz")
+                                or (not completed_only and p.name.endswith(".jsonl")))
                            and ".afp." not in p.name and ".meta." not in p.name)
         except OSError:
             return [], 0, None, None
@@ -1158,29 +1168,37 @@ class Recorder:
                 continue                  # 坏文件跳过, 不让整个 manifest 失败
         return parts, dms, first, last
 
-    def _write_manifest_atomic(self, meta_path, afp_gz, meta):
-        """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。"""
+    def _write_manifest_atomic(self, meta_path, afp_gz, meta, snapshot=False):
+        """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。
+
+        snapshot=True 是采集期间的快照: 只含已封口切片, afp/meta 置空,
+        ended_by="running"; 收尾时 finalize 会用最终版覆盖它。快照覆盖快照不归档,
+        否则每滚一小时就多一份 manifest_runN.json。
+        """
         manifest_path = self._manifest_target_path()
         if manifest_path is None:
             return
         try:
             day = self._session_dirname(self.record_end or self.record_start)
             sess_dir = manifest_path.parent
+            # files/计数/起止一律按**目录实际内容**重算, 见 _scan_session_files 的说明。
+            files, dm_total, first_ms, last_ms = self._scan_session_files(
+                sess_dir, completed_only=snapshot)
+            if snapshot and not files:
+                return                      # 一个已封口切片都没有: 还没什么可发布
             # 同目录里的旧 manifest 先归档(manifest_runN.json), 绝不静默覆盖:
             # 它记录的是上一次会话的账, 直接顶掉就查不到那次录了多久/多少条了。
-            # 归档名不被服务端通配(只认 manifest.json), 不会造成重复会话。
-            with contextlib.suppress(Exception):
-                if manifest_path.exists():
+            # 例外: 本次采集自己的快照不是"上一次会话的账", 直接覆盖即可。
+            if (manifest_path.exists()
+                    and not self._manifest_is_live_snapshot(manifest_path)):
+                with contextlib.suppress(Exception):
                     self._archive_existing([manifest_path])
-            # files/计数/起止一律按**目录实际内容**重算, 见 _scan_session_files 的说明。
-            files, dm_total, first_ms, last_ms = self._scan_session_files(sess_dir)
             start_ms = first_ms or self.first_ts or (
                 int(self.record_start.timestamp() * 1000) if self.record_start else None)
             end_ms = last_ms or self.last_ts or (
                 int(self.record_end.timestamp() * 1000) if self.record_end else None)
             # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
             # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
-            # 导入失败时退回当前默认值(与 live_audiofp 的 HOP_SEC/WIN_SEC 一致)
             try:
                 from live_audiofp import HOP_SEC as _HOP, WIN_SEC as _WIN
             except Exception:
@@ -1192,22 +1210,41 @@ class Recorder:
                 "is_test": bool(self.is_test),
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "dm_count": dm_total or self.dm_count,
+                "dm_count": dm_total if snapshot else (dm_total or self.dm_count),
                 "sc_count": self.sc_count,
                 "files": files,
-                "afp": ({"file": afp_gz.name if afp_gz else None,
-                         "hop": _HOP, "win": _WIN} if self._afp_path is not None else None),
-                "meta": meta_path.name if meta_path else None,
+                "afp": (None if snapshot else
+                        ({"file": afp_gz.name if afp_gz else None,
+                          "hop": _HOP, "win": _WIN}
+                         if self._afp_path is not None else None)),
+                "meta": None if snapshot else (meta_path.name if meta_path else None),
                 "collector_version": VERSION,
-                "ended_by": meta.get("ended_by"),
+                "ended_by": "running" if snapshot else meta.get("ended_by"),
             }
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps(mf, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(manifest_path)
-            log.info("manifest 已写入: %s", manifest_path)
+            log.info("manifest %s: %s", "快照已写入" if snapshot else "已写入", manifest_path)
         except Exception as e:
             log.error("写 manifest.json 失败(不影响弹幕数据): %s", e)
+
+    @staticmethod
+    def _manifest_is_live_snapshot(path):
+        """现有 manifest 是不是采集期间的快照(ended_by=running)。读不出来按"不是"。"""
+        try:
+            return json.loads(path.read_text(encoding="utf-8")).get("ended_by") == "running"
+        except (OSError, ValueError):
+            return False
+
+    def _write_live_manifest(self):
+        """滚动切片成功后刷新 manifest 快照。
+
+        为什么由采集端写而不是夜间流水线: manifest 是权威索引, 流水线再扫一遍目录
+        等于把同一份契约实现两遍; 而且"哪些片已封口"只有采集端知道。
+        只含已封口 gz, 不含正在写的 raw 与 afp(它们还没发布)。
+        """
+        self._write_manifest_atomic(None, None, {}, snapshot=True)
 
     def _write_meta_atomic(self, meta_path, meta):
         """归档已存在的 meta(无论来源) -> tmp 原子写入 -> Path.replace 顶上。

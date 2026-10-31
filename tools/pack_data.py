@@ -23,6 +23,7 @@
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -218,16 +219,64 @@ def _collect_files(day: str, files, days: dict) -> None:
         d["bytes"] += f.stat().st_size
 
 
-def _build_days() -> dict:
-    """扫盘构造 {日期: {files, file_sizes, sessions, bytes}}。
+def _staged_data_paths() -> list:
+    """git 暂存区里的 data/ 文件(即将提交的那份字节)。
+
+    为什么按暂存区而不按工作区: 采集整夜都在写, 从"算哈希"到"git add"之间文件
+    还会变。按暂存区算, 用户从 GitHub 下到的就一定是清单里那份, 校验不会假失败。
+    """
+    r = subprocess.run(["git", "ls-files", "--", "data"], cwd=ROOT,
+                       capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        raise RuntimeError(f"git ls-files 失败: {r.stderr.strip()[:200]}")
+    return [ln.strip().replace("\\", "/") for ln in r.stdout.splitlines() if ln.strip()]
+
+
+def _staged_blob(rel: str) -> bytes:
+    """读暂存区里的文件内容(`git show :path`)。"""
+    r = subprocess.run(["git", "show", f":{rel}"], cwd=ROOT, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"读取暂存内容失败 {rel}: {r.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    return r.stdout
+
+
+def _add_staged_file(day: str, rel: str, days: dict) -> None:
+    d = days.setdefault(day, {"files": [], "file_sizes": [],
+                              "sessions": [], "bytes": 0})
+    if rel in d["files"]:
+        return
+    blob = _staged_blob(rel)
+    d["files"].append(rel)
+    d["file_sizes"].append({"name": rel, "bytes": len(blob),
+                            "sha256": hashlib.sha256(blob).hexdigest()})
+    d["bytes"] += len(blob)
+
+
+def _build_days(staged: bool = False) -> dict:
+    """扫盘或扫暂存区构造 {日期: {files, file_sizes, sessions, bytes}}。
 
     两类文件来源不同, 必须都收:
       1. 房间子目录里的会话产物(弹幕/指纹/meta/manifest) —— iter_sessions
       2. 日期目录下的对齐表 data/{日期}/align.json —— iter_align
     对齐表不在房间子目录里, 只看 (1) 会漏 —— 而它正是轻量版播放所必需的
     "弹幕贴第几秒"参数, 漏了用户拉完数据仍然看不了。
+
+    staged=True 只听 git 暂存区: 夜间发布用它, 保证清单哈希 == 将来提交的字节。
     """
     days: dict = {}
+    if staged:
+        for rel in _staged_data_paths():
+            parts = rel.split("/")
+            day = parts[1] if len(parts) > 1 else ""
+            if len(day) != 10 or day[4] != "-" or day.startswith("_"):
+                continue
+            _add_staged_file(day, rel, days)
+            if len(parts) >= 4 and parts[2] != ALIGN_NAME:
+                sess = "/".join(parts[:3])
+                if sess not in days[day]["sessions"]:
+                    days[day]["sessions"].append(sess)
+        return days
     for day, sess in iter_sessions():
         _collect_files(day, [f for f in sorted(sess.iterdir()) if f.is_file()], days)
         days[day]["sessions"].append(sess.relative_to(ROOT).as_posix())
@@ -236,7 +285,7 @@ def _build_days() -> dict:
     return days
 
 
-def write_index() -> int:
+def write_index(staged: bool = False) -> int:
     """生成 data-index.json —— 用户端「拉取弹幕」就靠它判断该拉哪几天。
 
     每个日期记下完整文件列表与逐文件**字节数 + sha256**:
@@ -247,8 +296,10 @@ def write_index() -> int:
                 等长篡改, 而数据不可再生 —— 等长的坏文件比下载失败严重得多。
 
     哈希是流式算的, 21MB 约 0.1 秒, 不构成发布负担。
+
+    staged=True 从 git 暂存区取内容与哈希: 夜间流水线用它, 保证清单与提交字节一致。
     """
-    days = _build_days()
+    days = _build_days(staged=staged)
     idx = {
         "schema_version": 1,
         # 程序版本: 用户端用它判断"我的代码是不是旧的"。
@@ -279,6 +330,8 @@ def main() -> int:
                     help="生成不含 afp 的发行副本到 dist/")
     ap.add_argument("--index", action="store_true",
                     help="生成 data-index.json(用户端增量更新用)")
+    ap.add_argument("--staged", action="store_true",
+                    help="配合 --index: 按 git 暂存区内容生成(夜间发布用)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -291,7 +344,7 @@ def main() -> int:
             for p in problems:
                 print("  - " + p)
             return 1
-        return write_index()
+        return write_index(staged=args.staged)
 
     if args.strip_afp:
         problems = []

@@ -71,6 +71,45 @@ def only_aligns(index: dict) -> list:
     return out
 
 
+def manifest_paths(index: dict) -> list:
+    """清单里全部 manifest.json 的相对路径。"""
+    out = []
+    for entry in (index.get("days") or {}).values():
+        for rel in entry.get("files") or []:
+            if str(rel).replace("\\", "/").endswith("/manifest.json"):
+                out.append(rel)
+    return out
+
+
+def stale_manifest_days(index: dict, have: dict, local_sha: dict) -> list:
+    """已有日期里 manifest 与清单对不上的那些。返回 [(日期, 完整条目)]。
+
+    存在的意义: plan() 只看"这天有没有 manifest", 采集中/收尾后新增的切片
+    会被永远跳过。manifest 每次滚片都会重写(内容变化 -> 哈希变化), 所以比对
+    它的哈希就知道"这一天有没有涨", 再交给 download_day 只补缺的文件。
+
+    local_sha: {清单相对路径: 本地 sha256}, 由调用方算好 —— 本模块不做 IO。
+    返回的是**完整条目**(不是只含 manifest): 还要补新增的切片。
+    """
+    out = []
+    for day in sorted(index.get("days") or []):
+        if day not in have:
+            continue
+        entry = index["days"][day]
+        for rel in entry.get("files") or []:
+            if not str(rel).replace("\\", "/").endswith("/manifest.json"):
+                continue
+            want = ""
+            for f in entry.get("file_sizes") or []:
+                if f.get("name") == rel:
+                    want = str(f.get("sha256") or "").strip().lower()
+                    break
+            if want and local_sha.get(rel) != want:
+                out.append((day, entry))
+                break
+    return out
+
+
 def plan(index: dict, have: dict) -> list:
     """算出要整日下载的日期。返回 [(日期, 条目)] 升序。"""
     todo = []

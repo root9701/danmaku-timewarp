@@ -25,7 +25,6 @@
   (多镜像降级、代理策略、sha256 校验)。拆开是为了两块各自可测:
   "镜像返回坏内容"这种情形在线上极难复现, 单独成层才写得进回归。
 """
-import gzip
 import hashlib
 import json
 import os
@@ -34,6 +33,7 @@ from pathlib import Path
 
 import srcfetch
 import datalist
+from datacheck import verify_day as verify_day
 
 # 数据源: 只允许从这里取。改这里等于改分发渠道。
 RAW_BASE = srcfetch.RAW_BASE
@@ -126,6 +126,18 @@ def align_fix_days(index: dict, have: dict, data_dir: Path) -> list:
     return datalist.stale_align_days(index, have, local)
 
 
+def day_fix_days(index: dict, have: dict, data_dir: Path) -> list:
+    """已有日期里 manifest 变了的那些(采集中新增切片 / 收尾后补 afp)。
+
+    plan() 只看 manifest 在不在, 于是作者夜间每小时发布的增量对老用户永远
+    不可见 —— 他们下过一次这天就一直停在那一版。这里按 manifest 哈希比对,
+    命中后交给 download_day 只补缺的文件(已校验通过的不重下)。
+    """
+    root = data_dir.parent
+    local = {rel: _sha_of(root / rel) for rel in datalist.manifest_paths(index)}
+    return datalist.stale_manifest_days(index, have, local)
+
+
 def _safe_rel(rel: str) -> str:
     """校验清单里的相对路径, 防路径穿越(逻辑在 datalist.safe_rel)。"""
     try:
@@ -154,6 +166,24 @@ def _sha_of(p: Path) -> str:
         return _sha256_file(p) if p.is_file() else ""
     except OSError:
         return ""
+
+
+def _missing_bytes(entry: dict, root: Path) -> int:
+    """这一天真正要下的字节数(只算缺失或内容对不上的文件)。
+
+    为什么不能直接把条目总字节加起来: 增量发布时一天只多一两个文件, 报一个
+    "还要下整晚 10MB"会让用户以为程序在重下; 实际已有文件全部校验后跳过。
+    """
+    total = 0
+    for f in entry.get("file_sizes") or []:
+        rel = str(f.get("name") or "")
+        want = int(f.get("bytes") or 0)
+        sha = str(f.get("sha256") or "").strip().lower()
+        p = root / rel
+        if not p.is_file() or p.stat().st_size != want or (sha and _sha_of(p) != sha):
+            total += want
+    return total
+
 
 def _local_ok(p: Path, want, sha, rel: str) -> bool:
     """本地已有文件是否可直接用(不必重下)。
@@ -281,6 +311,7 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
     todo = plan(idx, have)
     fix = afp_fix_days(idx, have, data_dir, want_afp)
     redo = align_fix_days(idx, have, data_dir)
+    redo_day = day_fix_days(idx, have, data_dir)
     new_bytes = 0
     for _, entry in todo:
         total, afp = datalist.day_bytes(entry)
@@ -290,6 +321,8 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
     for _day, entry in redo:
         new_bytes += sum(int(f.get("bytes") or 0)
                          for f in (entry.get("file_sizes") or []))
+    for _day, entry in redo_day:
+        new_bytes += _missing_bytes(entry, data_dir.parent)
     return {
         "remote_latest": idx.get("latest"),
         "remote_app_version": idx.get("app_version") or None,
@@ -297,6 +330,7 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
         "new_days": [d for d, _ in todo],
         "afp_fix_days": [d for d, _ in fix],
         "align_fix_days": [d for d, _ in redo],
+        "day_update_days": [d for d, _ in redo_day],
         "new_bytes": new_bytes,
         "need": len(todo),
         "want_afp": want_afp,
@@ -306,20 +340,22 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
 def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
     """执行增量更新。返回结果摘要。
 
-    三类补充共用同一套幂等与原子落盘, 各自只碰自己的文件: 整日下载(plan)、
-    补指纹(afp_fix_days)、补对齐(align_fix_days)。补对齐只有几 KB, 不重下弹幕。
+    四类补充共用同一套幂等与原子落盘, 各自只碰自己的文件: 整日下载(plan)、
+    补指纹(afp_fix_days)、补当天增量(day_fix_days)、补对齐(align_fix_days)。
+    补当天增量只下缺失的切片; 补对齐只有几 KB, 不重下弹幕。
     """
     idx = fetch_index()
     have = local_days(data_dir)
     todo = plan(idx, have)
     fix = afp_fix_days(idx, have, data_dir, want_afp)
     redo = align_fix_days(idx, have, data_dir)
-    if not todo and not fix and not redo:
+    redo_day = day_fix_days(idx, have, data_dir)
+    if not todo and not fix and not redo and not redo_day:
         return {"updated": [], "bytes": 0, "message": "已是最新"}
 
     done, nbytes = [], 0
-    total = len(todo) + len(fix) + len(redo)
-    for i, (day, entry) in enumerate(todo + fix + redo, 1):
+    total = len(todo) + len(fix) + len(redo_day) + len(redo)
+    for i, (day, entry) in enumerate(todo + fix + redo_day + redo, 1):
         if on_progress:
             on_progress(i, total, day)
         def _cb(rel, n, _d=day, _i=i):
@@ -338,63 +374,8 @@ def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
         parts.append(f"已新增 {len(done)} 天")
     if fix:
         parts.append(f"补齐 {len(fix)} 天的音频指纹")
+    if redo_day:
+        parts.append(f"更新 {len(redo_day)} 天的采集数据（比赛可能仍在进行）")
     if redo:
         parts.append(f"更新 {len(redo)} 天的校准结果")
     return {"updated": done, "bytes": nbytes, "message": "，并".join(parts) or "已是最新"}
-
-
-def _manifests_for_day(day_dir: Path) -> list:
-    """一天里全部 manifest 的路径(按路径排序, 保证结果稳定)。
-
-    为什么不是"找到第一个就用": 一天可能有多个会话目录 —— 同一天硬杀重启、
-    或多次 finalize, 都会在 data/{day}/{room}/ 下各留一份 manifest。只验第一个
-    等于其余会话**完全没自检**, 而用户看到的仍是"校验通过", 比不校验更误导。
-    """
-    if not day_dir.is_dir():
-        return []
-    root = day_dir / "manifest.json"
-    if root.is_file():                 # 旧平铺布局: 日期目录根上一份
-        return [root]
-    return sorted(p for p in day_dir.glob("*/manifest.json") if p.is_file())
-
-
-def verify_day(day_dir: Path) -> list:
-    """校验一天的数据完整性(每个会话的 manifest 声明的文件都在且能解开)。
-
-    只读检查, 不修改任何东西。给"更新后自检"用 —— 下载成功不等于数据能用,
-    gzip 截断只有真去解才知道。
-
-    **多会话日逐个验**: 见 _manifests_for_day 的说明。
-    """
-    mfs = _manifests_for_day(day_dir)
-    if not mfs:
-        return [f"{day_dir.name}: 没有 manifest.json"]
-    problems = []
-    for mf in mfs:
-        problems.extend(_verify_manifest_files(day_dir, mf))
-    return problems
-
-
-def _verify_manifest_files(day_dir: Path, mf: Path) -> list:
-    """校验单份 manifest 声明的文件齐全且 gzip 可解。"""
-    try:
-        man = json.loads(mf.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        # 带上会话目录名, 多会话日才分得清是哪一份坏了
-        return [f"{day_dir.name}/{mf.parent.name}: manifest 解析失败 {e}"]
-    base = mf.parent
-    tag = day_dir.name if base == day_dir else f"{day_dir.name}/{base.name}"
-    problems = []
-    for name in man.get("files") or []:
-        p = base / name
-        if not p.is_file():
-            problems.append(f"{tag}: 缺文件 {name}")
-            continue
-        if name.endswith(".gz"):
-            try:
-                with gzip.open(p, "rb") as f:
-                    while f.read(1 << 20):
-                        pass
-            except (OSError, EOFError) as e:
-                problems.append(f"{tag}: {name} 损坏 {e}")
-    return problems

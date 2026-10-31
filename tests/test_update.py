@@ -380,6 +380,51 @@ def main() -> int:
             dataupdate.fetch_index = saved_fetch
         _ = before
 
+        print("\n[夜里又涨了 -> 老用户能补]")
+        # 作者夜间每小时发布: manifest 变化 + 新增切片。只下缺的, 不重下整晚。
+        dayb = "2026-01-02"
+        new_rel = f"data/{dayb}/123/y_new.jsonl.gz"
+        new_body = gzip.compress(b"new-hour\n" * 500)
+        (remote / new_rel).parent.mkdir(parents=True, exist_ok=True)
+        (remote / new_rel).write_bytes(new_body)
+        mf_rel_b = f"data/{dayb}/123/manifest.json"
+        man_new = {"schema_version": 1,
+                   "files": ["x0.jsonl.gz", "x1.jsonl.gz", "y_new.jsonl.gz"]}
+        (remote / mf_rel_b).write_bytes(json.dumps(man_new).encode())
+        mf_bytes = (remote / mf_rel_b).stat().st_size
+        mf_sha = hashlib.sha256((remote / mf_rel_b).read_bytes()).hexdigest()
+        idx4 = json.loads(json.dumps(idx3))
+        idx4["days"][dayb]["files"] = list(idx["days"][dayb]["files"]) + [new_rel]
+        sizes = [f for f in idx["days"][dayb]["file_sizes"] if f["name"] != mf_rel_b]
+        sizes.append({"name": mf_rel_b, "bytes": mf_bytes, "sha256": mf_sha})
+        sizes.append({"name": new_rel, "bytes": len(new_body),
+                      "sha256": hashlib.sha256(new_body).hexdigest()})
+        idx4["days"][dayb]["file_sizes"] = sizes
+        old_gz = local / dayb / "123" / "x0.jsonl.gz"
+        gz_mtime = old_gz.stat().st_mtime_ns
+        saved_fetch = dataupdate.fetch_index
+        try:
+            dataupdate.fetch_index = lambda: idx4
+            c = dataupdate.check(local, want_afp=False)
+            check("manifest 变了会报当天增量",
+                  dayb in (c.get("day_update_days") or []), c.get("day_update_days"))
+            check("不把当天增量算成整日新增", c.get("need") == 0, c.get("need"))
+            check("体积只算缺失文件",
+                  c.get("new_bytes") == mf_bytes + len(new_body), c.get("new_bytes"))
+            res = dataupdate.update(local, want_afp=False)
+            check("消息说明是更新采集数据",
+                  "采集数据" in (res.get("message") or ""), res.get("message"))
+            check("只下增量字节", res.get("bytes") == mf_bytes + len(new_body),
+                  res.get("bytes"))
+            check("旧切片没被重下", old_gz.stat().st_mtime_ns == gz_mtime)
+            check("新切片已落盘", (local.parent / new_rel).is_file())
+            c2 = dataupdate.check(local, want_afp=False)
+            check("补完后不再报当天增量",
+                  dayb not in (c2.get("day_update_days") or []),
+                  c2.get("day_update_days"))
+        finally:
+            dataupdate.fetch_index = saved_fetch
+
         print("\n[镜像降级链]")
         # 官方地址应排在最后(有代理时它最可靠), 镜像在前(国内直连最快)
         official = ("https://raw.githubusercontent.com/root9701/"

@@ -2480,7 +2480,9 @@
           '），是否有新版未知';
       }
       var alignFix = (j.align_fix_days || []);
-      if (!j.need && !(j.afp_fix_days || []).length && !alignFix.length) {
+      var dayFix = (j.day_update_days || []);
+      if (!j.need && !(j.afp_fix_days || []).length && !alignFix.length &&
+          !dayFix.length) {
         setUpdateStatus('弹幕已是最新（本地 ' + (j.local_days || []).length +
           ' 天，远端最新 ' + (j.remote_latest || '?') + '）' + appNotice,
           appNotice ? 'warn' : 'ok');
@@ -2488,8 +2490,11 @@
       }
       var days = (j.new_days || []).join('、');
       if (!j.need) {
-        // 只剩补指纹/补校准: 说清"补什么", 否则用户以为数据没变却又要下载
+        // 只剩补数据/补指纹/补校准: 说清"补什么", 否则用户以为数据没变却又要下载
         var extra = [];
+        if (dayFix.length) {
+          extra.push('更新 ' + dayFix.length + ' 天的采集数据（比赛可能仍在进行）');
+        }
         if ((j.afp_fix_days || []).length) {
           extra.push('补齐 ' + j.afp_fix_days.length + ' 天的音频指纹');
         }

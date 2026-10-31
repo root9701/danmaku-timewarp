@@ -1,0 +1,176 @@
+{
+  "align": {
+    "2026-10-31|7734200": {
+      "bvs": [
+        "BV1W2x66WEE9",
+        "BV11Fx66REUr"
+      ],
+      "date": "2026-10-31",
+      "file": "7734200",
+      "offset_sec": 53.76
+    },
+    "2026-10-31|7734200|BV11Fx66REUr": {
+      "auto": {
+        "confidence": 9.305,
+        "method": "audiofp",
+        "ts": "2026-10-31T08:56:27"
+      },
+      "bv": "BV11Fx66REUr",
+      "date": "2026-10-31",
+      "file": "7734200",
+      "offset_sec": 10787.764,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 9.305,
+          "duration": 2977,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 10787.764,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:56:27",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 11.466,
+          "duration": 2781,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 14014.961,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:56:27",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 3.799,
+          "duration": 402,
+          "matched_seconds": 1065.6,
+          "method": "audiofp",
+          "offset_sec": 16789.92,
+          "part": "抽签仪式",
+          "picked_by": "多段投票 8/8 段一致(多段一致、3 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:56:27",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月31日 G2 vs HLE",
+      "total_pages": 3
+    },
+    "2026-10-31|7734200|BV1W2x66WEE9": {
+      "auto": {
+        "confidence": 8.827,
+        "method": "audiofp",
+        "ts": "2026-10-31T08:55:17"
+      },
+      "bv": "BV1W2x66WEE9",
+      "date": "2026-10-31",
+      "file": "7734200",
+      "offset_sec": 53.76,
+      "page_errors": {
+        "4": "该分P 的音频在直播里找不到自洽位置(最多 1/8 段指向同一处, 最强票 conf=1.19); 可能是这场直播没有转播, 或采集期间音频断流"
+      },
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 8.827,
+          "duration": 2875,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 53.76,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:55:17",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 7.746,
+          "duration": 3340,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3143.764,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:55:17",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 5.741,
+          "duration": 3802,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 6692.882,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-10-31T08:55:17",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】10月31日 TLAW vs LOS",
+      "total_pages": 4
+    }
+  },
+  "lists": {
+    "2026-10-31": [
+      {
+        "bv": "BV1W2x66WEE9",
+        "offset_sec": 53.76,
+        "pages": {
+          "1": {
+            "confidence": 8.827,
+            "offset_sec": 53.76,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 7.746,
+            "offset_sec": 3143.764,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 5.741,
+            "offset_sec": 6692.882,
+            "part": "第三局"
+          }
+        },
+        "start_ms": 1793390400000,
+        "title": "LOS vs TLAW",
+        "total_pages": 4
+      },
+      {
+        "bv": "BV11Fx66REUr",
+        "offset_sec": 10787.764,
+        "pages": {
+          "1": {
+            "confidence": 9.305,
+            "offset_sec": 10787.764,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 11.466,
+            "offset_sec": 14014.961,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 3.799,
+            "offset_sec": 16789.92,
+            "part": "抽签仪式"
+          }
+        },
+        "start_ms": 1793401200000,
+        "title": "G2 vs HLE",
+        "total_pages": 3
+      }
+    ]
+  }
+}

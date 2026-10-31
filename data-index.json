@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "app_version": "1.2.0",
-  "generated_at": "2026-10-30T11:57:57Z",
-  "latest": "2026-10-30",
+  "generated_at": "2026-10-31T00:59:01Z",
+  "latest": "2026-10-31",
   "days": {
     "2026-10-26": {
       "files": [
@@ -313,6 +313,70 @@
         "data/2026-10-30/7734200"
       ],
       "bytes": 4693772
+    },
+    "2026-10-31": {
+      "files": [
+        "data/2026-10-31/7734200/7734200.afp.jsonl.gz",
+        "data/2026-10-31/7734200/7734200.meta.json",
+        "data/2026-10-31/7734200/7734200_s0400.jsonl.gz",
+        "data/2026-10-31/7734200/7734200_s0500.jsonl.gz",
+        "data/2026-10-31/7734200/7734200_s0600.jsonl.gz",
+        "data/2026-10-31/7734200/7734200_s0700.jsonl.gz",
+        "data/2026-10-31/7734200/7734200_s0800.jsonl.gz",
+        "data/2026-10-31/7734200/manifest.json",
+        "data/2026-10-31/align.json"
+      ],
+      "file_sizes": [
+        {
+          "name": "data/2026-10-31/7734200/7734200.afp.jsonl.gz",
+          "bytes": 1020889,
+          "sha256": "81637f31a7446940fe52fe19465e34d59407ac5130ed9efeb5dcd1cf1b536b6c"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200.meta.json",
+          "bytes": 112217,
+          "sha256": "88903f6c4c72f7e137e0d820272fdf381b497f98c1ccd76e6b00b01431ec2b7b"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200_s0400.jsonl.gz",
+          "bytes": 208600,
+          "sha256": "cb09f5a9075e6f78fe89e9597764451fd545e7c297a35e740b9e788847cbe241"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200_s0500.jsonl.gz",
+          "bytes": 216633,
+          "sha256": "6bc466f09ad31bfe4444494b13c4464499cb7891424bf067383ce6ef8e3d3a05"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200_s0600.jsonl.gz",
+          "bytes": 418948,
+          "sha256": "0c729acd458dcf5e47299d430b10a7b68950a77310345cd607f6931c9bf64372"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200_s0700.jsonl.gz",
+          "bytes": 639122,
+          "sha256": "66a3c4dc22640533466d5fb8143c0202314063e3c80e049d7d6b10b50e2329db"
+        },
+        {
+          "name": "data/2026-10-31/7734200/7734200_s0800.jsonl.gz",
+          "bytes": 846797,
+          "sha256": "0ae55485b88a820b7530753abdf53cfcfa27a404bc6b585d3024955758aab049"
+        },
+        {
+          "name": "data/2026-10-31/7734200/manifest.json",
+          "bytes": 554,
+          "sha256": "db512528cb1d9f08409a46ca2998d2fd84ce0b6ed39f1a67bf7f5b98df9a75fe"
+        },
+        {
+          "name": "data/2026-10-31/align.json",
+          "bytes": 5293,
+          "sha256": "cda4e7f59888e31fc114fb1014dfcee897cec283b8c8742586ead308d52bfdf7"
+        }
+      ],
+      "sessions": [
+        "data/2026-10-31/7734200"
+      ],
+      "bytes": 3469053
     }
   }
 }

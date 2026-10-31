@@ -47,6 +47,9 @@ from aiohttp import web
 
 # 程序版本(唯一源是仓库根的 VERSION 文件, 见 version.py)
 import version as appversion
+import alignment
+from alignment import _fmt_wall
+from errors import ApiError
 
 APP_VERSION = appversion.read()
 
@@ -208,13 +211,6 @@ MIME_MAP = {".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf
 
 
 # ---- 通用工具 ----
-class ApiError(Exception):
-    """业务错误: 统一转为 {"ok":false,"error":"中文原因"} 响应。"""
-    def __init__(self, msg: str):
-        super().__init__(msg)
-        self.msg = str(msg)
-
-
 def api_ok(**kw) -> web.Response:
     kw["ok"] = True
     return web.json_response(kw, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -2872,282 +2868,16 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
 
 def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
                     anchor_ms=None, window_ms=None):
-    """把一个分P 的回放指纹对齐到直播 afp 上, 返回它在直播时间轴中的起始位置。
+    """兼容入口: 实现在 alignment.py; 这里只把 config 里的阈值绑定进去。
 
-    返回 dict:
-      offset_ms        回放 t=0 对应的直播墙钟(毫秒)
-      confidence       支持该位置的各段置信度中位数
-      matched_seconds  参与投票的片段总时长
-      votes            一致票数 / 总段落数
-      candidates       找到的自洽位置个数(>1 表示该内容在直播里出现多次)
-      all_candidates   全部自洽位置(毫秒, 升序), 便于排查
-      suspect          该分P 只在窗口外找到位置(早上重播/回顾), 已拒绝
-      suspect_reason   拒绝原因(给用户看)
-
-    **为什么是「多段投票」而不是「一个长窗互相关」**
-
-    旧实现把整段回放(或它的 75% 长窗)一次性拿去和直播滑动互相关。问题是长窗里只要
-    混进一段直播没播的内容, 整窗得分就被拉平, 主峰/次峰比失去意义 —— 实测同一局
-    比赛, 全长对齐 conf=1.01(判为不匹配), 而换成 3 分钟短片段逐段对齐, 落在同一位置
-    的各段 conf 高达 5~9。**短片段比长片段更能定位**, 因为局部特征不会被全局噪声稀释。
-
-    做法: 把回放均匀切成 N 段(默认 8 段, 每段约 3 分钟), 每段单独去直播里找最像的位置,
-    得到 N 个候选起点。若某位置被 >=ceil(N/3) 段同时指向(容差 AUTO_VOTE_TOLERANCE_SEC),
-    就算「自洽」并采信。
-
-    **多候选时取最早的那个**
-
-    同一段音频在直播里可能出现多次(首播 + 之后的回顾/重播)。实测 IG vs HLE 第一局
-    在前 17 分钟匹配到 01:00(conf 5.5~8.3), 后半段在全晚各处只能拿到 conf≈1.1(随机水平),
-    而在 07:15 有一个假的一致位置。我们要的是**当时正在直播的那次**, 即最早的真实位置。
-    因此候选按时间升序, 取第一个通过的。
+    保留薄包装的原因: 播放端与既有回归按这个名字调用, 而阈值来自本模块读到的
+    config —— alignment 必须不依赖配置, 才能被无头 CLI 复用。
     """
-    ref_frames = int(fp_replay.shape[0])
-    # 帧数下限由"秒"换算: hop 变了帧数阈值也要跟着变, 否则判据会随 hop 漂移
-    min_conn_frames = max(1, int(round(AUTO_MIN_CONN_SEC / hop)))
-    if ref_frames < min_conn_frames:
-        raise ApiError("该分P 指纹过短, 无法对齐")
-
-    # 片长: 目标 3 分钟, 但不短于 min_match_sec, 也不超过回放的 1/3
-    seg_secs = min(180.0, fp_replay.shape[0] * hop / 3.0)
-    seg_frames = max(int(seg_secs / hop), min_conn_frames)
-    if seg_frames >= ref_frames:
-        # 回放太短(本身不到 3 分钟): 整段当一个样本
-        starts = [0]
-        seg_frames = ref_frames
-    else:
-        k = AUTO_VOTE_SEGMENTS
-        spans = ref_frames - seg_frames
-        starts = [int(round(spans * i / (k - 1))) for i in range(k)]
-        # 去重(回放很短时可能算出重复起点)
-        seen = set()
-        starts = [s for s in starts if not (s in seen or seen.add(s))]
-
-    n_seg = len(starts)
-    need = max(2, (n_seg + 2) // 3)      # ceil(n/3), 至少 2 票
-    votes = []                            # [(主播内起点秒, 段序号, 置信度)]
-    detail = []
-    # 窗口(墙钟秒): 给了就**优先在窗口内找**, 而不是先全局最优再筛。
-    # 差别很关键: 早上的重播与首播音频完全一致, 甚至可能更清晰(码率更高), 于是
-    # "全局最强位置"常常是重播那一段。若先取全局最优再按窗口过滤, 窗口内的正确位置
-    # 根本没进入候选, 那些页会被判成"只在窗口外找到"而整页作废 ——
-    # 实测 26 日 HLE vs IG 的赛后采访/赛前评论就这样被误杀了。
-    # 现在: 每段先在窗口内挑最强的, 窗口内没有才退回全局最强(留着给后面报"疑似重播")。
-    win_lo_s = win_hi_s = None
-    if window_ms:
-        win_lo_s, win_hi_s = window_ms[0] / 1000.0, window_ms[1] / 1000.0
-
-    for i, st in enumerate(starts):
-        piece = fp_replay[st:st + seg_frames]
-        best = None            # 全局最强 (base秒, conf)
-        best_in = None         # 窗口内最强
-        for seg in conns:
-            if seg["n"] < seg_frames:
-                continue
-            # 转成"该片段在**这一段连接**内允许的起始偏移"(秒), 传给 align 限制搜索。
-            # 必须在 align 内部限制: 它只返回全局最大峰, 而重播峰可能更高 ——
-            # 光在返回后过滤, 窗口内的正确峰根本不会出现(实测 26 日 HLE vs IG P2:
-            # 全局峰在 08:05、被窗口排除, 而窗口内 01:51 也有一个峰, 只是矮一点)。
-            rng = None
-            if win_lo_s is not None:
-                seg_t0_s = seg["t0_ms"] / 1000.0
-                # base = seg_t0 + off - st*hop  =>  off = base - seg_t0 + st*hop
-                rng = (win_lo_s - seg_t0_s + st * hop,
-                       win_hi_s - seg_t0_s + st * hop)
-            try:
-                # 注意方向: **直播整段是 ref, 回放片段是 query**。
-                # align() 要求 query 不长于 ref, 且返回 query 在 ref 里的起始位置。
-                r = audiofp.align(seg["frames"], piece, hop, valid_range=rng)
-            except ValueError:
-                continue
-            if not math.isfinite(r["offset_sec"]):
-                continue                     # inf = 只有单峰, 不可判定
-            pos_wall = seg["t0_ms"] / 1000.0 + r["offset_sec"]
-            base = pos_wall - st * hop       # 回放 t=0 对应的墙钟
-            if best is None or r["confidence"] > best[1]:
-                best = (base, r["confidence"])
-            if win_lo_s is not None and win_lo_s <= base <= win_hi_s:
-                if best_in is None or r["confidence"] > best_in[1]:
-                    best_in = (base, r["confidence"])
-        pick = best_in if best_in is not None else best
-        if pick is None:
-            detail.append(f"段{i}无可判定位置")
-            continue
-        base, conf = pick
-        votes.append((base, i, conf))
-        detail.append(f"段{i}(回放{st*hop/60:.0f}分)->{base/3600:.2f}h conf={conf:.2f}"
-                      + ("(窗口内)" if best_in is not None else "(窗口外)"))
-
-    if not votes:
-        raise ApiError("该分P 的音频在直播里找不到可判定的位置"
-                       "(各片段都只有单峰, 可能这场直播没有音频或指纹损坏)")
-
-    # ---- 按容差聚类投票, 得到「自洽位置」 ----
-    # **锚定式聚类**: 每票只与簇的**第一个**位置比, 不做链式传递。
-    # 链式(与簇内最新一票比)会让 100/130/160/190 这种每票只差 30 秒的散票
-    # 一路串成同一簇, 簇内离散累积到 90 秒仍算"一致" —— 实测随机噪声的 4 张
-    # 烂票(conf≈1.2)就是这样凑够票数被判通过的。
-    votes.sort()
-    clusters = []           # [[锚点秒(决定簇边界), [置信度...], [段序号...], [各票位置...]]]
-    for base, i, conf in votes:
-        if clusters and base - clusters[-1][0] <= AUTO_VOTE_TOLERANCE_SEC:
-            c = clusters[-1]
-            c[1].append(conf)
-            c[2].append(i)
-            c[3].append(base)      # 锚点 c[0] 不动, 边界由首个位置决定
-        else:
-            clusters.append([base, [conf], [i], [base]])
-
-    # 自洽位置的判定: **票数够 或 票的质量够高**。
-    # 单纯数票会误杀"直播只播了一部分"的情况: 实测 HLE vs IG 第一局只有 2/8 段能匹配,
-    # 但这 2 段的置信度是 7.00 / 7.16(随机水平只有 1.1), 且指向完全相同的位置 ——
-    # ---- 自洽位置的判定 ----
-    # 判据是**投票一致性**, 而不是单段置信度。
-    #
-    # 为什么不能用单段置信度当门票: 单段 conf 是"该 3 分钟片段内部主峰/次峰比",
-    # 它反映的是**这段音频本身有多独特**, 不是"这个位置对不对"。实测 CFO vs T1 第一局:
-    # 8 段全部指向完全相同的位置(+47.4s, 离散 0.0 秒), 但只有 1 段 conf=8.28,
-    # 其余 7 段是 1.08~2.12(那段是 BP/解说, 音频特征不独特)。旧实现先用 min_conf
-    # 把低分票**丢掉**, 只剩 1 票, 达不到 need=3, 于是判"不可靠, 已拒绝" ——
-    # 一场普通 Bo1 的第一局都对齐不了, 这就是"自动校准永远失败"的直接原因。
-    #
-    # 反面对照(同样 8 段): 拿 26 日的回放去对 27 日的直播, 8 段分别散落在 8 个毫无关系的
-    # 位置(conf 全是 1.0~1.35), 最大簇只有 1 票。所以**"有多少段指向同一处"**是可靠判据,
-    # "每段自己多有把握"不是。
-    #
-    # 采纳条件(任一成立即采信):
-    #   ① 一致票数 >= ceil(N/3)      —— 多数段自洽
-    #   ② 2 张强票(conf>=6)          —— 票少但都很确定(直播只缺了一小部分)
-    #   ③ 1 张很强票(conf>=7) 且 总票数>=2 —— 部分段落极确定, 其余同向但特征弱
-    #   ④ 全票一致(票数==N) 且最强票 >= min_conf —— 8 段无一例外指向同一处,
-    #      这种离散 0.0s 的一致性不可能是巧合(随机散票不可能全撞一处)
-    def cluster_score(c):
-        """票数与票质的综合分: 各票置信度之和(低分票几乎不加分)。"""
-        return sum(c[1])
-
-    # 强票门槛必须**随 hop 缩放**: conf 是"主峰/次峰比", 它对帧的重叠程度敏感 ——
-    # hop 越大, 相邻帧越不相似, 主峰越钝, conf 系统性下降(实测真实比赛 hop=0.2 -> 0.4
-    # 时 conf 从 7.2~11.9 降到 3.9~5.5, 约 -45%)。若门槛仍写死 6.0/7.0, 那两条
-    # "部分段落能对上"的救援逻辑就会失效: 实测把直播音频削到 30% 时, hop=0.2 靠
-    # 2 张强票能救回, hop=0.4 会误判为"找不到位置"。
-    # 用 0.2 作为基准尺度, 按 0.2/hop 折算 —— hop=0.2 时系数为 1, 行为完全不变。
-    hop_scale = max(0.4, min(1.0, 0.2 / max(hop, 1e-6)))
-    strong_conf = max(6.0, min_conf * 3) * hop_scale
-    very_strong_conf = 7.0 * hop_scale
-    solid = []
-    why = {}
-    for c in clusters:
-        n_vote = len(c[1])
-        confs = sorted(c[1])
-        max_conf = confs[-1]
-        n_strong = len([x for x in confs if x >= strong_conf])
-        # 簇内实际离散: 锚定聚类已保证它 <= 容差, 这里再卡一道硬上限,
-        # 把"票数够但各自偏得远"的伪一致挡掉(实测随机噪声 spread 达 47.58 秒)。
-        c_spread = max(c[3]) - min(c[3])
-        if c_spread > AUTO_VOTE_TOLERANCE_SEC:
-            why[id(c)] = "簇内离散 %.1fs 超容差" % c_spread
-            continue
-        # 置信度下限: 随机水平约 1.1~1.35, 低于 min_conf 的簇一律不算证据。
-        if max_conf < min_conf:
-            why[id(c)] = "最强票 conf=%.2f 低于下限 %.2f" % (max_conf, min_conf)
-            continue
-        reasons = []
-        if n_vote >= need:
-            reasons.append("多段一致")
-        if n_strong >= 2:
-            reasons.append("%d 张强票" % n_strong)
-        if max_conf >= very_strong_conf and n_vote >= 2:
-            reasons.append("强票+同向")
-        if n_vote == n_seg and max_conf >= min_conf:
-            reasons.append("全票一致")
-        if reasons:
-            solid.append(c)
-            why[id(c)] = "、".join(reasons)
-    if not solid:
-        best_c = max(clusters, key=cluster_score)
-        best_n = len(best_c[1])
-        best_conf = max(best_c[1])
-        if best_n >= n_seg and best_conf < min_conf:
-            # 全票"一致"但置信度只是随机水平 —— 典型是音频根本不存在/全是噪声,
-            # 各段都退化到同一个默认位置。文案必须说清, 否则看着像算法自相矛盾。
-            raise ApiError(
-                "该分P 的音频在直播里匹配不到(全部 %d 段都落在同一处, 但最强票 conf=%.2f "
-                "仅达随机水平, 低于下限 %.2f); 该时段直播可能没有这段音频"
-                % (best_n, best_conf, min_conf))
-        raise ApiError(
-            "该分P 的音频在直播里找不到自洽位置(最多 %d/%d 段指向同一处, 最强票 conf=%.2f); "
-            "可能是这场直播没有转播, 或采集期间音频断流"
-            % (best_n, n_seg, best_conf))
-
-    solid.sort(key=lambda c: c[0])          # 按时间升序 -> 取最早
-
-    # ---- 窗口约束: 排除"早上重播/回顾"里的伪峰 ----
-    # 直播间整晚常把前几场重播一遍, 音频与官方回放一模一样, 投票也会一致命中。
-    # 实测 CFO vs T1 的 P2「赛前评论」(01:00 那场的内容) 被对齐到了 07:44 ——
-    # 那是早上重播, 且当时弹幕全是「抽签」, 一旦采信, 那一局的弹幕就整体错了 6 小时。
-    # 因此: 给了 window_ms=(最早可接受墙钟, 最晚可接受墙钟) 时, 只接受落在窗内的候选;
-    # 全部候选都在窗外 -> 该页标 suspect 并**拒绝采纳**(宁可报未对齐, 也不能错位)。
-    suspect = False
-    suspect_reason = ""
-    all_pos = [int(round(c[0] * 1000)) for c in solid]
-    if window_ms:
-        w_lo, w_hi = window_ms
-        in_win = [c for c in solid if w_lo <= c[0] * 1000 <= w_hi]
-        if not in_win:
-            suspect = True
-            near = min(all_pos, key=lambda m: min(abs(m - w_lo), abs(m - w_hi)))
-            # 报错文案要能直接看懂"偏了多少": 优先按赛程窗口给相对差, 没有 anchor 时给绝对时刻。
-            ref = anchor_ms if anchor_ms else w_lo
-            suspect_reason = (
-                "该分P 只在窗口外找到位置(%s, 距赛程窗口 %+.0f 分钟), 判为早上重播/回顾, 未采纳"
-                % (_fmt_wall(near), (near - ref) / 60000.0))
-            raise ApiError(suspect_reason)
-        solid = in_win
-
-    chosen = solid[0]
-
-    # ---- 音频时长下限: 拦随机噪声 ----
-    # 纯随机噪声在"片段长度接近回放长度"时 conf 也能到 2.5~5.5, 光靠置信度挡不住。
-    # 真实比赛对齐通常能命中几十秒以上, 故再要求参与投票的音频总时长达标。
-    matched_sec = len(chosen[1]) * seg_frames * hop
-    if matched_sec < min_match_sec:
-        raise ApiError(
-            "该分P 找到的位置只有 %.0f 秒音频吻合(低于下限 %.0f 秒), 证据不足, 未采纳"
-            % (matched_sec, min_match_sec))
-
-    # ---- 一致性: 选中的位置内部各票离散不能太大 ----
-    same = [v for v in votes if abs(v[0] - chosen[0]) <= AUTO_VOTE_TOLERANCE_SEC]
-    spread = max(v[0] for v in same) - min(v[0] for v in same)
-
-    offset_ms = int(round(chosen[0] * 1000))
-    return {
-        "offset_ms": offset_ms,
-        # 置信度给**最强票**(不是中位数): 低分票也有定位价值, 但它们会把中位数拉到
-        # 随机水平(~1.1), 让"已对齐"看起来像没对齐。最强票代表这次定位的证据强度。
-        "confidence": min(float(max(chosen[1])), 999.0),
-        "matched_seconds": matched_sec,
-        "conn": 0,
-        "t0_ms": int(round(chosen[0] * 1000)),
-        "votes": len(chosen[1]),
-        "total_segments": n_seg,
-        "candidates": len(solid),
-        "all_candidates": [int(round(c[0] * 1000)) for c in solid],
-        "spread_sec": round(spread, 2),
-        "picked_by": ("多段投票 %d/%d 段一致(%s)" % (len(chosen[1]), n_seg,
-                                                  why.get(id(chosen), "一致")) +
-                      ("(取最早, 共 %d 处候选)" % len(solid) if len(solid) > 1 else "")),
-        "suspect": suspect,
-        "suspect_reason": suspect_reason,
-        "debug": detail,
-    }
-
-
-def _fmt_wall(ms) -> str:
-    """毫秒墙钟 -> 'MM-DD HH:MM' 便于日志阅读。"""
-    try:
-        return datetime.fromtimestamp(ms / 1000).strftime("%m-%d %H:%M")
-    except (OSError, ValueError, OverflowError):
-        return str(ms)
+    return alignment.align_one_page(
+        fp_replay, conns, hop, min_conf, min_match_sec, anchor_ms, window_ms,
+        min_conn_sec=AUTO_MIN_CONN_SEC,
+        vote_segments=AUTO_VOTE_SEGMENTS,
+        tolerance_sec=AUTO_VOTE_TOLERANCE_SEC)
 
 
 def _schedule_window_for_bv(date: str, bv: str):
@@ -3258,12 +2988,22 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     #      - 它自己会用 8 段投票过滤掉不稳定位置;
     #      - 多个自洽位置时取**最早**的(那是"当时正在直播"的那次, 后面的多半是回顾)。
     #    因此这里按分P 顺序直接对齐即可, 失败的分P 单独记录原因。
-    page_results, page_errors = {}, {}
+    page_results, page_errors, fetch_failed = {}, {}, set()
     for tp in targets:
         pg = tp["page"]
+        # 取不到音频(回放还没传完/断流)与"算出来位置不自洽"必须分开记:
+        # 前者是**暂时**的, 夜间重复跑时保留上次 offset; 后者是判定结论, 仍清旧值
+        # (否则按错误规则算出的错位会一直生效, 见下方 _mut 的说明)。
         try:
             fp_replay, src_desc = await get_replay_fingerprint(
                 session, bv, pg, hop, win, local_audio=local_audio)
+        except Exception as e:             # noqa: B014 - 单页失败要隔离
+            fetch_failed.add(pg)
+            page_errors[pg] = str(e)
+            print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 取不到音频: {e}",
+                  flush=True)
+            continue
+        try:
             r = await asyncio.to_thread(_align_one_page, fp_replay, conns, hop,
                                         AUTO_MIN_CONFIDENCE, AUTO_MIN_MATCH_SEC,
                                         anchor_ms=anchor_ms, window_ms=window_ms)
@@ -3276,7 +3016,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                   f"offset={r['offset_sec']} conf={r['confidence']:.2f} "
                   f"投票{r['votes']}/{r['total_segments']} 候选{r['candidates']}个 "
                   f"依据={r['picked_by']}", flush=True)
-        except (ApiError, Exception) as e:     # noqa: B014 - 单页失败要隔离
+        except Exception as e:             # noqa: B014 - 单页失败要隔离
             page_errors[pg] = str(e)
             print(f"[autocalign] {date}/{file} P{pg}({tp['part']}) 失败: {e}", flush=True)
 
@@ -3318,18 +3058,14 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         # 之后即使对齐成功, 下拉框也会永远显示「未对齐·直播可能未转播」。
         for k in ("align_failed", "align_error", "align_failed_at"):
             entry.pop(k, None)
-        # 部分分P 失败仍记下来(如赛前评论在开播前没录到), 供前端说明"哪几页没对齐"
-        if page_errors:
-            entry["page_errors"] = {str(k): str(v)[:300] for k, v in page_errors.items()}
-        else:
-            entry.pop("page_errors", None)
         pages_map = dict(entry.get("pages") or {})
-        # 本次判失败的分P 必须**删掉旧 offset**, 不能留着上次的值。
-        # 历史缺陷: 只写成功页、不清理失败页, 于是上一次(可能是按错误规则算出的)错位
-        # offset 会一直生效 —— 实测 CFO vs T1 的 P2 残留在 07:44 那个重播位置(24297.9s),
-        # 本次已正确判定"找不到", 但前端仍会拿旧值去映射, 弹幕整体错 6 小时。
+        # 对齐判定失败(不是"取不到音频")的分P 仍要删旧 offset:
+        # 历史缺陷是只写成功页、不清理失败页, 于是按错误规则算出的错位一直生效
+        # (实测 CFO vs T1 的 P2 残留 07:44 的重播位置, 弹幕整体错 6 小时)。
+        # 取不到音频的分P 则保留旧值 —— 夜间重复跑时回放可能暂时不可用。
         for pg in page_errors:
-            pages_map.pop(str(pg), None)
+            if pg not in fetch_failed:
+                pages_map.pop(str(pg), None)
         for pg, r in page_results.items():
             pages_map[str(pg)] = {
                 "part": r["part"],
@@ -3344,6 +3080,14 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 "method": "audiofp",
                 "ts": now_iso,
             }
+        # 只把"最终仍然没有 offset"的页记进 page_errors: 有旧值且只是暂时取不到
+        # 音频的页继续用旧值, 不写失败标记(否则前端会以为那局没有对齐结果)。
+        new_errors = {str(k): str(v)[:300] for k, v in page_errors.items()
+                      if str(k) not in pages_map}
+        if new_errors:
+            entry["page_errors"] = new_errors
+        else:
+            entry.pop("page_errors", None)
         entry["pages"] = pages_map
         # 兼容字段: 顶层 offset_sec 取**第一分P**(旧前端/旧代码读它)
         first_pg = str(min(page_results.keys()))
@@ -3372,9 +3116,10 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 item_pages = item.get("pages")
                 if not isinstance(item_pages, dict):
                     item_pages = {}
-                # 列表里的 pages 同样要清掉本次失败的分P(理由同上)
+                # 与 match 条目同规则: 只清"判定失败"的页, 取不到音频的保留旧值
                 for pg in page_errors:
-                    item_pages.pop(str(pg), None)
+                    if pg not in fetch_failed:
+                        item_pages.pop(str(pg), None)
                 for pg, r in page_results.items():
                     item_pages[str(pg)] = {
                         "part": r["part"], "offset_sec": r["offset_sec"],

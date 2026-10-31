@@ -1,7 +1,7 @@
 {
   "cover": ["danmaku-server", "danmaku-collector", "tools", "*.md"],
   "size_suffix": [".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".gd", ".kt", ".java", ".css", ".html", ".md"],
-  "docs_cover": ["**/*.md"],
+  "docs_cover": ["*.md", "模块设计/**/*.md", "计划/**/*.md", "danmaku-server/**/*.md", "danmaku-collector/**/*.md", "tools/**/*.md", "tests/**/*.md"],
   "links": true,
   "file_lines": 400,
   "file_bytes": 0,
@@ -25,7 +25,6 @@
       "danmaku-server/server.py::bili_playurl_mp4",
       "danmaku-server/server.py::get_replay_fingerprint",
       "danmaku-server/server.py::handle_overview",
-      "danmaku-server/server.py::_align_one_page",
       "danmaku-server/server.py::run_autocalign",
       "danmaku-server/server.py::_build",
       "danmaku-server/server.py::_mut",

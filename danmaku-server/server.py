@@ -18,6 +18,7 @@ ffmpeg 喂流用 —— **播放不再走它**, 直链失效时前端会重新�
 
 import asyncio
 import gzip
+import copy
 import zlib
 import html
 import ipaddress
@@ -350,9 +351,14 @@ def load_matches() -> dict:
     兼容旧格式(顶层平铺 align 条目)自动迁移。
     """
     base = _load_align_dir()
+    # 必须深拷贝: _load_align_dir 有按 mtime 的解析缓存, 浅拷贝会让调用方
+    # 原地改 lists 时把"上游"也改掉, 随后 _split_local_layer 误判为无改动,
+    # 导致 discover 补的 BV / 校准补的分P 全部落不进本地层。
+    merged_align = copy.deepcopy(base["align"])
+    merged_lists = copy.deepcopy(base["lists"])
     local = _read_json_file(MATCHES_PATH)
     if not local:
-        return base
+        return {"align": merged_align, "lists": merged_lists}
     if "align" in local or "lists" in local:
         loc_align = local.get("align") or {}
         loc_lists = local.get("lists") or {}
@@ -360,9 +366,7 @@ def load_matches() -> dict:
         loc_align, loc_lists = local, {}       # 旧格式(顶层平铺)
     if not isinstance(loc_align, dict):
         loc_align = {}
-    merged_align = dict(base["align"])
     merged_align.update(loc_align)             # 本地层优先, 单场粒度
-    merged_lists = dict(base["lists"])
     if isinstance(loc_lists, dict):
         merged_lists.update(loc_lists)         # 按天整体覆盖
     return {"align": merged_align, "lists": merged_lists}

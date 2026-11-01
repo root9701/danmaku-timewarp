@@ -164,6 +164,30 @@ def test_local_layer_is_minimal() -> None:
         sb.close()
 
 
+def test_list_mutation_isolated_from_cache() -> None:
+    """就地改列表不能让上游缓存跟着变, 否则本地层会误判“没有改动”而丢掉 BV。
+
+    真实事故: discover 把 BV 写进 lists 后, _split_local_layer 重新读缓存,
+    发现“上游”也已经有这个 BV(其实是同一个被改过的对象), 于是本地层写成空,
+    发布出去的场次列表没有 BV。
+    """
+    sb = Sandbox()
+    try:
+        sb.write_day("2026-10-26", sample_day())
+        m = server.load_matches()
+        m["lists"]["2026-10-26"][1]["bv"] = "BVNewListBV"
+        loc = server._split_local_layer(m)
+        loc_list = (loc.get("lists") or {}).get("2026-10-26") or []
+        check("列表改动应留在本地层",
+              len(loc_list) == 2 and loc_list[1]["bv"] == "BVNewListBV",
+              f"实际 {loc.get('lists')}")
+        check("上游缓存里的列表未被就地改写",
+              server.load_matches()["lists"]["2026-10-26"][1]["bv"] == "BV1TenD6yEkj",
+              "load_matches 的返回值与缓存共享了列表对象")
+    finally:
+        sb.close()
+
+
 def test_check_align_ignores_pageless() -> None:
     """无 pages 的历史残留不该阻止发布(它们不参与时间窗)。"""
     sys.path.insert(0, str(ROOT / "tools"))
@@ -261,6 +285,7 @@ def main() -> int:
                test_local_override_wins,
                test_align_dir_never_written,
                test_local_layer_is_minimal,
+               test_list_mutation_isolated_from_cache,
                test_check_align_ignores_pageless,
                test_check_align_flags_missing_window,
                test_manifest_afp_stripped_shape,

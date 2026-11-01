@@ -108,6 +108,25 @@
   "lists": {
     "2026-11-01": [
       {
+        "bv": "BV1jpxJ6JEtF",
+        "offset_sec": 45.492,
+        "pages": {
+          "1": {
+            "confidence": 12.043,
+            "offset_sec": 45.492,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 5.33,
+            "offset_sec": 3650.543,
+            "part": "第二局"
+          }
+        },
+        "start_ms": 1793466000000,
+        "title": "MKOI vs KC",
+        "total_pages": 3
+      },
+      {
         "bv": "BV1gqxH6mEo2",
         "offset_sec": 6476.57,
         "pages": {

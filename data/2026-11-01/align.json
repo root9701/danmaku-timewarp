@@ -108,10 +108,28 @@
   "lists": {
     "2026-11-01": [
       {
-        "bv": "",
-        "offset_sec": 0,
+        "bv": "BV1gqxH6mEo2",
+        "offset_sec": 6476.57,
+        "pages": {
+          "1": {
+            "confidence": 4.748,
+            "offset_sec": 6476.57,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 8.074,
+            "offset_sec": 9941.492,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 4.049,
+            "offset_sec": 13970.538,
+            "part": "第三局"
+          }
+        },
         "start_ms": 1793476800000,
-        "title": "LOS vs LYON"
+        "title": "LOS vs LYON",
+        "total_pages": 3
       },
       {
         "bv": "",

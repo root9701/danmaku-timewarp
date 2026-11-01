@@ -1,0 +1,254 @@
+{
+  "align": {
+    "2026-11-01|7734200": {
+      "bv": "BV1C8xn6YEDA",
+      "bvs": [
+        "BV1jpxJ6JEtF",
+        "BV1gqxH6mEo2",
+        "BV1C8xn6YEDA"
+      ],
+      "date": "2026-11-01",
+      "file": "7734200",
+      "offset_sec": 17340.563,
+      "title": "HLE vs BLG"
+    },
+    "2026-11-01|7734200|BV1C8xn6YEDA": {
+      "auto": {
+        "confidence": 4.488,
+        "method": "audiofp",
+        "ts": "2026-11-01T08:19:41"
+      },
+      "bv": "BV1C8xn6YEDA",
+      "date": "2026-11-01",
+      "file": "7734200",
+      "offset_sec": 17340.563,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 4.488,
+          "duration": 3771,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 17340.563,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、5 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:41",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 9.529,
+          "duration": 3446,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 21305.492,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:41",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 3.859,
+          "duration": 267,
+          "matched_seconds": 707.2,
+          "method": "audiofp",
+          "offset_sec": 24750.6,
+          "part": "抽签仪式",
+          "picked_by": "多段投票 8/8 段一致(多段一致、2 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:41",
+          "votes": 8
+        },
+        "4": {
+          "candidates": 1,
+          "confidence": 5.082,
+          "duration": 376,
+          "matched_seconds": 249.6,
+          "method": "audiofp",
+          "offset_sec": 25020.554,
+          "part": "赛后采访",
+          "picked_by": "多段投票 2/8 段一致(强票+同向)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:41",
+          "votes": 2
+        }
+      },
+      "title": "【2026全球总决赛】11月1日 HLE vs BLG",
+      "total_pages": 4
+    },
+    "2026-11-01|7734200|BV1gqxH6mEo2": {
+      "auto": {
+        "confidence": 4.748,
+        "method": "audiofp",
+        "ts": "2026-11-01T08:19:39"
+      },
+      "bv": "BV1gqxH6mEo2",
+      "date": "2026-11-01",
+      "file": "7734200",
+      "offset_sec": 6476.57,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 4.748,
+          "duration": 3230,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 6476.57,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、5 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:39",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 8.074,
+          "duration": 3760,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 9941.492,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:39",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 4.049,
+          "duration": 3076,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 13970.538,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、4 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:39",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月1日 LOS vs LYON",
+      "total_pages": 3
+    },
+    "2026-11-01|7734200|BV1jpxJ6JEtF": {
+      "auto": {
+        "confidence": 12.043,
+        "method": "audiofp",
+        "ts": "2026-11-01T08:19:37"
+      },
+      "bv": "BV1jpxJ6JEtF",
+      "date": "2026-11-01",
+      "file": "7734200",
+      "offset_sec": 45.492,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 12.043,
+          "duration": 3391,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 45.492,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:37",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 5.33,
+          "duration": 2587,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3650.543,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-01T08:19:37",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月1日 MKOI vs KC",
+      "total_pages": 3
+    }
+  },
+  "lists": {
+    "2026-11-01": [
+      {
+        "bv": "BV1jpxJ6JEtF",
+        "offset_sec": 45.492,
+        "pages": {
+          "1": {
+            "confidence": 12.043,
+            "offset_sec": 45.492,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 5.33,
+            "offset_sec": 3650.543,
+            "part": "第二局"
+          }
+        },
+        "start_ms": 1793466000000,
+        "title": "MKOI vs KC",
+        "total_pages": 3
+      },
+      {
+        "bv": "BV1gqxH6mEo2",
+        "offset_sec": 6476.57,
+        "pages": {
+          "1": {
+            "confidence": 4.748,
+            "offset_sec": 6476.57,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 8.074,
+            "offset_sec": 9941.492,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 4.049,
+            "offset_sec": 13970.538,
+            "part": "第三局"
+          }
+        },
+        "start_ms": 1793476800000,
+        "title": "LOS vs LYON",
+        "total_pages": 3
+      },
+      {
+        "bv": "BV1C8xn6YEDA",
+        "offset_sec": 17340.563,
+        "pages": {
+          "1": {
+            "confidence": 4.488,
+            "offset_sec": 17340.563,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 9.529,
+            "offset_sec": 21305.492,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 3.859,
+            "offset_sec": 24750.6,
+            "part": "抽签仪式"
+          },
+          "4": {
+            "confidence": 5.082,
+            "offset_sec": 25020.554,
+            "part": "赛后采访"
+          }
+        },
+        "start_ms": 1793487600000,
+        "title": "HLE vs BLG",
+        "total_pages": 4
+      }
+    ]
+  }
+}

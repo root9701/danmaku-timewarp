@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "app_version": "1.2.0",
-  "generated_at": "2026-10-31T00:59:01Z",
-  "latest": "2026-10-31",
+  "app_version": "1.3.0",
+  "generated_at": "2026-11-01T00:19:45Z",
+  "latest": "2026-11-01",
   "days": {
     "2026-10-26": {
       "files": [
@@ -369,14 +369,90 @@
         },
         {
           "name": "data/2026-10-31/align.json",
-          "bytes": 5293,
-          "sha256": "cda4e7f59888e31fc114fb1014dfcee897cec283b8c8742586ead308d52bfdf7"
+          "bytes": 5136,
+          "sha256": "a704f2a2a49fa5ab92a76ae0fc364834f7b00ef1ca759cb7501568fc408f44ae"
         }
       ],
       "sessions": [
         "data/2026-10-31/7734200"
       ],
-      "bytes": 3469053
+      "bytes": 3468896
+    },
+    "2026-11-01": {
+      "files": [
+        "data/2026-11-01/7734200/7734200.afp.jsonl.gz",
+        "data/2026-11-01/7734200/7734200.meta.json",
+        "data/2026-11-01/7734200/7734200_s0100.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0200.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0300.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0400.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0500.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0600.jsonl.gz",
+        "data/2026-11-01/7734200/7734200_s0700.jsonl.gz",
+        "data/2026-11-01/7734200/manifest.json",
+        "data/2026-11-01/align.json"
+      ],
+      "file_sizes": [
+        {
+          "name": "data/2026-11-01/7734200/7734200.afp.jsonl.gz",
+          "bytes": 1393423,
+          "sha256": "c54c94d1174cd551fa1cd50ac51f85c42940fb6bcd0c4889722becb6609468db"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200.meta.json",
+          "bytes": 224393,
+          "sha256": "385c605f75c25c13a267d0c2ef588e9c30c233b5646b7904af8644b6c65460e7"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0100.jsonl.gz",
+          "bytes": 418003,
+          "sha256": "a34016af75f7d703c978ca8db414c9b52f4492cca5f94eca01a64403f773748e"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0200.jsonl.gz",
+          "bytes": 302355,
+          "sha256": "0d201a2306928a4fc4850f1ff5a8f3f6951346383f385a1588cb2db9c03de592"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0300.jsonl.gz",
+          "bytes": 280649,
+          "sha256": "19353a99771dae2c688942be85f330d408c8bd8abed9ea124e76a443ccf2ab72"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0400.jsonl.gz",
+          "bytes": 569580,
+          "sha256": "5ac29a14a49f96e988c0970e331c3e68e1e46eb620fa3b7c8fd3627009409e30"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0500.jsonl.gz",
+          "bytes": 666056,
+          "sha256": "bc36eb6ea1da4bec32e941d786915c31d181c2213abf79ffc82b364046d65634"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0600.jsonl.gz",
+          "bytes": 1125011,
+          "sha256": "12fd7c5434b1388aec241096dff92563834b1cc0242fc68832837031086ed926"
+        },
+        {
+          "name": "data/2026-11-01/7734200/7734200_s0700.jsonl.gz",
+          "bytes": 1383976,
+          "sha256": "944b4b861845f86a094b206810681d0f58208667a3a4ad5473ec9e223587fbcb"
+        },
+        {
+          "name": "data/2026-11-01/7734200/manifest.json",
+          "bytes": 617,
+          "sha256": "9d817b9aaa05b1f8413b407545a91471523eb52138cddf5b26e075da2b606e4c"
+        },
+        {
+          "name": "data/2026-11-01/align.json",
+          "bytes": 7528,
+          "sha256": "17d649821cb6048e81824c04b28571a3192adc66a436bd2dcbac1d7ff2c9ace1"
+        }
+      ],
+      "sessions": [
+        "data/2026-11-01/7734200"
+      ],
+      "bytes": 6371591
     }
   }
 }

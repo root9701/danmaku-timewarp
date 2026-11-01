@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.3.0",
-  "generated_at": "2026-11-01T00:04:31Z",
+  "generated_at": "2026-11-01T00:19:45Z",
   "latest": "2026-11-01",
   "days": {
     "2026-10-26": {
@@ -445,14 +445,14 @@
         },
         {
           "name": "data/2026-11-01/align.json",
-          "bytes": 4601,
-          "sha256": "e4a04f35d814be23d1cc5c50f7566734da4b5b79483de200782d481cf216d764"
+          "bytes": 7528,
+          "sha256": "17d649821cb6048e81824c04b28571a3192adc66a436bd2dcbac1d7ff2c9ace1"
         }
       ],
       "sessions": [
         "data/2026-11-01/7734200"
       ],
-      "bytes": 6368664
+      "bytes": 6371591
     }
   }
 }

@@ -11,7 +11,6 @@
 from datetime import datetime
 
 from errors import ApiError
-import align_vote
 
 
 def _fmt_wall(ms) -> str:
@@ -85,6 +84,12 @@ def align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
     参数由调用方传入(含全部阈值), 不读全局配置: 播放端传 config 里的值,
     无头 CLI 传同一组值, 两边结果才可能一致。
     """
+    # 惰性导入而不是放在模块顶层: align_vote -> audiofp -> numpy 这条链只在
+    # 真正做对齐时才需要, 而轻量版包里**不带 numpy**(省 51MB, 校准结果由作者
+    # 下发)。放顶层会让 `import server` 直接抛 ModuleNotFoundError, 用户看到的
+    # 是黑窗口一闪 —— 缺库只该关掉校准这一项能力, 不该让整个播放端起不来。
+    import align_vote
+
     ref_frames = int(fp_replay.shape[0])
     min_conn_frames = max(1, int(round(min_conn_sec / hop)))
     if ref_frames < min_conn_frames:

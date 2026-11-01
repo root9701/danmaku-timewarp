@@ -425,6 +425,20 @@ def verify(dst: Path, full: bool) -> bool:
     return r.returncode == 0
 
 
+def _clean_pycache(dst: Path) -> int:
+    """删掉冒烟测试在包内生成的 __pycache__。
+
+    verify() 用便携解释器 `import server`, 必然在包内写出 pyc; 而它紧接在
+    make_zip 之前跑, 于是 pyc 会被打进 zip。这些缓存是**构建机器**的产物,
+    对用户只有坏处: 目录看起来脏、白占体积, 且下次 import 还要校验它。
+    """
+    n = 0
+    for d in dst.rglob("__pycache__"):
+        shutil.rmtree(d, ignore_errors=True)
+        n += 1
+    return n
+
+
 def build(full: bool, do_zip: bool) -> int:
     tag = "full" if full else "slim"
     name = f"danmaku-timewarp-{VERSION}-{tag}"
@@ -444,6 +458,9 @@ def build(full: bool, do_zip: bool) -> int:
     write_notice(dst, full)
     print("  4/4 冒烟测试 ...")
     ok = verify(dst, full)
+    dropped = _clean_pycache(dst)
+    if dropped:
+        print(f"      已清理 {dropped} 个 __pycache__(冒烟测试的副产物, 不该进包)")
 
     print(f"\n  {name}/  {_size_mb(dst):.0f} MB")
     if do_zip:

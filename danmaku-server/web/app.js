@@ -744,7 +744,9 @@
       state.pendingSrcPage = null;
       for (var q = 0; q < state.pageMarks.length; q++) {
         if (state.pageMarks[q].page === sp) {
-          seekV(clampSeek(state.pageMarks[q].start_sec));
+          // 落点是该局的**锚点**(默认 0:00), 与 buildSrcOffsets 里减掉的 A 是同一个值 ——
+          // 弹幕按 A 平移过, 播放点也必须落在 A, 否则画面与弹幕还是错开。
+          seekV(clampSeek(state.pageMarks[q].start_sec + srcAnchorOf(sp)));
           break;
         }
       }
@@ -2667,17 +2669,21 @@
      自动手段。而且**每一局剪掉的开头长度各不相同**, 所以只能一局一局对。
 
      **对齐怎么做(核心交互)**:
-       先看官方源, 把播放器拖到"新源这一局的 0:00 应该开始的地方", 点该局的「对齐」。
-       程序记下 N = 此刻在官方这一局内的秒数, 即「新源 0:00 对应官方第 N 秒」。
-       然后点「切换」, 播放器换到新源, 弹幕按 N 平移过去。
+       先看官方源, 把播放器拖到"新源这一局该开始的地方", 点该局的「对齐」。
+       程序记下 N = 此刻在官方这一局内的秒数。
+       新源这一局另外还有一个**锚点 A**(第几秒算这局的起点, 默认 0 = 0:00):
+       解说版常在开头塞片头/广告/赛前废话, 那几十秒不是比赛内容 —— 把 A 填成 60,
+       N 就不必靠拖官方画面去凑, 弹幕整体按 A 后移。
+       两者合起来定义映射: **新源第 A 秒 = 官方该局第 N 秒**。
+       然后点「切换」, 播放器换到新源并落在 A 秒处(不是 0:00), 弹幕按这个映射挂。
        已切到新源时「对齐」置灰 —— 对齐必须站在官方源的画面上取参照, 新源上取不到。
 
-     换算: 新源offset = 官方offset + N(推导见 buildSrcOffsets)。
+     换算: 新源offset = 官方offset + N - A(推导见 buildSrcOffsets)。
 
      三层开关:
        总开关(srcMasterOn)  —— 关掉整个功能, 一切回到官方源
        逐局切换(srcPlaying) —— 该局切到新源 / 还原到官方源
-       对齐参数(srcRows[*].alignSec) —— 每局各自一个 N */
+       逐局参数(srcRows[*].alignSec + anchorSec) —— 每局各自一对 N/A */
   var srcMasterOn = false;   // 总开关
   var srcPlaying = false;    // 当前是否正播新源
   var srcActivePage = 0;     // 播新源时, 是切到新源的哪一局(决定该行按钮显示"还原")
@@ -2686,7 +2692,7 @@
   var srcInfo = null;        // {title, pages:[{page,part,duration}]}
   var srcMatchTitle = '';    // 换源时记下原场次名, 还原要能切回去
   var srcOfficialBv = '';    // 换源时记下官方源 BV, 还原时据此回播
-  var srcRows = {};          // {新源分P号: {fromPage, alignSec}}
+  var srcRows = {};          // {新源分P号: {fromPage, alignSec:N, anchorSec:A}}
   var srcOffPages = {};      // {官方分P号: part} —— 下拉里显示官方自己的分P 名, 不是"官方P2"
 
   /* 分P 的显示名: 优先用视频自己的分P 标题(B站 上写的"第一局"这种), 空才退回"P{号}"。
@@ -2745,13 +2751,14 @@
     return (typeof o === 'number' && isFinite(o)) ? o : null;
   }
 
-  /* 把逐局对齐参数换算成播放用的 pages。
-     定义: N = 「新源这一局的 0:00 对应官方这一局的第 N 秒」。
+  /* 把逐局参数(N + 锚点 A)换算成播放用的 pages。
+     定义: N = 对齐参照点在官方这一局内的秒数; A = 新源这一局的锚点(第几秒算这局的起点, 默认 0)。
+     映射: 新源第 A 秒 = 官方该局第 N 秒。
      推导:
        官方 P{m} 内第 t 秒的墙钟 = anchor + off_m + t
-       新源 P{k} 内第 t 秒, 对应官方第 (N + t) 秒 -> 墙钟 = anchor + off_m + N + t
-       新源这局的 offset 定义为"新源第 0 秒的墙钟偏移" = anchor + off_m + N
-     所以: 新源offset = 官方offset + N(加, 不是减)。 */
+       新源 P{k} 内第 u 秒, 对应官方第 (N + u - A) 秒 -> 墙钟 = anchor + off_m + N + (u - A)
+       新源这局的 offset 定义为"新源第 0 秒的墙钟偏移" = anchor + off_m + N - A
+     所以: 新源offset = 官方offset + N - A(N 是加, A 是减 —— A 把起点往前挪)。 */
   function buildSrcOffsets() {
     var offs = {};
     Object.keys(srcRows).forEach(function (k) {
@@ -2764,9 +2771,17 @@
       if (typeof n !== 'number' || !isFinite(n)) { return; }
       var base = officialOffsetOf(r.fromPage);
       if (base == null) { return; }
-      offs[k] = base + n;
+      offs[k] = base + n - srcAnchorOf(k);
     });
     return offs;
+  }
+
+  // 该局存的锚点秒数(A)。没填/填坏的一律当 0 —— 0 就是"新源 0:00 算起点", 与加这个
+  // 设置之前的行为完全一致, 老记录里也没有 anchor_sec 字段, 读出来自然是 0。
+  function srcAnchorOf(page) {
+    var r = srcRows[page] || srcRows[String(page)];
+    var a = r && r.anchorSec;
+    return (typeof a === 'number' && isFinite(a) && a > 0) ? a : 0;
   }
 
   // 换源打开且正在播新源时, 用「官方基准 + 逐局 N」覆盖 pageOffsets。
@@ -2830,8 +2845,8 @@
 
     var tip = document.createElement('div');
     tip.className = 'src-map-tip';
-    tip.textContent = '用法：先播官方源，拖到「新源这一局 0:00 该开始的位置」，点「对齐」；' +
-                     '再点「切换」换成新源播放。';
+    tip.textContent = '用法：先播官方源，拖到「新源这一局该开始的位置」，点「对齐」，再点「切换」。' +
+                      '新源开头有片头/广告的，把「锚点」填成那一段的秒数（默认 0 = 0:00）。';
     srcMap.appendChild(tip);
 
     // 显示名一律用视频自己的分P 标题: "官方P2"要用户自己脑补对应哪一局,
@@ -2878,6 +2893,25 @@
         if (srcPlaying) { applySrcOffsets(); }
       });
       row.appendChild(sel);
+
+      // 锚点 A: 新源这一局"第几秒算起点", 默认 0(=0:00)。解说版开头常塞片头/广告/赛前
+      // 废话, 那几十秒不是比赛内容 —— 改这里就行, 不必为它去拖官方画面重取一次 N。
+      var alab = document.createElement('span');
+      alab.className = 'src-map-anchor-lab';
+      alab.textContent = '锚点';
+      alab.title = '换源锚点（秒）：新源第几秒算这一局的起点，默认 0 = 0:00';
+      row.appendChild(alab);
+
+      var ain = document.createElement('input');
+      ain.type = 'number';
+      ain.className = 'src-map-anchor-in';
+      ain.step = '1';
+      ain.min = '0';
+      ain.value = String(srcAnchorOf(np.page));
+      ain.title = '换源锚点（秒）：新源第几秒算这一局的起点。默认 0（0:00）；' +
+                  '开头有片头/广告就填那段秒数，弹幕整体按它后移。';
+      ain.addEventListener('change', function () { setSrcAnchor(np.page, ain.value); });
+      row.appendChild(ain);
 
       // 切换 / 还原。按钮是**逐局**的: 播放器一次只能播一条源, 所以"哪一行是当前局"
       // 由 srcActivePage 决定 —— 只有那一行显示「还原」, 其余行仍显示「切换」,
@@ -2953,7 +2987,28 @@
     srcMap.appendChild(foot);
   }
 
-  // 对齐: 把官方源**当前播放位置**记成该局新源的 0:00
+  // 改锚点: 只动 A(N 保持), 映射跟着变成「新源第 A 秒 = 官方第 N 秒」
+  function setSrcAnchor(page, raw) {
+    var r = srcRows[page];
+    if (!r) { return; }
+    var a = parseFloat(String(raw));
+    if (!isFinite(a) || a < 0) { a = 0; }
+    // 锚点不能落在这一局之外: 换过去播放点直接出界, 看起来像"切过去没画面"。
+    var np = null;
+    ((srcInfo && srcInfo.pages) || []).forEach(function (x) { if (x.page === page) { np = x; } });
+    var dur = (np && typeof np.duration === 'number' && np.duration > 0) ? np.duration : 0;
+    if (dur && a > dur - 1) { a = Math.max(0, dur - 1); }
+    r.anchorSec = Math.round(a * 100) / 100;
+    renderSrcMap();                             // 回写输入框(值可能被钳过)
+    if (srcPlaying) { applySrcOffsets(); }      // 正播新源: 弹幕当场按新锚点平移
+    saveSrcAlign(true);
+    setSrcStatus('「' + srcPageName(page) + '」锚点 = 新源第 ' + fmtDur(r.anchorSec) + '。' +
+      ((typeof r.alignSec === 'number' && isFinite(r.alignSec))
+        ? ('当前映射：新源 ' + fmtDur(r.anchorSec) + ' = 官方 ' + fmtDur(r.alignSec) + '。')
+        : '这一局还没点「对齐」，先播官方源取参照。'), 'ok');
+  }
+
+  // 对齐: 把官方源**当前播放位置**记成该局新源锚点(A)对应的参照点
   function alignSrcPage(page) {
     if (!state.applied) { setSrcStatus('先播放官方源。', 'err'); return; }
     if (srcPlaying) { setSrcStatus('已切到新源，先「还原」再对齐。', 'err'); return; }
@@ -2972,7 +3027,8 @@
     renderSrcMap();
     // 立即保存: 用户要的是"下次不用重新换"
     saveSrcAlign(true);
-    setSrcStatus('「' + srcPageName(page) + '」已对齐：新源 0:00 = 官方第 ' + fmtDur(n) + '。点「切换」换过去。', 'ok');
+    setSrcStatus('「' + srcPageName(page) + '」已对齐：新源 ' + fmtDur(srcAnchorOf(page)) +
+      ' = 官方第 ' + fmtDur(n) + '。点「切换」换过去。', 'ok');
   }
 
   /* 对齐参照必须落在所选官方分P 之内。拖到别的局会让 N 超过这一局的长度,
@@ -3008,7 +3064,8 @@
     (state.pageMarks || []).forEach(function (x) { if (x.page === page) { pm = x; } });
     if (!pm) { setSrcStatus('新源「' + srcPageName(page) + '」的分段信息缺失，跳不过去。', 'err'); return; }
     srcActivePage = page;
-    seekV(clampSeek(pm.start_sec || 0));
+    // 落在该局的**锚点**处(默认 0:00), 不是局首 —— 锚点就是"这一局从新源第几秒算起"
+    seekV(clampSeek((pm.start_sec || 0) + srcAnchorOf(page)));
     setSrcStatus('已在新源里跳到「' + srcPageName(page) + '」。', 'ok');
   }
 
@@ -3036,7 +3093,8 @@
         offset_sec: Math.round(offs[k] * 1000) / 1000,
         source_swap: true,                    // 标记: 换源人工对齐, 不是音频自动校准
         from_page: srcRows[k].fromPage,
-        align_sec: Math.round((srcRows[k].alignSec || 0) * 1000) / 1000
+        align_sec: Math.round((srcRows[k].alignSec || 0) * 1000) / 1000,
+        anchor_sec: srcAnchorOf(k)              // 该局锚点(新源第几秒算起点), 没填是 0
       };
     });
     ks.sort(function (a, b) { return Number(a) - Number(b); });
@@ -3123,7 +3181,9 @@
         srcRows[np.page] = {
           fromPage: fromPage,
           alignSec: (typeof sp.align_sec === 'number' && isFinite(sp.align_sec))
-            ? sp.align_sec : null
+            ? sp.align_sec : null,
+          anchorSec: (typeof sp.anchor_sec === 'number' && isFinite(sp.anchor_sec) && sp.anchor_sec > 0)
+            ? sp.anchor_sec : 0          // 老记录没有这个字段 → 0, 与"新源 0:00 算起点"一致
         };
       });
       srcMasterOn = true;

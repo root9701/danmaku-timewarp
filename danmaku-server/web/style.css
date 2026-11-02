@@ -663,7 +663,7 @@ button, input, select { font-family: inherit; }
 .src-map[hidden] { display: none; }
 .src-map-head { font-size: 11px; color: var(--text-faint); }
 .src-map-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
-/* 一行排开: 标签(可省略) + 对应局下拉 + 切换/还原 + 对齐 + 已存秒数。
+/* 一行排开: 标签(可省略) + 对应局下拉 + 锚点 + 切换/还原 + 对齐 + 已存秒数。
    标签不独占一行 —— 那会把每局撑到三行, 两局就占掉一大块「更多」面板。 */
 .src-map-row {
   display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
@@ -677,6 +677,16 @@ button, input, select { font-family: inherit; }
   /* 选项文字是视频自己的分P 标题, 长短不一(第一局 / 抽签仪式 / 赛后采访):
      按内容自适应, 上限 150px, 再长靠 option/select 的 title 悬停看全。 */
   flex: 0 1 auto; min-width: 0; max-width: 150px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 3px 4px; font-size: 11px;
+}
+.src-map-anchor-lab { flex: 0 0 auto; font-size: 11px; color: var(--text-faint); }
+/* 锚点输入: 每局一个「新源第几秒算这局的起点」。数字只有 1~4 位, 给固定宽度;
+   number 的原生步进箭头要吃掉 ~12px, 所以 52px 而不是 40px。
+   这一行现在 6 个控件 —— 窄容器靠标签收缩, 手机档(≤480px)整行换行兜住。 */
+.src-map-anchor-in {
+  flex: 0 0 52px; min-width: 0;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: 3px 4px; font-size: 11px;

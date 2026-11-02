@@ -2700,6 +2700,18 @@
     // 控制条、进度条、以及画面上任何弹出菜单都不算"点画面"
     return !!(el && el.closest && el.closest('#ctrl-bar, .cmenu, #player-mask'));
   }
+  /* 触屏判定: 首次 touchstart 后给 .player-wrap 挂 .touch 类(CSS 侧让控制条
+     脱离 hover 驱动)。不用 (hover:none) 媒体查询判定类名, 是因为显隐切换
+     逻辑也要知道"当前在触屏模式", 挂类后两边共用同一事实。
+     touch-action: manipulation 已在 style.css 加到 body: 不加的话移动端
+     双击会触发页面缩放, 下面的"两次 click 判双击"就收不到第二次 click。 */
+  var touchMode = false;
+  document.addEventListener('touchstart', function () {
+    if (touchMode) { return; }
+    touchMode = true;
+    var w = videoEl.closest('.player-wrap');
+    if (w) { w.classList.add('touch'); }
+  }, { passive: true });
   function togglePlayByClick() {
     if (!state.applied) { return; }        // 还没选场次, 点画面没有意义
     if (videoEl.paused) { startPlay(); } else { videoEl.pause(); }
@@ -2712,12 +2724,34 @@
   videoEl.addEventListener('click', function (e) {
     if (isCtrlArea(e.target)) { return; }
     if (clickTimer) {
-      // 第二次点击: 撤销刚才那一下播放/暂停, 改走全屏
+      // 第二次点击: 撤销刚才那一下, 改走全屏
       clearTimeout(clickTimer);
       clickTimer = null;
       if (lastAction) { lastAction(); }     // 反做回去, 双击不改变播放状态
       lastAction = null;
       enterFullscreen();
+      return;
+    }
+    // ---- 触屏: 单击只唤出/收起控制条, 不动播放状态 ----
+    // 手机没有 hover, 控制条只能靠点击唤出; 若这里沿用桌面的"单击播放/暂停",
+    // 用户每次想调音量/画质都会顺带暂停一次。播放/暂停交给控制条里的 ▶ 按钮。
+    // 双击仍进全屏 —— 所以这次点击要能被 220ms 内的第二次点击"撤销",
+    // 撤销动作就是再切一次控制条(两次切换等于没变)。
+    if (touchMode) {
+      var w = videoEl.closest('.player-wrap');
+      if (w) {
+        var show = !w.classList.contains('ctrl-visible');
+        w.classList.toggle('ctrl-visible', show);
+        w.classList.remove('ctrl-hidden');
+      }
+      lastAction = function () {
+        var w2 = videoEl.closest('.player-wrap');
+        if (w2) {
+          w2.classList.toggle('ctrl-visible', !show);
+          w2.classList.remove('ctrl-hidden');
+        }
+      };
+      clickTimer = setTimeout(function () { clickTimer = null; lastAction = null; }, 220);
       return;
     }
     var wasPaused = videoEl.paused;

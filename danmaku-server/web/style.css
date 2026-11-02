@@ -35,6 +35,9 @@ body {
   color: var(--text);
   font: 14px/1.6 "Microsoft YaHei", system-ui, sans-serif;
   min-height: 100vh;
+  /* 手机端双击画面会触发浏览器缩放, 那样"双击全屏"就收不到第二次 click。
+     manipulation 只关掉双击缩放与双击缩放的延迟, 保留双指缩放与滚动。 */
+  touch-action: manipulation;
 }
 button, input, select { font-family: inherit; }
 
@@ -121,7 +124,8 @@ button, input, select { font-family: inherit; }
   display: flex; align-items: center; gap: 10px;
   padding: 6px 18px 5px;
 }
-.dock-head b { font-size: 12px; font-weight: 600; }
+.dock-head b { font-size: 12px; font-weight: 600; white-space: nowrap; }
+/* nowrap: 窄屏上 flex 挤压会把「当晚总览」折成两行(当晚总/览), 标题只有四个字, 不该让位 */
 .dock-stat {
   font-size: 11px; color: var(--text-dim);
   font-variant-numeric: tabular-nums;
@@ -183,7 +187,9 @@ button, input, select { font-family: inherit; }
      预算 = 上方(顶栏 46 + 总览 120) + 下方(工具条 83) + 内边距与余量 ≈ 275px。
      这个数字必须**大于等于**非画面部分的总高; 调小会让画面变大、页面反而更高
      (实测 736px 窗口: 215→溢出 71px, 260→26px, 275→0px, 290→0px 但画面白缩 27px)。
-     所以 275 是"刚好装进一屏且画面最大"的值, 改动前请按这个窗口实测三种取值。 */
+     所以 275 是"刚好装进一屏且画面最大"的值, 改动前请按这个窗口实测三种取值。
+     手机横屏(≤932px)撤掉这条约束: 手机是滚动页面, 不追求"一屏装下",
+     而 max-width 按视口**高**算宽度, 横屏高只有 ~390px 时会把画面压成一条窄带。 */
   max-width: calc((100vh - 275px) * 16 / 9);
   aspect-ratio: 16 / 9;
   margin: 0 auto;
@@ -193,6 +199,9 @@ button, input, select { font-family: inherit; }
 }
 @supports not (aspect-ratio: 16 / 9) {
   .player-wrap { height: 0; padding-top: 56.25%; }
+}
+@media (max-width: 932px) {
+  .player-wrap { max-width: none; }
 }
 #video {
   position: absolute; inset: 0; width: 100%; height: 100%;
@@ -230,6 +239,23 @@ button, input, select { font-family: inherit; }
 /* 控制条隐藏时不该把「隐藏」传给菜单: 上面两条已保证菜单开着时不隐藏,
    这里再兜一层 —— 菜单自身始终按 display 显隐, 不吃父级的 opacity。 */
 .player-wrap.menu-open .cmenu { opacity: 1; }
+
+/* ---------- 触屏: 控制条点击显隐 ----------
+   手机上没有 hover, 上面的 :hover 规则全部失效 —— 控制条永远出不来。
+   .touch 由 app.js 按首次 touchstart 判定后挂到 .player-wrap 上,
+   之后点画面切换 ctrl-visible(全屏用的同一个类, 显隐共用一套逻辑)。 */
+.player-wrap.touch #ctrl-bar { opacity: 0; }
+.player-wrap.touch.ctrl-visible #ctrl-bar { opacity: 1; }
+/* 菜单开着时控制条必须亮着(与桌面 menu-open 同一约定), 否则弹幕设置面板跟着隐形 */
+.player-wrap.touch.menu-open #ctrl-bar { opacity: 1; }
+/* 隐藏态必须同时让出点击: 只改 opacity 的话那条看不见的控制条仍会吃掉
+   画面底部的点击, 表现为"点画面下半部分没反应"。 */
+.player-wrap.touch:not(.ctrl-visible):not(.menu-open) #ctrl-bar { pointer-events: none; }
+/* 音量竖向滑块靠 hover 展开, 触屏永远打不开 —— 只隐藏滑块本体,
+   静音按钮(🔊)保留: 它在触屏上点一下就切换静音, 是有用的。 */
+@media (hover: none) {
+  .vol-pop { display: none; }
+}
 
 #prog-row { display: flex; align-items: center; width: 100%; }
 #btn-row { display: flex; align-items: center; gap: 8px; min-height: 28px; flex-wrap: wrap; }
@@ -597,6 +623,9 @@ button, input, select { font-family: inherit; }
   color: var(--text-dim); border-radius: var(--radius-sm);
   padding: 6px 10px; font-size: 12px; cursor: pointer;
   font-variant-numeric: tabular-nums;
+  /* 手机上 flex 挤压曾把「刷新」压成两行竖排字。按钮文字就两三个字,
+     折行只会更难看, 不会省出空间 —— 全局禁掉。 */
+  white-space: nowrap;
 }
 .nbtn:hover { color: var(--text); border-color: var(--blue); }
 .nbtn:disabled { opacity: .45; cursor: wait; }
@@ -654,4 +683,52 @@ button, input, select { font-family: inherit; }
   .topbar-meta { display: none; }
   /* 窄屏优先保住场次名与时钟; 版本号可在「拉取弹幕」的结果里看到 */
   #app-version { display: none; }
+}
+/* ---------- 手机档(≤480px) ----------
+   1100/620 两档是桌面窗口收窄的形态; 手机是另一种环境:
+   触屏(无 hover)、真全宽、需要更大的点击目标。所以单独一档, 不挤在 620 里。 */
+@media (max-width: 480px) {
+  /* 顶栏: 场次名可换行 —— 手机上标题「MKOI vs KC 第一局」被省略号截掉一半,
+     而顶栏在手机上本来就会随内容变高, 截断换不来任何东西。 */
+  #topbar { flex-wrap: wrap; row-gap: 2px; padding: 8px 12px; }
+  #match-title { white-space: normal; font-size: 14px; }
+  #topbar-meta { display: none; }
+  #clock-now { margin-left: auto; }
+  /* 总览头: 让「当晚总览」和摘要独占一行, 两个按钮排到第二行右对齐。
+     否则四个元素抢一行宽度, 摘要被省略成一串「…」, 按钮还互相挤。 */
+  .dock-head { flex-wrap: wrap; row-gap: 4px; }
+  .dock-head b { flex: 0 0 auto; }
+  .dock-stat { flex: 1 1 100%; order: 3; white-space: normal; }
+  .dock-head .nbtn { padding: 4px 8px; }
+  /* 工具条改竖排: nowrap 单行在 390px 屏上溢出 ~80px, 右侧「弹幕」框直接出屏。
+     日期/场次/弹幕三框各占一行(标签左、控件右), 宽度不再互相挤。 */
+  .toolbar { margin: 10px 12px 12px; padding: 10px 12px; }
+  .tool-row { flex-wrap: wrap; row-gap: 8px; }
+  .fld-date { flex: 1 1 100%; }
+  .fld-grow { flex: 1 1 100%; min-width: 0; }
+  /* #sel-date 在基础规则里是 ID 选择器(flex:0 0 118px), 优先级高于下面的
+     .fld > select —— 手机上必须用同样带 ID 的规则覆盖, 否则日期框仍是 118px,
+     与另两个铺满的框对不齐。 */
+  #sel-date { flex: 1 1 auto; }
+  .tool-row > .btn, .tool-row > .nbtn { flex: 1 1 auto; padding: 8px 12px; }
+  .tool-row > .tool-sep { display: none; }
+  .fld > span { flex: 0 0 auto; }
+  .fld > select { flex: 1 1 auto; }
+  .fld select, .fld input { font-size: 16px; }
+  .fld select, .fld input[type="text"], .fld input[type="number"] { padding: 6px 8px; }
+  /* 弹幕栏拉高一点: 手机上它是滚动的独立区块, 260px 只够 5~6 条 */
+  .rail-slot { height: 320px; }
+  /* 更多设置: 控件逐行排 */
+  .more-box { flex-direction: column; align-items: stretch; }
+  .more-box .fld { flex: 1 1 auto; }
+  .nudge { flex-wrap: wrap; }
+  /* 控制条触控目标: 手机上按钮普遍偏小, 逐个放大 */
+  #ctrl-bar { padding: 8px 10px 12px; }
+  #ctrl-bar .cbtn { padding: 8px 10px; font-size: 14px; }
+  #ctrl-bar .cbtn.ico { width: 38px; height: 34px; line-height: 34px; font-size: 15px; }
+  #btn-rate { min-width: 58px; }
+  #time-label { font-size: 13px; }
+  /* 弹幕设置面板: 固定 268px 宽在 390px 屏上能放下, 但贴边;
+     改为自适应宽度并允许内部滚动 */
+  .cmenu.cpanel { width: calc(100vw - 32px); max-width: 300px; max-height: 70vh; overflow-y: auto; }
 }

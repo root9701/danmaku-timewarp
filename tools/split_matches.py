@@ -95,12 +95,22 @@ def main() -> int:
     if args.check:
         # 只算"有数据目录、真能写进去"的天: 没有目录的日期 apply 会跳过,
         # 拿它拦住发布会让人无路可走。
+        #
+        # **换源记录不算待分发**: 它是用户拿某条解说视频人工对出来的派生数据
+        # (SCHEMA §4.1.1), 只对那个人有意义 —— 挑了哪一帧、锚点填多少, 换个人
+        # 就不成立。把它分发给所有用户没有任何价值, 而且会把私人的对齐参数
+        # 公开出去。作者自己做过一次换源, 本地层就会长期躺着这样一条记录,
+        # 若把它当"漏搬"处理, 之后每次发布都会被它拦住。
         pending_a = pending_l = 0
         for d, e in per_day.items():
             if not (DATA / d).is_dir():
                 print(f"  跳过 {d}: data/{d}/ 不存在, 无法分发")
                 continue
-            pending_a += len(e["align"])
+            for k, v in e["align"].items():
+                if isinstance(v, dict) and v.get("source_swap"):
+                    print(f"  跳过 {k}: 换源记录, 只属于本机, 不分发")
+                    continue
+                pending_a += 1
             pending_l += len(e["lists"])
         if pending_a or pending_l:
             print(f"\n[检查] 有 {pending_a} 条对齐 / {pending_l} 天 lists 待在 data/ 分发")
@@ -120,6 +130,14 @@ def main() -> int:
             # 凭空建目录会让清单里出现空日期, 用户拉到一个没有弹幕的天。
             print(f"跳过 {d}: data/{d}/ 不存在(该日无数据, 不对齐也不分发)")
             continue
+        # 换源记录与 --check 一样排除: 它是某个人对着某条解说视频人工标出来的,
+        # 写进分发层等于把所有用户的换源界面都填上别人的参数。
+        swap_keys = [k for k, v in body["align"].items()
+                     if isinstance(v, dict) and v.get("source_swap")]
+        if swap_keys:
+            for k in swap_keys:
+                print(f"  保留在本地层: {k} (换源记录, 不分发)")
+                body["align"].pop(k)
         p = day_dir / ALIGN_NAME
         if p.is_file():
             # 已存在: 合并(以新拆出来的为准, 但保留文件里已有的其他记录)

@@ -555,13 +555,16 @@ button, input, select { font-family: inherit; }
   border-radius: var(--radius);
 }
 .toolbar { margin: 10px 18px 14px; padding: 8px 12px; }
-/* 工具条**只占一行**。原先 flex-wrap:wrap 在 1207px 宽(常见笔记本窗口)下会
+/* 工具条**在宽窗口里只占一行**。原先全宽度都 flex-wrap:wrap, 在 1207px 宽(常见笔记本窗口)下会
    把「刷新赛程 / 更多」甩到第二行 —— 控制区从 26px 变成 60px, 底部多出一条
    空行, 而且换行位置随窗口宽度跳变, 看起来像是布局坏了。
    现在改成 nowrap, 并把可压缩项(flex-shrink)设出来:
      固定不缩: 播放/开关/小按钮(它们已经是内容最小宽度)
      可收缩  : 三个下拉框(文本用省略号, 完整值在 title 里)
-   这样窄窗口丢的是下拉框里的文字, 而不是整条控件的可见性。 */
+   这样窄窗口丢的是下拉框里的文字, 而不是整条控件的可见性。
+   但下拉框有 132px 下限, 压到底整条还是 906px; 窗口比这更窄时 nowrap 只会让
+   「拉取弹幕/刷新赛程/更多」飘到卡片背景外面(横向溢出, 看着像背景没包住内容),
+   所以窄档改回 wrap —— 见文末 1100px 媒体查询。 */
 .tool-row {
   display: flex; align-items: center; gap: 8px;
   flex-wrap: nowrap; min-width: 0;
@@ -736,6 +739,9 @@ button, input, select { font-family: inherit; }
   .main { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 0; }
   .rail-slot { height: 260px; }
   .toolbar { margin: 12px; }
+  /* 允许换行(不是要求): 控件压到最小宽度仍是 906px, 窗口更窄时 nowrap 会让右边
+     几个按钮飘到卡片外面。wrap 下装得下就还是一行, 装不下才断行 —— 比溢出好。 */
+  .tool-row { flex-wrap: wrap; row-gap: 8px; }
   #topbar { padding: 10px 12px; }
   .dock-head { padding: 8px 12px 6px; }
   .dock-body { padding: 0 12px 8px; }

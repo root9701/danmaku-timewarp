@@ -663,6 +663,9 @@ button, input, select { font-family: inherit; }
 .src-map[hidden] { display: none; }
 .src-map-head { font-size: 11px; color: var(--text-faint); }
 .src-map-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+/* 用法说明拆成三行(各一步)。设成块级是必须的: 用 <br> 的话窄面板自动折行后,
+   折出来的半句会和下一步混在同一段里, "①/②/③" 的分行感就没了。 */
+.src-map-tip-line + .src-map-tip-line { margin-top: 1px; }
 /* 一行排开: 标签(可省略) + 对应局下拉 + 锚点 + 切换/还原 + 对齐 + 已存秒数。
    标签不独占一行 —— 那会把每局撑到三行, 两局就占掉一大块「更多」面板。 */
 .src-map-row {

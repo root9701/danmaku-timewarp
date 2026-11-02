@@ -2669,11 +2669,10 @@
      自动手段。而且**每一局剪掉的开头长度各不相同**, 所以只能一局一局对。
 
      **对齐怎么做(核心交互)**:
-       先看官方源, 把播放器拖到"这一局的开头那一帧", 点该局的「对齐」。
-       程序记下 N = 那一帧在官方这一局内的秒数。
-       换源视频这一局还有一个**锚点 A**(默认 0): 官方那一帧在这条换源视频里的第几秒。
-       两条视频剪辑起点不同(片头、卡顿、多播的赛前、剪掉的一段…都可能造成差),
-       所以同一帧的秒数在两源里可以不一样 —— A 就是记录这个差, 不是"跳过广告"的开关。
+       先到换源视频那边随便挑一帧, 记下它显示在第几秒 —— 这就是**锚点 A**(默认 0 = 第一帧)。
+       任意一帧都行: A 只是两源对号的参照物, 不必是这一局的开头。
+       回来把 A 填进那一局的「锚点」, 再把播放器拖到**同一个画面**, 点该局的「对齐」。
+       程序记下 N = 那个画面在官方这一局内的秒数。
        两者合起来定义映射: **官方该局第 N 秒 = 换源视频第 A 秒**。
        然后点「切换」, 播放器换到换源视频并落在 A 秒处(不是 0:00), 弹幕按这个映射挂。
        已切到换源视频时「对齐」置灰 —— 对齐要站在官方画面上取参照, 换源视频上取不到。
@@ -2843,13 +2842,21 @@
     head.textContent = '换源视频：' + (srcInfo.title || srcBv) + ' · ' + srcInfo.pages.length + ' 局';
     srcMap.appendChild(head);
 
-    // 用法说明: 一句话说动作, 第二句只解释「锚点」是什么。
-    // 锚点不是"跳过广告"的开关, 它是个几何事实 —— 官方那一帧在换源视频里是第几秒。
-    // 写成"有广告就填"会把概念说窄(剪掉的可能是任何东西), 也会让人以为默认该去填它。
+    // 用法说明: 三行各一步, 按用户实际操作顺序写 ——
+    //   先在换源视频里挑参照帧取秒数 → 填锚点 → 回播放器找同一画面点对齐/切换。
+    // 锚点不是"这局的开头", 而是**用户挑的那一帧**在换源视频里的秒数, 任意一帧都行。
+    // 写成"拖到开头"会让人以为只能从局首开始对, 反而找不到画面。
     var tip = document.createElement('div');
     tip.className = 'src-map-tip';
-    tip.textContent = '先在官方源上拖到这一局的开头，点「对齐」，再点「切换」。' +
-                      '换源视频里同一帧不在 0:00 的，把「锚点」填成它在换源视频里的秒数。';
+    ['① 换源视频里随便挑一帧，记下它显示在第几秒。',
+     '② 把这个秒数填进「锚点」（默认 0 就是第一帧）。',
+     '③ 在播放器里拖到同一个画面，点「对齐」，再点「切换」。'
+    ].forEach(function (line) {
+      var ln = document.createElement('div');
+      ln.className = 'src-map-tip-line';
+      ln.textContent = line;
+      tip.appendChild(ln);
+    });
     srcMap.appendChild(tip);
 
     // 显示名一律用视频自己的分P 标题: "官方P2"要用户自己脑补对应哪一局,
@@ -2910,12 +2917,12 @@
       });
       row.appendChild(sel);
 
-      // 锚点 A: 官方那一帧在换源视频里的秒数, 默认 0(= 换源视频 0:00 就是那一帧)。
-      // 不是"跳过片头"的开关 —— 两条视频剪辑起点不同, 同一帧的秒数也会不同。
+      // 锚点 A: 用户挑的参照帧在换源视频里的秒数, 默认 0(= 第一帧)。
+      // 任意一帧都行 —— 它只是两源对号的参照物, 不必是这一局的开头。
       var alab = document.createElement('span');
       alab.className = 'src-map-anchor-lab';
       alab.textContent = '锚点';
-      alab.title = '锚点（秒）：官方那一帧，在这条换源视频里的第几秒。默认 0 = 换源视频 0:00 就是那一帧。';
+      alab.title = '锚点（秒）：你在换源视频里挑的那一帧是第几秒。默认 0 = 第一帧，任意一帧都行。';
       row.appendChild(alab);
 
       var ain = document.createElement('input');
@@ -2924,8 +2931,8 @@
       ain.step = '1';
       ain.min = '0';
       ain.value = String(srcAnchorOf(np.page));
-      ain.title = '锚点（秒）：官方那一帧，在这条换源视频里的第几秒。' +
-                  '默认 0，表示换源视频 0:00 就是那一帧；不是同一帧就从 0:00 起算的，填它实际所在的秒数。';
+      ain.title = '锚点（秒）：你在换源视频里挑的那一帧是第几秒。默认 0 表示你挑的就是第一帧；' +
+                  '任意一帧都行，挑好之后要在官方源里拖到同一画面再点「对齐」。';
       ain.addEventListener('change', function () { setSrcAnchor(np.page, ain.value); });
       row.appendChild(ain);
 
@@ -2969,8 +2976,8 @@
       al.disabled = srcPlaying || !cur.fromPage || !onOfficial;
       al.title = srcPlaying
         ? '已切到换源视频，先「还原」再对齐'
-        : (onOfficial ? '把官方当前这一帧，记为换源视频第 ' + fmtDur(srcAnchorOf(np.page)) + ' 秒'
-                      : '先播放官方源，拖到这一局的开头再点这里');
+        : (onOfficial ? '把当前这一帧，记为换源视频第 ' + fmtDur(srcAnchorOf(np.page)) + ' 秒'
+                      : '先播放官方源，拖到与锚点同一个画面再点这里');
       al.addEventListener('click', function () { alignSrcPage(np.page); });
       row.appendChild(al);
 
@@ -3044,7 +3051,7 @@
     renderSrcMap();
     // 立即保存: 用户要的是"下次不用重新换"
     saveSrcAlign(true);
-    setSrcStatus('「' + srcPageName(page) + '」已对齐：官方那一帧 = 换源视频 ' +
+    setSrcStatus('「' + srcPageName(page) + '」已对齐：当前这一帧 = 换源视频 ' +
       fmtDur(srcAnchorOf(page)) + '。点「切换」换过去。', 'ok');
   }
 

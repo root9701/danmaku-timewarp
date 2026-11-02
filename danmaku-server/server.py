@@ -1264,30 +1264,25 @@ def _parse_offset_sec(raw) -> float:
 def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title):
     """换源写回: 给新源 BV 单独存一份逐分P 记录。
 
-    **必须**写带 BV 的详细 key, 不能写会话级 key: 会话级 `{date}|{file}` 是一晚所有
+    **只写带 BV 的详细 key, 完全不碰会话级 key**: 会话级 `{date}|{file}` 是一晚所有
     场次的汇总(记录对齐过哪些 bv), 写进去会把整晚汇总覆盖成单个 bv, 并让其它场次的
     读取错位(实测因此把 MKOI 的 offset 当成了 HLE 的)。带 BV 的 key 才是"每场比赛的
     详细分P 记录", 与官方源记录形状、语义完全一致(见 SCHEMA §4.1)。
-    会话级记录只登记"这个 bv 也对齐过", 不动它的 offset/bv —— 那是原场次的。
+
+    连 `bvs` 也不登记: 换源记录是**派生**数据(挂在官方源那场比赛上), 不是"这一晚又对齐
+    了一场"。登记进去会让 `/api/sources` 的官方源兜底(bvs[0])可能取到新源, 把派生记录
+    当成基准 —— 那是会算错 offset 的错误基准。读取走精确 key `{date}|{file}|{bv}`, 不需要它。
     """
     if not BV_RE.fullmatch(bv):
         raise ApiError("字段 bv 缺失或格式不正确(换源需要新源的 BV)")
     clean = _parse_pages_field(pages_in)
     detail = dict(matches["align"].get(f"{key}|{bv}") or {})
     detail.update({"date": date, "file": file, "bv": bv,
-                   "offset_sec": raw, "pages": clean})
+                   "offset_sec": raw, "pages": clean,
+                   "source_swap": True})
     if title is not None:
         detail["title"] = str(title)
-    matches["align"][f"{key}|{bv}"] = detail
-    summ = dict(matches["align"].get(key) or {})
-    bvs = summ.get("bvs")
-    bvs = list(bvs) if isinstance(bvs, list) else []
-    if bv not in bvs:
-        bvs.append(bv)
-    summ.setdefault("date", date)
-    summ.setdefault("file", file)
-    summ["bvs"] = bvs
-    matches["align"][key] = summ
+    matches["align"][key + "|" + bv] = detail
 
 
 async def handle_match_post(request: web.Request) -> web.Response:

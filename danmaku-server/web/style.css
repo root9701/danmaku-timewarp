@@ -649,8 +649,9 @@ button, input, select { font-family: inherit; }
   margin-top: 4px; padding-top: 10px;
   border-top: 1px dashed var(--line);
 }
-.src-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.src-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .src-head b { font-size: 12px; font-weight: 600; color: var(--text); }
+.src-head .btn-toggle { min-width: 0; padding: 3px 10px; font-size: 11px; }
 .src-hint { font-size: 11px; color: var(--text-faint); }
 .src-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .src-row .fld { flex: 1 1 200px; }
@@ -658,7 +659,8 @@ button, input, select { font-family: inherit; }
 .src-map { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .src-map[hidden] { display: none; }
 .src-map-head { font-size: 11px; color: var(--text-faint); }
-/* 一行排开: 标签(可省略) + 对应局下拉 + 当前值 + 取初值 + 微调组。
+.src-map-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+/* 一行排开: 标签(可省略) + 对应局下拉 + 切换/还原 + 对齐 + 已存秒数。
    标签不独占一行 —— 那会把每局撑到三行, 两局就占掉一大块「更多」面板。 */
 .src-map-row {
   display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
@@ -669,7 +671,9 @@ button, input, select { font-family: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .src-map-sel {
-  flex: 0 0 92px;
+  /* 选项文字是视频自己的分P 标题, 长短不一(第一局 / 抽签仪式 / 赛后采访):
+     按内容自适应, 上限 150px, 再长靠 option/select 的 title 悬停看全。 */
+  flex: 0 1 auto; min-width: 0; max-width: 150px;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: 3px 4px; font-size: 11px;
@@ -682,10 +686,17 @@ button, input, select { font-family: inherit; }
 .src-map-anchor.ok { color: var(--ok); }
 .src-map-anchor.warn { color: var(--warn); }
 .src-map-row .nbtn { padding: 2px 5px; font-size: 11px; flex: 0 0 auto; }
-.src-nudge { min-width: 30px; }
-/* 微调按钮并成一组, 组内不换行 —— 面板窄, 单个按钮散排会被挤到下一行 */
-.src-nudge-wrap { display: inline-flex; gap: 3px; flex: 0 0 auto; }
-.src-map-foot { margin-top: 2px; }
+.src-map-foot { margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+/* 切换/还原: 一个按钮两用。开启态(正在播新源)沿用 .btn-toggle.on 的写法 ——
+   白字 + 亮边框, 靠明度差而不是新色相(单色纪律见文件头注释)。 */
+.src-sw-btn { min-width: 42px; }
+.src-sw-btn.on {
+  background: transparent; color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text-dim);
+}
+/* 对齐按钮在已切到新源时置灰 —— 参照物(官方画面)不在了, 点这里没有意义。
+   两个按钮共用同一种"点不动"的表达, 不引入第三种灰阶。 */
+.src-sw-btn:disabled, .src-al-btn:disabled { opacity: .4; cursor: not-allowed; }
 /* 窄屏(手机): 允许换行, 否则 5 个控件挤在 300px 里必然溢出 */
 @media (max-width: 480px) {
   .src-map-row { flex-wrap: wrap; row-gap: 4px; }

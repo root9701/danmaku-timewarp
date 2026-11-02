@@ -1261,7 +1261,8 @@ def _parse_offset_sec(raw) -> float:
     return raw
 
 
-def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title):
+def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title,
+                       official_bv=""):
     """换源写回: 给新源 BV 单独存一份逐分P 记录。
 
     **只写带 BV 的详细 key, 完全不碰会话级 key**: 会话级 `{date}|{file}` 是一晚所有
@@ -1272,13 +1273,20 @@ def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title):
     连 `bvs` 也不登记: 换源记录是**派生**数据(挂在官方源那场比赛上), 不是"这一晚又对齐
     了一场"。登记进去会让 `/api/sources` 的官方源兜底(bvs[0])可能取到新源, 把派生记录
     当成基准 —— 那是会算错 offset 的错误基准。读取走精确 key `{date}|{file}|{bv}`, 不需要它。
+
+    `official_bv` 是这份对齐**算在谁头上**的凭据: 同一个弹幕文件一晚可以有好几场比赛,
+    用户可能拿同一条解说视频给两场都换源。没有它, 第二场会覆盖第一场的参数, 而且读回时
+    没法判断"这条记录是哪一场的", 于是拿 A 场的 N 去配 B 场的官方 offset。
     """
     if not BV_RE.fullmatch(bv):
         raise ApiError("字段 bv 缺失或格式不正确(换源需要新源的 BV)")
+    if not BV_RE.fullmatch(official_bv):
+        raise ApiError("换源需要 official_bv(这次对齐是按哪条官方源算的)")
     clean = _parse_pages_field(pages_in)
     detail = dict(matches["align"].get(f"{key}|{bv}") or {})
     detail.update({"date": date, "file": file, "bv": bv,
                    "offset_sec": raw, "pages": clean,
+                   "official_bv": official_bv,
                    "source_swap": True})
     if title is not None:
         detail["title"] = str(title)
@@ -1315,7 +1323,8 @@ async def handle_match_post(request: web.Request) -> web.Response:
         # 换源: 前端带 pages 时走独立写回, 完全不碰会话级记录与原场次数据。
         if body.get("pages") is not None:
             _write_source_swap(matches, key, date, file, bv, raw,
-                               body.get("pages"), new_title)
+                               body.get("pages"), new_title,
+                               str(body.get("official_bv") or "").strip())
             return
         entry = dict(matches["align"].get(key) or {})   # 保留旧字段(如 title)实现合并
         entry.update({"date": date, "file": file, "bv": bv, "offset_sec": raw})
@@ -2251,10 +2260,19 @@ async def handle_sources(request: web.Request) -> web.Response:
                 official_bv = str(rec["bv"])
 
     official_pages = {}
+    saved_official_bv = ""      # 上次保存的对齐是按哪条官方源算的(老记录没有 → "")
+    has_saved = False           # 有没有换源记录本身, 与"是不是这一场的"分开报
     if official_bv and BV_RE.fullmatch(official_bv):
         rec = align.get(f"{date}|{file}|{official_bv}")
         if isinstance(rec, dict) and isinstance(rec.get("pages"), dict):
             official_pages = rec["pages"]
+        # 上次的换源对齐是按哪场算的: 同一文件一晚可能有好几场, 用户可能拿同一条解说
+        # 视频给两场都换源 —— 那时记录属于另一场, 拿它的 N 去配这一场的官方 offset 必错,
+        # 所以把归属一并报给前端, 由前端决定回不回填。
+        swap = align.get(f"{date}|{file}|{new_bv}")
+        if isinstance(swap, dict) and swap.get("source_swap"):
+            has_saved = True
+            saved_official_bv = str(swap.get("official_bv") or "")
         # 再取一次官方源的 B站 分P 清单, 把名字补齐(见 _merge_official_pages)。
         # 仅"显示用的名字", offset 还是从记录来 —— 所以 B站 抖动时退回记录,
         # 不换源整体报错。代价是多一次接口往返(识别分P 本来就是 10~60 秒的动作)。
@@ -2266,7 +2284,9 @@ async def handle_sources(request: web.Request) -> web.Response:
 
     return api_ok(new_bv=new_bv, new_title=str(info.get("title") or ""),
                   new_pages=new_pages, official_bv=official_bv,
-                  official_pages=official_pages)
+                  official_pages=official_pages,
+                  saved_pages=has_saved,
+                  saved_official_bv=saved_official_bv)
 
 
 # ---- /api/markers: B站 看点(view_points) 当作时间标记 ----

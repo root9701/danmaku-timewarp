@@ -3126,6 +3126,7 @@
     fetch('/api/match', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: date, file: file, bv: srcBv,
+                             official_bv: srcOfficialBv,   // 这份对齐是按哪条官方源算的
                              offset_sec: pages[ks[0]].offset_sec,
                              pages: pages, manual: true })
     }).then(function (r) { return r.json(); }).then(function (j) {
@@ -3196,9 +3197,16 @@
       srcInfo = { title: j.new_title || '', pages: j.new_pages };
       state.officialPageOffsets = offs2;
       srcOffPages = offNames2;
-      // 默认按序号配对; 若之前存过, 优先用存下的配对与对齐值
-      var savedPages = (saved && saved.ok && saved.pages_bv === newBv && saved.pages)
-        ? saved.pages : {};
+      // 默认按序号配对; 若之前存过, 优先用存下的配对与对齐值。
+      // **只有这条记录是按本场官方源算的才回填**: 同一文件一晚可能有好几场, 用户可能
+      // 拿同一条解说视频给两场都换源 —— 记录属于另一场时, 它的 N 是相对**那场**官方画面
+      // 取的, 套到这一场的官方 offset 上必然错位, 而且看起来像"记错了", 很难查。
+      // saved_official_bv 为空 = 加这个字段之前存的老记录, 按"属于本场"处理(维持原行为)。
+      var savedForOther = !!(saved && saved.ok && saved.pages_bv === newBv &&
+                             j.saved_pages && j.saved_official_bv &&
+                             j.saved_official_bv !== offBv);
+      var savedPages = (saved && saved.ok && saved.pages_bv === newBv &&
+                        saved.pages && !savedForOther) ? saved.pages : {};
       srcRows = {};
       j.new_pages.forEach(function (np) {
         var sp = savedPages[String(np.page)] || {};
@@ -3217,10 +3225,14 @@
       syncSrcSwitch();
       renderSrcMap();
       var hasSaved = Object.keys(savedPages).length > 0;
-      setSrcStatus(hasSaved
-        ? '已读取上次保存的对齐。确认无误可直接「切换」；要重调就先播官方源再点「对齐」。'
-        : '分P 已识别。先播官方源，拖到这一局的开头，点「对齐」，再点「切换」。',
-        'ok');
+      if (savedForOther) {
+        setSrcStatus('这条视频上次是对**另一场**比赛对齐的，没有带过来。这一场要重新对：' +
+                     '先播官方源，拖到同一个画面，点「对齐」，再点「切换」。', 'warn');
+      } else if (hasSaved) {
+        setSrcStatus('已读取上次保存的对齐。确认无误可直接「切换」；要重调就先播官方源再点「对齐」。', 'ok');
+      } else {
+        setSrcStatus('分P 已识别。按上面三步做一次对齐。', 'ok');
+      }
     }).catch(function (e) {
       setSrcStatus('识别失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
     }).finally(function () {

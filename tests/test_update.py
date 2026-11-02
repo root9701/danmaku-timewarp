@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "danmaku-server"))
 
 import dataupdate  # noqa: E402
 import srcfetch  # noqa: E402
+import appupdate  # noqa: E402
 
 FAILED = []
 
@@ -496,6 +497,10 @@ def main() -> int:
         # 为什么不测真实 GitHub: 断网/限流会让回归变红, 而红的原因与代码无关
         # (实测 api.github.com 未认证 60 次/小时按 IP 计, 本机就被吃到 403,
         #  这正是改用 atom 的理由)。这里给固定 XML, 只验解析规则。
+        #
+        # v1.5.0 起 Release 解析从 srcfetch 搬到 appupdate(自更新只此一个消费方),
+        # 且 atom 也走镜像通道 —— 所以要把 mirrors_release 也打成"只给一个地址",
+        # 否则会真的去连镜像。
         def _atom(inner: str) -> bytes:
             return (
                 '<?xml version="1.0" encoding="UTF-8"?>'
@@ -506,11 +511,14 @@ def main() -> int:
 
         def _tag_of(blob: bytes) -> str:
             saved_get = srcfetch.get_once
+            saved_m = appupdate.mirrors_release
             try:
                 srcfetch.get_once = lambda url, timeout=None: blob
-                return srcfetch.latest_release_tag()
+                appupdate.mirrors_release = lambda u: [u]
+                return appupdate.latest_release_tag()
             finally:
                 srcfetch.get_once = saved_get
+                appupdate.mirrors_release = saved_m
 
         entry = ('<entry><title>弹幕时光机 1.2.0</title>'
                  '<link href="https://github.com/o/r/releases/tag/v1.2.0"/></entry>')

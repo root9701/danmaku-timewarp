@@ -112,6 +112,24 @@ button, input, select { font-family: inherit; }
 .ver-pop a { color: var(--blue); text-decoration: none; }
 .ver-pop a:hover { text-decoration: underline; }
 .ver-pop .ver-pop-hint { color: var(--text-faint); margin-top: 4px; }
+/* 更新内容: 换成可滚动的固定高度, 而不是让浮层随正文无限变高。
+   正文是作者写的, 长度不可控 —— 最高的那次实测能顶到屏幕外。 */
+.ver-pop .ver-pop-notes {
+  max-height: 168px; overflow-y: auto; margin-top: 6px;
+  padding: 6px 8px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font-size: 11px; line-height: 1.65;
+  /* 正文里是纯文本(服务端已去标签), 但保留换行; 长英文/URL 不许撑破浮层 */
+  white-space: pre-wrap; word-break: break-word;
+}
+.ver-pop .ver-pop-dim { color: var(--text-faint); }
+.ver-pop .ver-pop-err { color: var(--warn); }
+.ver-pop .ver-pop-cur { color: var(--text-faint); margin-left: 6px; font-size: 11px; }
+.ver-pop .ver-pop-act {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+}
+.ver-pop .ver-pop-act .btn { font-size: 11px; padding: 3px 10px; }
+.ver-pop .ver-pop-act .btn[disabled] { opacity: .6; cursor: default; }
 
 /* ---------- 置顶总览 ---------- */
 .dock {

@@ -3848,13 +3848,92 @@
     buildVerPop();
     elAppVersion.classList.add('has-update');
     elAppVersion.title = '';        // 用自绘浮层, 不用浏览器原生 tooltip
+    // 更新内容直接摆进浮层: 用户决定"要不要更新"靠的就是它。
+    // 没写说明时给一句实话, 不要留空白让人以为加载失败。
+    var notes = (info.notes || '').trim();
     verPop.innerHTML =
-      '<b>有新版本 v' + escHtml(info.remote) + '</b><br>' +
-      '当前 v' + escHtml(info.version) + '<br>' +
-      '<a href="' + escHtml(info.url) + '" target="_blank" rel="noopener">' +
-      '打开下载页 →</a>' +
-      '<div class="ver-pop-hint">程序不会自动更新，下载后解压替换整个目录。' +
-      '数据在 data/ 下，不受影响。</div>';
+      '<b>有新版本 v' + escHtml(info.remote) + '</b>' +
+      '<span class="ver-pop-cur">当前 v' + escHtml(info.version) + '</span>' +
+      (notes ? '<div class="ver-pop-notes">' + escHtml(notes) + '</div>'
+             : '<div class="ver-pop-notes ver-pop-dim">这个版本没有写更新说明。</div>') +
+      '<div class="ver-pop-act">' +
+        '<button type="button" class="btn btn-primary btn-sm" id="btn-app-update">立即更新</button>' +
+        '<a href="' + escHtml(info.url) + '" target="_blank" rel="noopener">手动下载</a>' +
+      '</div>' +
+      '<div class="ver-pop-hint">更新会自动下载并重启程序；data/ 里的数据不受影响。</div>';
+    var btn = verPop.querySelector('#btn-app-update');
+    if (btn) { btn.addEventListener('click', runAppUpdate); }
+  }
+
+  /** 点「立即更新」: 下载 -> 后端替换 -> 主进程重启 -> 前端轮询等它回来。
+   *
+   *  为什么前端要轮询: 服务端在响应发出约 1 秒后就退出, 中间会有一段时间连不上。
+   *  不轮询的话用户看到的是"网页挂了", 会以为更新把程序搞坏了。 */
+  function runAppUpdate() {
+    var btn = verPop && verPop.querySelector('#btn-app-update');
+    if (!btn || btn.disabled) { return; }
+    btn.disabled = true;
+    btn.textContent = '正在下载…';
+    setVerPopHint('下载中，请不要关闭程序窗口…');
+    fetch('/api/app/update', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) {
+          btn.disabled = false;
+          btn.textContent = '重试';
+          setVerPopHint('更新失败：' + (j && j.error ? j.error : '未知错误') +
+                        '（程序仍是 v' + (verUpdate ? verUpdate.version : '') + ' 之前那版，可以继续使用）', true);
+          return;
+        }
+        if (!j.updated) {
+          btn.textContent = '已是最新';
+          setVerPopHint(j.message || '');
+          return;
+        }
+        btn.textContent = '正在重启…';
+        setVerPopHint('已下载 v' + j.remote + '，程序正在重启，页面会自动恢复…');
+        waitForRestart(j.remote);
+      })
+      .catch(function () {
+        // 到这里多半是"服务端已退出、连接被断开", 其实更新正在推进, 不能当失败报
+        btn.textContent = '正在重启…';
+        waitForRestart('');
+      });
+  }
+
+  function setVerPopHint(text, isErr) {
+    var hint = verPop && verPop.querySelector('.ver-pop-hint');
+    if (!hint) { return; }
+    hint.textContent = text;
+    hint.classList.toggle('ver-pop-err', !!isErr);
+  }
+
+  /** 等服务端回来。替换器要等端口释放、换目录、再拉起, 十几秒到一分钟都算正常。 */
+  function waitForRestart(expectVer) {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      // cache: 'no-store' —— 拿的必须是最新进程的回复, 不能吃浏览器缓存
+      fetch('/api/version?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (!j || !j.ok) { return; }
+          if (expectVer && j.version !== expectVer) {
+            // 还是旧版: 替换器可能还没跑完, 继续等(不超过 90 秒)
+            if (tries > 90) { stopWait('更新没有完成，请关闭窗口后重新双击启动脚本。', true); }
+            return;
+          }
+          stopWait('已更新到 v' + j.version + '，正在刷新页面…', false);
+          setTimeout(function () { location.reload(); }, 800);
+        })
+        .catch(function () {            // 还没起来: 正常, 继续等
+          if (tries > 90) { stopWait('程序没有在 90 秒内起来，请手动双击启动脚本。', true); }
+        });
+    }, 1000);
+    function stopWait(msg, isErr) {
+      clearInterval(timer);
+      setVerPopHint(msg, isErr);
+    }
   }
 
   function loadAppVersion() {

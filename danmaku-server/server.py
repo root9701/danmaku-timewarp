@@ -49,6 +49,7 @@ from aiohttp import web
 # 程序版本(唯一源是仓库根的 VERSION 文件, 见 version.py)
 import version as appversion
 import alignment
+import appupdate
 from alignment import _fmt_wall
 from errors import ApiError
 
@@ -3360,14 +3361,62 @@ async def handle_app_latest(request: web.Request) -> web.Response:
     if not HAS_SRCFETCH:
         return api_ok(version=APP_VERSION, remote=None, update=False,
                       error="版本检查模块不可用", url="")
-    remote, err = None, ""
+    remote, err, notes = None, "", ""
     try:
-        remote = await asyncio.to_thread(srcfetch.latest_release_tag)
+        rel = await asyncio.to_thread(appupdate.latest_release)
+        remote = rel.get("version") or ""
+        notes = appupdate.notes_brief(rel.get("notes") or "")
     except Exception as e:                   # noqa: BLE001 —— 任何失败都只降级
         err = str(e)[:120]
     return api_ok(version=APP_VERSION, remote=remote,
                   update=bool(remote) and appversion.is_newer(remote, APP_VERSION),
-                  error=err, url=srcfetch.release_page_url())
+                  notes=notes, error=err, url=srcfetch.release_page_url())
+
+
+async def handle_app_update(request: web.Request) -> web.Response:
+    """下载新版并安排替换。**只在用户点「立即更新」时调用。**
+
+    返回之后主进程会自己退出 —— 替换器在等端口释放, 然后把目录换掉并用新版的
+    Start.bat 重新启动。所以这个响应必须在退出**之前**发出去, 否则浏览器收到的是
+    连接中断, 用户会以为点失败了。
+
+    为什么不在启动时自动做: 自动更新会在用户只想看比赛时抢网络、抢磁盘, 且一旦
+    断在半路, 最坏的结果是程序起不来 —— 拿"能不能看"换"是不是最新"不值得。
+    """
+    if not HAS_SRCFETCH:
+        raise ApiError("版本检查模块不可用，无法自动更新，请到发布页手动下载")
+    try:
+        rel = await asyncio.to_thread(appupdate.latest_release)
+    except Exception as e:                   # noqa: BLE001
+        raise ApiError(f"查不到新版本：{e}")
+    remote = rel.get("version") or ""
+    if not appversion.is_newer(remote, APP_VERSION):
+        return api_ok(updated=False, version=APP_VERSION,
+                      message=f"已经是最新版本 v{APP_VERSION}。")
+    # 包根 = danmaku-server/ 的上一级。从源码运行时那里的上层是仓库根, 没有 python/
+    # 与 Start.bat —— 替换上去会把仓库搞坏, 所以这种环境下拒绝。
+    root = BASE_DIR.parent
+    if not (root / "Start.bat").is_file() or not (root / "python").is_dir():
+        raise ApiError("当前是从源码运行的，没有可替换的包目录。"
+                       "自动更新只对下载的便携版有效，源码请用 git pull。")
+    try:
+        await appupdate.run_update(remote, root, PORT)
+    except appupdate.UpdateError as e:
+        raise ApiError(str(e))
+    # 退出放在响应之后: 让用户看到"正在更新", 而不是连接被重置。
+    asyncio.get_running_loop().call_later(1.0, _exit_for_update)
+    return api_ok(updated=True, version=APP_VERSION, remote=remote,
+                  message=f"已下载 v{remote}，程序即将重启。")
+
+
+def _exit_for_update() -> None:
+    """给替换器让路: 退出主进程, 端口释放后它才开始换目录。
+
+    用 os._exit 而不是 sys.exit: 此刻可能还有 keep-alive 连接与后台任务, 正常退出
+    会走清理流程并可能被 aiohttp 拖住; 这里要的是"立刻让出文件锁", 且状态已被替换器
+    接管, 没有需要优雅收尾的东西。
+    """
+    os._exit(0)
 
 
 async def handle_update_check(request: web.Request) -> web.Response:
@@ -3393,7 +3442,7 @@ async def handle_update_check(request: web.Request) -> web.Response:
     remote_app, app_err = None, ""
     if HAS_SRCFETCH:
         try:
-            remote_app = await asyncio.to_thread(srcfetch.latest_release_tag)
+            remote_app = await asyncio.to_thread(appupdate.latest_release_tag)
         except Exception as e:               # noqa: BLE001 —— 任何失败都只降级
             app_err = str(e)[:120]
     else:
@@ -3603,6 +3652,7 @@ def build_app() -> web.Application:
     r.add_post("/api/update/pull", handle_update_pull)
     r.add_get("/api/version", handle_version)
     r.add_get("/api/app/latest", handle_app_latest)
+    r.add_post("/api/app/update", handle_app_update)
     r.add_get("/{tail:.*}", handle_static)     # 兜底静态路由, 必须最后注册
     return app
 

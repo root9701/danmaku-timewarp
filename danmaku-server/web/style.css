@@ -555,13 +555,16 @@ button, input, select { font-family: inherit; }
   border-radius: var(--radius);
 }
 .toolbar { margin: 10px 18px 14px; padding: 8px 12px; }
-/* 工具条**只占一行**。原先 flex-wrap:wrap 在 1207px 宽(常见笔记本窗口)下会
+/* 工具条**在宽窗口里只占一行**。原先全宽度都 flex-wrap:wrap, 在 1207px 宽(常见笔记本窗口)下会
    把「刷新赛程 / 更多」甩到第二行 —— 控制区从 26px 变成 60px, 底部多出一条
    空行, 而且换行位置随窗口宽度跳变, 看起来像是布局坏了。
    现在改成 nowrap, 并把可压缩项(flex-shrink)设出来:
      固定不缩: 播放/开关/小按钮(它们已经是内容最小宽度)
      可收缩  : 三个下拉框(文本用省略号, 完整值在 title 里)
-   这样窄窗口丢的是下拉框里的文字, 而不是整条控件的可见性。 */
+   这样窄窗口丢的是下拉框里的文字, 而不是整条控件的可见性。
+   但下拉框有 132px 下限, 压到底整条还是 906px; 窗口比这更窄时 nowrap 只会让
+   「拉取弹幕/刷新赛程/更多」飘到卡片背景外面(横向溢出, 看着像背景没包住内容),
+   所以窄档改回 wrap —— 见文末 1100px 媒体查询。 */
 .tool-row {
   display: flex; align-items: center; gap: 8px;
   flex-wrap: nowrap; min-width: 0;
@@ -641,6 +644,81 @@ button, input, select { font-family: inherit; }
 .more-box .align-status { flex: 1 0 100%; margin-top: 2px; }
 .nudge { display: inline-flex; gap: 4px; align-items: center; }
 
+/* ---------- 换源(更多面板里的低频小功能) ----------
+   形状跟「更多」里其它控件一致: 虚线分隔 + 小字号, 不抢主操作。
+   只在展开「更多」后才可见, 默认不占首屏空间。 */
+.src-box {
+  flex: 1 0 100%;
+  margin-top: 4px; padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.src-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.src-head b { font-size: 12px; font-weight: 600; color: var(--text); }
+.src-head .btn-toggle { min-width: 0; padding: 3px 10px; font-size: 11px; }
+.src-hint { font-size: 11px; color: var(--text-faint); }
+.src-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.src-row .fld { flex: 1 1 200px; }
+.src-row .fld > input { flex: 1 1 auto; }
+.src-map { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.src-map[hidden] { display: none; }
+.src-map-head { font-size: 11px; color: var(--text-faint); }
+.src-map-tip { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+/* 用法说明拆成三行(各一步)。设成块级是必须的: 用 <br> 的话窄面板自动折行后,
+   折出来的半句会和下一步混在同一段里, "①/②/③" 的分行感就没了。 */
+.src-map-tip-line + .src-map-tip-line { margin-top: 1px; }
+/* 一行排开: 标签(可省略) + 对应局下拉 + 锚点 + 切换/还原 + 对齐 + 已存秒数。
+   标签不独占一行 —— 那会把每局撑到三行, 两局就占掉一大块「更多」面板。 */
+.src-map-row {
+  display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
+  font-size: 12px; color: var(--text-dim);
+}
+.src-map-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.src-map-sel {
+  /* 选项文字是视频自己的分P 标题, 长短不一(第一局 / 抽签仪式 / 赛后采访):
+     按内容自适应, 上限 150px, 再长靠 option/select 的 title 悬停看全。 */
+  flex: 0 1 auto; min-width: 0; max-width: 150px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 3px 4px; font-size: 11px;
+}
+.src-map-anchor-lab { flex: 0 0 auto; font-size: 11px; color: var(--text-faint); }
+/* 锚点输入: 每局一个「挑的那一帧在换源视频里的第几秒」。数字只有 1~4 位, 给固定宽度;
+   number 的原生步进箭头要吃掉 ~12px, 所以 52px 而不是 40px。
+   这一行现在 6 个控件 —— 窄容器靠标签收缩, 手机档(≤480px)整行换行兜住。 */
+.src-map-anchor-in {
+  flex: 0 0 52px; min-width: 0;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 3px 4px; font-size: 11px;
+}
+.src-map-anchor {
+  flex: 0 0 56px; text-align: right;
+  font-variant-numeric: tabular-nums; font-size: 11px;
+  color: var(--text-faint);
+}
+.src-map-anchor.ok { color: var(--ok); }
+.src-map-anchor.warn { color: var(--warn); }
+.src-map-row .nbtn { padding: 2px 5px; font-size: 11px; flex: 0 0 auto; }
+.src-map-foot { margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+/* 切换/还原: 一个按钮两用。开启态(正在播换源视频)沿用 .btn-toggle.on 的写法 ——
+   白字 + 亮边框, 靠明度差而不是新色相(单色纪律见文件头注释)。 */
+.src-sw-btn { min-width: 42px; }
+.src-sw-btn.on {
+  background: transparent; color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text-dim);
+}
+/* 对齐按钮在已切到换源视频时置灰 —— 参照物(官方画面)不在了, 点这里没有意义。
+   两个按钮共用同一种"点不动"的表达, 不引入第三种灰阶。 */
+.src-sw-btn:disabled, .src-al-btn:disabled { opacity: .4; cursor: not-allowed; }
+/* 窄屏(手机): 允许换行, 否则 6 个控件挤在 300px 里必然溢出 */
+@media (max-width: 480px) {
+  .src-map-row { flex-wrap: wrap; row-gap: 4px; }
+  .src-map-label { flex: 1 1 100%; }
+}
+
 .align-cur {
   font-weight: 400; color: var(--text-faint);
   font-variant-numeric: tabular-nums; font-size: 11px; white-space: nowrap;
@@ -674,6 +752,9 @@ button, input, select { font-family: inherit; }
   .main { grid-template-columns: minmax(0, 1fr); padding: 12px 12px 0; }
   .rail-slot { height: 260px; }
   .toolbar { margin: 12px; }
+  /* 允许换行(不是要求): 控件压到最小宽度仍是 906px, 窗口更窄时 nowrap 会让右边
+     几个按钮飘到卡片外面。wrap 下装得下就还是一行, 装不下才断行 —— 比溢出好。 */
+  .tool-row { flex-wrap: wrap; row-gap: 8px; }
   #topbar { padding: 10px 12px; }
   .dock-head { padding: 8px 12px 6px; }
   .dock-body { padding: 0 12px 8px; }

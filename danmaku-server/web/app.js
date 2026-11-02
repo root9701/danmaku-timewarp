@@ -39,6 +39,9 @@
   var btnOvRefresh = $('btn-ov-refresh'), btnOvExpand = $('btn-ov-expand');
   var elTopMeta = $('topbar-meta');
   var btnMore = $('btn-more'), moreBox = $('more-box');
+  var inpSrcBv = $('inp-src-bv'), btnSrcLoad = $('btn-src-load');
+  var srcSwitch = $('src-switch'), srcBody = $('src-body');
+  var srcStatus = $('src-status'), srcMap = $('src-map');
 
   /* ---------------- 全局状态 ---------------- */
   // 防剧透等用户偏好。**必须在任何函数之前声明**:
@@ -76,11 +79,15 @@
     pendingUnmask: false,   // 重取直链后, 等新链接就绪再撤遮罩(见 error 处理)
     pageMarks: [],        // [{page,part,start_sec,duration}] 每局在虚拟轴上的起点
     pageOffsets: {},      // {page: offset_sec} 每个分P 各自的墙钟 offset(音频对齐结果)
+    // 换源: 官方源的原始分P offset。换源开关打开时 pageOffsets 会被换成"官方+N"的值,
+    // 关掉要能原样还原 —— 所以必须另存一份官方的, 不能就地改。
+    officialPageOffsets: {},
     offsetDelta: 0,       // 手动微调量(作用于所有分P, 整体平移弹幕)
     rate: 1,              // 用户设定的播放速度(持久化)
     boostRate: 0,         // 长按方向键的临时加速倍率(0=未激活)
     lastTapKey: 0, lastTapAt: 0,  // 双击 ←/→ 判定
     pendingOverview: null, // 从总览点选某局后, 待加载完成时定位的目标
+    pendingSrcPage: null,  // 换源切过去后, 待加载完成时定位到的新源分P 号
     // 连播(默认开): 一场播完自动接下一场。看整晚的用户是多数, 而"播完停住"
     // 会让人以为卡了; 只想看一场的人点一下关掉即可 —— 开启态的按钮上有明确标注。
     autoAdvance: true
@@ -502,6 +509,10 @@
     var m = null;
     matchListCache.forEach(function (x) { if (x.title === t) { m = x; } });
     if (!m) { return; }
+    // 用户主动选了官方场次: 当前播放意图就是官方源。不清这个标记的话,
+    // 换源切过之后再也播不了别的场次(doApply 会一直用新源 BV)。
+    srcPlaying = false;
+    srcActivePage = 0;
     inpBv.value = m.bv || '';
     inpOffset.value = m.offset_sec || 0;
   }
@@ -529,7 +540,9 @@
     }
     // 场次选中且有 BV 时, 场次优先(输入框的旧值可能是上次会话残留, 会造成弹幕↔视频错位)
     var customBv = (inpBv.value || '').trim();
-    var bv = matchBv || customBv;
+    // 已切到新源时一律用新源 BV —— 否则场次里的官方 BV 会盖掉它,
+    // 表现就是"点了切换却没换"(这正是早期版本的直接病因)。
+    var bv = (srcPlaying && srcBv) ? srcBv : (matchBv || customBv);
     if (!bv) {
       showMask('该场次没有配置回放 BV：在「自定义回放源」里填一个，或先看纯弹幕文件确认数据。');
       mask.classList.add('plain');
@@ -614,10 +627,13 @@
   function setup(date, file, dmText, match, play, bv, offset, matchTitle) {
     state.anchorMs = match.anchor_ms; state.offsetSec = offset; state.playUrl = play.url;
     state.duration = typeof play.duration === 'number' ? play.duration : 0;
-    // 标题优先级: 用户选中的场次(matchTitle) > 服务端 align 记录标题 > 回放视频标题。
+    // 标题优先级: 用户选中的场次(matchTitle) > 回放视频标题 > align 记录标题。
     // 绝不能用直播间当时的标题(meta.room_title, 如"【预告】27号1点CFO vs T1"),
     // 那是采集时刻的房间名, 与正在看的这场比赛无关 —— 这正是"左上角比赛信息与选中场次不一致"的成因。
-    state.title = matchTitle || match.title || play.title || '';
+    // 换源时 matchTitle 为空(刻意清空场次选择, 否则官方 BV 会盖掉新源), 于是落到视频标题,
+    // 用户一眼能看出"当前播的是这条视频" —— 若用 align 记录的标题, 显示的还是官方源的名字,
+    // 会让人以为没换成功。
+    state.title = matchTitle || play.title || match.title || '';
     state.curDate = date; state.curFile = file; state.curMatchTitle = matchTitle;
     state.curBv = bv;
     state.pageMarks = (play.page_marks && play.page_marks.length) ? play.page_marks.slice() : [];
@@ -644,13 +660,28 @@
     // 每个分P 有自己的 offset; 只用标量会从第二局起整体错位。
     state.pageOffsets = {};
     state.offsetDelta = 0;
+    var hasSwapRec = false;      // 这份记录是不是换源人工对齐产生的(见 SCHEMA §4.1.1)
     if (match && match.pages && typeof match.pages === 'object') {
       Object.keys(match.pages).forEach(function (k) {
         var pv = match.pages[k];
         if (pv && typeof pv.offset_sec === 'number' && isFinite(pv.offset_sec)) {
           state.pageOffsets[k] = pv.offset_sec;
+          if (pv.source_swap) { hasSwapRec = true; }
         }
       });
+    }
+    // 播**官方源**时把这份 offset 存成"官方基准", 供换源换算与还原使用。
+    // 播新源(换源记录 / srcPlaying)时不覆盖 —— 否则基准会被新源的值污染, 还原就回不去了。
+    if (!srcPlaying && !hasSwapRec) {
+      state.officialPageOffsets = {};
+      Object.keys(state.pageOffsets).forEach(function (k) {
+        state.officialPageOffsets[k] = state.pageOffsets[k];
+      });
+    }
+    // 正在播新源: 用「官方基准 + 逐局 N」覆盖, 不依赖刚才那次保存是否已经落盘。
+    if (srcPlaying) {
+      var so = buildSrcOffsets();
+      Object.keys(so).forEach(function (k) { state.pageOffsets[k] = so[k]; });
     }
     // 有分P 数据时, 顶层标量同步为第一分P(供无分P 路径与显示兜底)
     if (Object.keys(state.pageOffsets).length) {
@@ -705,6 +736,24 @@
         seekToWallMs(po.block.startMs);
       }
     }
+
+    // 切到新源后定位到刚点「切换」的那一局。用 pendingSrcPage 而不是立即 seek ——
+    // 新源的 page_marks 只有等播放地址加载完才拿到, 提前 seek 会被随后的 load() 冲掉。
+    var sp = state.pendingSrcPage;
+    if (sp != null) {
+      state.pendingSrcPage = null;
+      for (var q = 0; q < state.pageMarks.length; q++) {
+        if (state.pageMarks[q].page === sp) {
+          // 落点是该局的**锚点**(默认 0:00), 与 buildSrcOffsets 里减掉的 A 是同一个值 ——
+          // 弹幕按 A 平移过, 播放点也必须落在 A, 否则画面与弹幕还是错开。
+          seekV(clampSeek(state.pageMarks[q].start_sec + srcAnchorOf(sp)));
+          break;
+        }
+      }
+    }
+    // 换源表要重画: 「对齐」能不能点取决于**实际在播的是哪条源**, 而 curBv 到这里才定下来。
+    // 不重画的表现为"切回官方源之后对齐按钮还是灰的"。
+    renderSrcMap();
   }
 
   /* ---------------- 播放控制 ---------------- */
@@ -2610,6 +2659,596 @@
     }
     setAlignStatus(msg, errKeys.length ? 'warn' : 'ok');
   }
+
+  /* ---------------- 换源: 把弹幕挂到另一条同场比赛的视频 ----------------
+     场景: 同一场比赛有多个解说版(官方 / 台湾解说 / 英文流…)。弹幕只对官方源算过对齐,
+     用户想看别的解说版时要把弹幕挂过去。
+
+     为什么只能人工对齐: 实测两源音频交叉对齐置信度约 1.0(随机水平), 画面滑窗匹配反推
+     的 delta 极差 2340 秒 —— 两源剪辑不同(官方 P1 3771s vs 解说 P1 2953s), 没有可靠的
+     自动手段。而且**每一局剪掉的开头长度各不相同**, 所以只能一局一局对。
+
+     **对齐怎么做(核心交互)**:
+       先到换源视频那边随便挑一帧, 记下它显示在第几秒 —— 这就是**锚点 A**(默认 0 = 第一帧)。
+       任意一帧都行: A 只是两源对号的参照物, 不必是这一局的开头。
+       回来把 A 填进那一局的「锚点」, 再把播放器拖到**同一个画面**, 点该局的「对齐」。
+       程序记下 N = 那个画面在官方这一局内的秒数。
+       两者合起来定义映射: **官方该局第 N 秒 = 换源视频第 A 秒**。
+       然后点「切换」, 播放器换到换源视频并落在 A 秒处(不是 0:00), 弹幕按这个映射挂。
+       已切到换源视频时「对齐」置灰 —— 对齐要站在官方画面上取参照, 换源视频上取不到。
+
+     换算: 换源视频offset = 官方offset + N - A(推导见 buildSrcOffsets)。
+
+     三层开关:
+       总开关(srcMasterOn)  —— 关掉整个功能, 一切回到官方源
+       逐局切换(srcPlaying) —— 该局切到换源视频 / 还原到官方源
+       逐局参数(srcRows[*].alignSec + anchorSec) —— 每局各自一对 N/A */
+  var srcMasterOn = false;   // 总开关
+  var srcPlaying = false;    // 当前是否正播新源
+  var srcActivePage = 0;     // 播新源时, 是切到新源的哪一局(决定该行按钮显示"还原")
+  var srcBv = '';
+  var srcBusy = false;
+  var srcInfo = null;        // {title, pages:[{page,part,duration}]}
+  var srcMatchTitle = '';    // 换源时记下原场次名, 还原要能切回去
+  var srcOfficialBv = '';    // 换源时记下官方源 BV, 还原时据此回播
+  var srcRows = {};          // {新源分P号: {fromPage, alignSec:N, anchorSec:A}}
+  var srcOffPages = {};      // {官方分P号: part} —— 下拉里显示官方自己的分P 名, 不是"官方P2"
+
+  /* 分P 的显示名: 优先用视频自己的分P 标题(B站 上写的"第一局"这种), 空才退回"P{号}"。
+     同名要补分P 号 —— 官方一整晚可能出现两个"第一局"(加赛/重赛), 不带号就选不出区别。
+     items: [{page, part}] -> {String(page): 显示名} */
+  function pageLabelMap(items) {
+    var count = {};
+    items.forEach(function (x) {
+      var t = String(x.part || '').trim() || ('P' + x.page);
+      count[t] = (count[t] || 0) + 1;
+    });
+    var out = {};
+    items.forEach(function (x) {
+      var k = String(x.page);
+      var t = String(x.part || '').trim() || ('P' + k);
+      out[k] = count[t] > 1 ? (t + '(P' + k + ')') : t;
+    });
+    return out;
+  }
+
+  // 提示语里也用同一套显示名, 与表格里的字对得上
+  function srcPageName(page) {
+    return pageLabelMap((srcInfo && srcInfo.pages) || [])[String(page)] || ('P' + page);
+  }
+  function offPageName(page) {
+    var items = Object.keys(srcOffPages).map(function (k) {
+      return { page: k, part: srcOffPages[k] || '' };
+    });
+    return pageLabelMap(items)[String(page)] || ('P' + page);
+  }
+
+  function setSrcStatus(msg, cls) {
+    srcStatus.hidden = !msg;
+    srcStatus.textContent = msg || '';
+    srcStatus.className = 'align-status' + (cls ? ' ' + cls : '');
+  }
+
+  function syncSrcSwitch() {
+    if (srcSwitch) {
+      srcSwitch.textContent = srcMasterOn ? '换源：开' : '换源：关';
+      srcSwitch.classList.toggle('on', srcMasterOn);
+    }
+    // 总开关关掉: 整个功能收起来, 只剩开关本身
+    if (srcBody) { srcBody.hidden = !srcMasterOn; }
+  }
+
+  function fmtDur(sec) {
+    var s = Math.max(0, Math.round(sec || 0));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) +
+           ':' + String(ss).padStart(2, '0');
+  }
+
+  function officialOffsetOf(page) {
+    var o = (state.officialPageOffsets || {})[String(page)];
+    return (typeof o === 'number' && isFinite(o)) ? o : null;
+  }
+
+  /* 把逐局参数(N + 锚点 A)换算成播放用的 pages。
+     定义: N = 官方那一帧在官方这一局内的秒数; A = 同一帧在换源视频里的秒数(默认 0)。
+     映射: 官方该局第 N 秒 = 换源视频第 A 秒。
+     推导:
+       官方 P{m} 内第 t 秒的墙钟 = anchor + off_m + t
+       换源视频 P{k} 内第 u 秒, 对应官方第 (N + u - A) 秒 -> 墙钟 = anchor + off_m + N + (u - A)
+       换源视频这局的 offset 定义为"它第 0 秒的墙钟偏移" = anchor + off_m + N - A
+     所以: 换源视频offset = 官方offset + N - A(N 是加, A 是减 —— A 把起点往前挪)。 */
+  function buildSrcOffsets() {
+    var offs = {};
+    Object.keys(srcRows).forEach(function (k) {
+      var r = srcRows[k];
+      if (!r || !r.fromPage) { return; }
+      // **只接受已经对齐过的局**。没对齐的局不产生 offset: 按 N=0 挂上去, 弹幕会落在
+      // 错误的时刻却看起来"有弹幕", 比干脆没有更难发现。未对齐的局由 buildPageSegs
+      // 标成 locatable=false(与官方源"该页没对齐结果"的处理一致)。
+      var n = r.alignSec;
+      if (typeof n !== 'number' || !isFinite(n)) { return; }
+      var base = officialOffsetOf(r.fromPage);
+      if (base == null) { return; }
+      offs[k] = base + n - srcAnchorOf(k);
+    });
+    return offs;
+  }
+
+  // 该局存的锚点秒数(A)。没填/填坏的一律当 0 —— 0 就是"换源视频 0:00 就是那一帧", 与加这个
+  // 设置之前的行为完全一致, 老记录里也没有 anchor_sec 字段, 读出来自然是 0。
+  function srcAnchorOf(page) {
+    var r = srcRows[page] || srcRows[String(page)];
+    var a = r && r.anchorSec;
+    return (typeof a === 'number' && isFinite(a) && a > 0) ? a : 0;
+  }
+
+  // 换源打开且正在播新源时, 用「官方基准 + 逐局 N」覆盖 pageOffsets。
+  // 注意: 只有播新源时才覆盖 —— 播官方源时 pageOffsets 必须是官方自己的值,
+  // 否则官方源的自动校准/手动微调会作用到一套假 offset 上。
+  function applySrcOffsets() {
+    if (!state.applied || !srcPlaying) { return; }
+    var offs = buildSrcOffsets();
+    if (!Object.keys(offs).length) { return; }
+    applyPageOffsets(offs);
+  }
+
+  // 取按分P 号排序后的第一个 offset, 用来填 offset 输入框。
+  // 这个框的值只决定 offsetDelta(= 输入值 - 第一分P offset), 必须与第一分P 相等,
+  // 否则整场弹幕会被整体平移 —— 早期版本在切换时把框清成 0, 弹幕直接偏掉一整个 offset。
+  function firstOffsetValue(offs) {
+    var ks = Object.keys(offs || {}).sort(function (a, b) { return Number(a) - Number(b); });
+    if (!ks.length) { return null; }
+    return Math.round(offs[ks[0]] * 1000) / 1000;
+  }
+
+  function officialBvOfCurrentMatch() {
+    var t = selMatch.value || '';
+    var bv = '';
+    matchListCache.forEach(function (x) { if (x.title === t && x.bv) { bv = x.bv; } });
+    return bv;
+  }
+
+  function switchBackToOfficial() {
+    var bv = srcOfficialBv;
+    if (!bv) {
+      var m = srcMatchTitle || '';
+      if (m) {
+        matchListCache.forEach(function (x) { if (x.title === m && x.bv) { bv = x.bv; } });
+      }
+    }
+    if (!bv) { return; }
+    if (srcMatchTitle) { selMatch.value = srcMatchTitle; }
+    inpBv.value = bv;
+    srcPlaying = false;
+    srcActivePage = 0;
+    // 还原成官方源时 offset 框要回到官方第一分P, 否则 offsetDelta 非 0 会让弹幕整体偏掉
+    var ov = firstOffsetValue(state.officialPageOffsets || {});
+    if (ov != null) { inpOffset.value = String(ov); }
+    doApply();
+  }
+
+  // 渲染逐局表: 每行 = 新源一局 + 对应官方哪局 + 切换/还原 + 对齐 + 已存秒数
+  function renderSrcMap() {
+    if (!srcMasterOn || !srcInfo || !srcInfo.pages || !srcInfo.pages.length) {
+      srcMap.hidden = true;
+      return;
+    }
+    srcMap.hidden = false;
+    srcMap.innerHTML = '';
+
+    var head = document.createElement('div');
+    head.className = 'src-map-head';
+    head.textContent = '换源视频：' + (srcInfo.title || srcBv) + ' · ' + srcInfo.pages.length + ' 局';
+    srcMap.appendChild(head);
+
+    // 用法说明: 三行各一步, 按用户实际操作顺序写 ——
+    //   先在换源视频里挑参照帧取秒数 → 填锚点 → 回播放器找同一画面点对齐/切换。
+    // 锚点不是"这局的开头", 而是**用户挑的那一帧**在换源视频里的秒数, 任意一帧都行。
+    // 写成"拖到开头"会让人以为只能从局首开始对, 反而找不到画面。
+    var tip = document.createElement('div');
+    tip.className = 'src-map-tip';
+    ['① 换源视频里随便挑一帧，记下它显示在第几秒。',
+     '② 把这个秒数填进「锚点」（默认 0 就是第一帧）。',
+     '③ 在播放器里拖到同一个画面，点「对齐」，再点「切换」。'
+    ].forEach(function (line) {
+      var ln = document.createElement('div');
+      ln.className = 'src-map-tip-line';
+      ln.textContent = line;
+      tip.appendChild(ln);
+    });
+    srcMap.appendChild(tip);
+
+    // 显示名一律用视频自己的分P 标题: "官方P2"要用户自己脑补对应哪一局,
+    // 而名字对上名字(台湾解说"第一局" ↔ 官方"第一局")一眼就能确认。
+    var newNames = pageLabelMap(srcInfo.pages);
+    // 官方侧列出**全部分P**(名字取 B站 现况), 没对齐的那几局标成"无对齐"且不许选 ——
+    // 只列有 offset 的那几局, 会让人以为官方源就只有那么两局。
+    var offKeys = Object.keys(srcOffPages).sort(function (a, b) { return Number(a) - Number(b); });
+    if (!offKeys.length) {
+      offKeys = Object.keys(state.officialPageOffsets || {}).sort(function (a, b) {
+        return Number(a) - Number(b);
+      });
+    }
+    var offNames = pageLabelMap(offKeys.map(function (k) {
+      return { page: k, part: srcOffPages[k] || '' };
+    }));
+    var offUsable = function (k) {
+      var v = (state.officialPageOffsets || {})[k];
+      return typeof v === 'number' && isFinite(v);
+    };
+
+    srcInfo.pages.forEach(function (np) {
+      var row = document.createElement('div');
+      row.className = 'src-map-row';
+
+      var nm = newNames[String(np.page)];
+      var label = document.createElement('div');
+      label.className = 'src-map-label';
+      label.textContent = nm + (np.duration ? ' ' + fmtDur(np.duration) : '');
+      label.title = '换源视频 P' + np.page + ' ' + (np.part || '');
+      row.appendChild(label);
+
+      // 对应官方源哪一局
+      var sel = document.createElement('select');
+      sel.className = 'src-map-sel';
+      var opt0 = document.createElement('option');
+      opt0.value = '0'; opt0.textContent = '不挂弹幕';
+      sel.appendChild(opt0);
+      offKeys.forEach(function (op) {
+        var usable = offUsable(op);
+        var o = document.createElement('option');
+        o.value = op;
+        o.textContent = offNames[op] + (usable ? '' : '（无对齐）');
+        o.disabled = !usable;
+        o.title = '官方 P' + op + ' ' + (srcOffPages[op] || '') +
+                  (usable ? '' : '：这一局还没有对齐结果，选不了');
+        sel.appendChild(o);
+      });
+      var cur = srcRows[np.page] || {};
+      sel.value = String(cur.fromPage || 0);
+      sel.title = '对应官方分P：' + (offNames[String(cur.fromPage)] || '不挂弹幕');
+      sel.addEventListener('change', function () {
+        var v = sel.value;
+        if (!srcRows[np.page]) { srcRows[np.page] = {}; }
+        srcRows[np.page].fromPage = v === '0' ? 0 : Number(v);
+        renderSrcMap();
+        if (srcPlaying) { applySrcOffsets(); }
+      });
+      row.appendChild(sel);
+
+      // 锚点 A: 用户挑的参照帧在换源视频里的秒数, 默认 0(= 第一帧)。
+      // 任意一帧都行 —— 它只是两源对号的参照物, 不必是这一局的开头。
+      var alab = document.createElement('span');
+      alab.className = 'src-map-anchor-lab';
+      alab.textContent = '锚点';
+      alab.title = '锚点（秒）：你在换源视频里挑的那一帧是第几秒。默认 0 = 第一帧，任意一帧都行。';
+      row.appendChild(alab);
+
+      var ain = document.createElement('input');
+      ain.type = 'number';
+      ain.className = 'src-map-anchor-in';
+      ain.step = '1';
+      ain.min = '0';
+      ain.value = String(srcAnchorOf(np.page));
+      ain.title = '锚点（秒）：你在换源视频里挑的那一帧是第几秒。默认 0 表示你挑的就是第一帧；' +
+                  '任意一帧都行，挑好之后要在官方源里拖到同一画面再点「对齐」。';
+      ain.addEventListener('change', function () { setSrcAnchor(np.page, ain.value); });
+      row.appendChild(ain);
+
+      // 切换 / 还原。按钮是**逐局**的: 播放器一次只能播一条源, 所以"哪一行是当前局"
+      // 由 srcActivePage 决定 —— 只有那一行显示「还原」, 其余行仍显示「切换」,
+      // 此时它的动作是在同一条新源里跳到那一局(不重新加载)。
+      var sw = document.createElement('button');
+      sw.type = 'button';
+      var aligned = (typeof cur.alignSec === 'number' && isFinite(cur.alignSec));
+      var active = srcPlaying && srcActivePage === np.page;
+      sw.className = 'nbtn src-sw-btn' + (active ? ' on' : '');
+      sw.textContent = active ? '还原' : '切换';
+      sw.title = active ? '切回官方源播放'
+        : (aligned ? (srcPlaying ? ('跳到换源视频「' + nm + '」') : ('换到换源视频播放，并跳到「' + nm + '」'))
+                   : '先点「对齐」，才能切换');
+      // 没对齐过的局不许切换: 切过去这一局压根不产 offset, 弹幕只会挂在标量兜底的位置上,
+      // 比"没有弹幕"更容易误导。
+      sw.disabled = !active && !aligned;
+      sw.addEventListener('click', function () {
+        if (active) {
+          switchBackToOfficial();
+          setSrcStatus('已还原官方源播放。', 'ok');
+        } else if (srcPlaying) {
+          seekSrcPage(np.page);
+        } else {
+          switchToSrc(np.page);
+        }
+        // 按钮文案与「对齐」的置灰状态都取决于播的是哪条源, 切完必须重画一次;
+        // 不重画的表现为"点完切换按钮还是写着切换", 用户会以为没生效。
+        renderSrcMap();
+      });
+      row.appendChild(sw);
+
+      // 对齐: 把官方源当前播放的那一帧, 记成「换源视频第 A 秒」的参照
+      var al = document.createElement('button');
+      al.type = 'button';
+      al.className = 'nbtn src-al-btn';
+      al.textContent = '对齐';
+      // 已切到换源视频时整列置灰: 对齐必须站在官方画面上取参照, 换源视频上取不到
+      var onOfficial = state.applied && state.curBv && state.curBv !== srcBv;
+      al.disabled = srcPlaying || !cur.fromPage || !onOfficial;
+      al.title = srcPlaying
+        ? '已切到换源视频，先「还原」再对齐'
+        : (onOfficial ? '把当前这一帧，记为换源视频第 ' + fmtDur(srcAnchorOf(np.page)) + ' 秒'
+                      : '先播放官方源，拖到与锚点同一个画面再点这里');
+      al.addEventListener('click', function () { alignSrcPage(np.page); });
+      row.appendChild(al);
+
+      // 已存的对齐秒数
+      var val = document.createElement('div');
+      val.className = 'src-map-anchor';
+      var n = cur.alignSec;
+      if (typeof n === 'number' && isFinite(n)) {
+        val.textContent = '+' + n.toFixed(0) + 's';
+        val.title = '官方这一帧 = 换源视频第 ' + fmtDur(srcAnchorOf(np.page)) +
+                    '（换算偏移 +' + n.toFixed(1) + 's）';
+        val.classList.add('ok');
+      } else {
+        val.textContent = '未对齐';
+        val.classList.add('warn');
+      }
+      row.appendChild(val);
+      srcMap.appendChild(row);
+    });
+
+    var foot = document.createElement('div');
+    foot.className = 'src-map-foot';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary btn-sm';
+    save.textContent = '保存对齐';
+    // 不能直接 saveSrcAlign 当监听器: 那会把 click 事件对象当成 auto 参数传进去,
+    // 于是所有失败提示被静默吞掉, 用户点了没反应也不知道为什么。
+    save.addEventListener('click', function () { saveSrcAlign(false); });
+    foot.appendChild(save);
+    srcMap.appendChild(foot);
+  }
+
+  // 改锚点: 只动 A(N 保持), 映射跟着变成「官方这一帧 = 换源视频第 A 秒」
+  function setSrcAnchor(page, raw) {
+    var r = srcRows[page];
+    if (!r) { return; }
+    var a = parseFloat(String(raw));
+    if (!isFinite(a) || a < 0) { a = 0; }
+    // 锚点不能落在这一局之外: 换过去播放点直接出界, 看起来像"切过去没画面"。
+    var np = null;
+    ((srcInfo && srcInfo.pages) || []).forEach(function (x) { if (x.page === page) { np = x; } });
+    var dur = (np && typeof np.duration === 'number' && np.duration > 0) ? np.duration : 0;
+    if (dur && a > dur - 1) { a = Math.max(0, dur - 1); }
+    r.anchorSec = Math.round(a * 100) / 100;
+    renderSrcMap();                             // 回写输入框(值可能被钳过)
+    if (srcPlaying) { applySrcOffsets(); }      // 正播换源视频: 弹幕当场按新锚点平移
+    saveSrcAlign(true);
+    setSrcStatus('「' + srcPageName(page) + '」锚点 = 换源视频第 ' + fmtDur(r.anchorSec) + ' 秒。' +
+      ((typeof r.alignSec === 'number' && isFinite(r.alignSec))
+        ? ('映射：官方那一帧 ↔ 换源视频 ' + fmtDur(r.anchorSec) + '。')
+        : '这一局还没点「对齐」，先播官方源取参照。'), 'ok');
+  }
+
+  // 对齐: 把官方源**当前播放的那一帧**, 记成「换源视频第 A 秒」的参照
+  function alignSrcPage(page) {
+    if (!state.applied) { setSrcStatus('先播放官方源。', 'err'); return; }
+    if (srcPlaying) { setSrcStatus('已切到换源视频，先「还原」再对齐。', 'err'); return; }
+    var r = srcRows[page];
+    if (!r || !r.fromPage) { setSrcStatus('先给这一局选对应的官方分P。', 'err'); return; }
+    var pm = null;
+    (state.pageMarks || []).forEach(function (x) { if (x.page === r.fromPage) { pm = x; } });
+    if (!pm) {
+      setSrcStatus('官方源「' + offPageName(r.fromPage) + '」的分段信息缺失，无法对齐。', 'err');
+      return;
+    }
+    var n = getV() - (pm.start_sec || 0);
+    var err = alignBoundsErr(pm, n);
+    if (err) { setSrcStatus(err, 'err'); return; }
+    r.alignSec = Math.round(n * 100) / 100;
+    renderSrcMap();
+    // 立即保存: 用户要的是"下次不用重新换"
+    saveSrcAlign(true);
+    setSrcStatus('「' + srcPageName(page) + '」已对齐：当前这一帧 = 换源视频 ' +
+      fmtDur(srcAnchorOf(page)) + '。点「切换」换过去。', 'ok');
+  }
+
+  /* 对齐参照必须落在所选官方分P 之内。拖到别的局会让 N 超过这一局的长度,
+     换过去后弹幕起点落在视频之外 —— 那是错的, 而且从结果上很难看出是这一步出的错。 */
+  function alignBoundsErr(pm, n) {
+    var nm = offPageName(pm.page);
+    if (n < 0) { return '当前画面在官方「' + nm + '」之前，请先拖到那一局。'; }
+    var dur = (typeof pm.duration === 'number' && pm.duration > 0) ? pm.duration : 0;
+    if (dur && n > dur) { return '当前画面已经过了官方「' + nm + '」，请拖回这一局再对齐。'; }
+    return '';
+  }
+
+  // 切到新源播放, 并定位到该局
+  function switchToSrc(page) {
+    if (!srcBv) { return; }
+    srcPlaying = true;
+    srcActivePage = page || 0;
+    inpBv.value = srcBv;
+    // offset 框必须填**新源第一分P 的 offset**(官方offset + N), 不是 0 ——
+    // 框里的值决定 offsetDelta, 填 0 会把整场弹幕按第一局 offset 整体平移。
+    var sv = firstOffsetValue(buildSrcOffsets());
+    inpOffset.value = String(sv != null ? sv : 0);
+    selMatch.value = '';          // 清空场次, 否则官方 BV 会盖掉新源(见 doApply)
+    // 切到新源后定位到刚操作的那一局(等 setup 加载完再定位, 见 pendingSrcPage)
+    if (page) { state.pendingSrcPage = page; }
+    doApply();
+    setSrcStatus('已切到换源视频播放' + (page ? '「' + srcPageName(page) + '」' : '') + '。', 'ok');
+  }
+
+  // 已经在新源上, 只想换一局: 在同一条源里 seek, 不重新加载(省一次取直链)
+  function seekSrcPage(page) {
+    var pm = null;
+    (state.pageMarks || []).forEach(function (x) { if (x.page === page) { pm = x; } });
+    if (!pm) { setSrcStatus('换源视频「' + srcPageName(page) + '」的分段信息缺失，跳不过去。', 'err'); return; }
+    srcActivePage = page;
+    // 落在该局的**锚点**处(默认 0:00), 不是局首 —— 锚点就是"这一局从新源第几秒算起"
+    seekV(clampSeek((pm.start_sec || 0) + srcAnchorOf(page)));
+    setSrcStatus('已在换源视频里跳到「' + srcPageName(page) + '」。', 'ok');
+  }
+
+  // 保存对齐: 给新源 BV 写一份与官方源形状相同的 pages(每局一个 offset)
+  function saveSrcAlign(auto) {
+    if (!srcBv || srcBusy) { return; }
+    var date = selDate.value, file = selFile.value;
+    if (!date || !file) {
+      if (!auto) { setSrcStatus('先选日期与弹幕文件。', 'err'); }
+      return;
+    }
+    var offs = buildSrcOffsets();
+    var ks = Object.keys(offs);
+    if (!ks.length) {
+      if (!auto) { setSrcStatus('还没有可保存的局。', 'err'); }
+      return;
+    }
+    var pages = {};
+    ks.forEach(function (k) {
+      var np = null;
+      (srcInfo.pages || []).forEach(function (x) { if (String(x.page) === k) { np = x; } });
+      pages[k] = {
+        part: (np && np.part) || '',
+        duration: (np && np.duration) || 0,
+        offset_sec: Math.round(offs[k] * 1000) / 1000,
+        source_swap: true,                    // 标记: 换源人工对齐, 不是音频自动校准
+        from_page: srcRows[k].fromPage,
+        align_sec: Math.round((srcRows[k].alignSec || 0) * 1000) / 1000,
+        anchor_sec: srcAnchorOf(k)              // 该局锚点(官方那一帧在换源视频里的秒数), 没填是 0
+      };
+    });
+    ks.sort(function (a, b) { return Number(a) - Number(b); });
+    srcBusy = true;
+    fetch('/api/match', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: date, file: file, bv: srcBv,
+                             offset_sec: pages[ks[0]].offset_sec,
+                             pages: pages, manual: true })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j || !j.ok) {
+        setSrcStatus('保存失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
+        return;
+      }
+      if (!auto) {
+        setSrcStatus('已保存 ' + ks.length + ' 局的对齐。下次播放这条视频会自动带上。', 'ok');
+      }
+    }).catch(function (e) {
+      if (!auto) { setSrcStatus('保存失败: ' + (e && e.message ? e.message : '网络错误'), 'err'); }
+    }).finally(function () { srcBusy = false; });
+  }
+
+  /* 「识别分P」: 取新源分P → 按序号对上官方分P → **读回上次保存的对齐** → 渲染。
+     不自动切过去: 用户要先在官方源上取对齐参照, 切过去是「切换」按钮的事。 */
+  btnSrcLoad.addEventListener('click', function () {
+    if (srcBusy) { return; }
+    var newBv = (inpSrcBv.value || '').trim();
+    if (!newBv) { setSrcStatus('先填换源视频的 BV 号。', 'err'); return; }
+    var date = selDate.value, file = selFile.value;
+    if (!date || !file) { setSrcStatus('先选日期与弹幕文件。', 'err'); return; }
+    var offBv = officialBvOfCurrentMatch() || (inpBv.value || '').trim();
+    if (!offBv) {
+      setSrcStatus('先选好场次（或填官方源 BV），否则不知道该以哪场比赛为基准。', 'err');
+      return;
+    }
+    if (offBv === newBv) { setSrcStatus('换源视频和官方源是同一个 BV，不需要换源。', 'err'); return; }
+
+    srcBusy = true;
+    btnSrcLoad.disabled = true;
+    btnSrcLoad.textContent = '识别中…';
+    setSrcStatus('正在读取换源视频分P…', '');
+    var qSrc = getJson('/api/sources?date=' + enc(date) + '&file=' + enc(file) +
+                       '&bv=' + enc(newBv) + '&official_bv=' + enc(offBv));
+    // 同时读回上次保存的换源对齐(用户要求"下次不用重新换")
+    var qSaved = getJson('/api/match?date=' + enc(date) + '&file=' + enc(file) +
+                         '&bv=' + enc(newBv)).catch(function () { return null; });
+    Promise.all([qSrc, qSaved]).then(function (res) {
+      var j = res[0], saved = res[1];
+      if (!j || !j.ok) {
+        setSrcStatus('识别失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
+        return;
+      }
+      if (!j.new_pages || !j.new_pages.length) {
+        setSrcStatus('这条视频没有分P，无法作为换源目标。', 'err');
+        return;
+      }
+      // 官方侧: 名字与 offset 分开放。名字是 B站 现况(全部分P 都有), offset 只有
+      // 对齐过的那几局有 —— 一局 offset 都没有就还没法换源, 报在这一句上。
+      var offNames2 = {}, offs2 = {};
+      Object.keys(j.official_pages || {}).forEach(function (k) {
+        var pv = j.official_pages[k];
+        if (!pv) { return; }
+        offNames2[k] = String(pv.part || '');
+        if (typeof pv.offset_sec === 'number' && isFinite(pv.offset_sec)) {
+          offs2[k] = pv.offset_sec;
+        }
+      });
+      if (!Object.keys(offs2).length) {
+        setSrcStatus('本场次还没有官方源的分P 对齐结果，无法换源。', 'err');
+        return;
+      }
+      srcBv = newBv;
+      srcMatchTitle = selMatch.value || srcMatchTitle;
+      srcOfficialBv = offBv;          // 还原时据此回播官方源, 不依赖场次下拉是否还在
+      srcInfo = { title: j.new_title || '', pages: j.new_pages };
+      state.officialPageOffsets = offs2;
+      srcOffPages = offNames2;
+      // 默认按序号配对; 若之前存过, 优先用存下的配对与对齐值
+      var savedPages = (saved && saved.ok && saved.pages_bv === newBv && saved.pages)
+        ? saved.pages : {};
+      srcRows = {};
+      j.new_pages.forEach(function (np) {
+        var sp = savedPages[String(np.page)] || {};
+        var fromPage = (typeof sp.from_page === 'number' && sp.from_page)
+          ? sp.from_page
+          : (officialOffsetOf(np.page) != null ? np.page : 0);
+        srcRows[np.page] = {
+          fromPage: fromPage,
+          alignSec: (typeof sp.align_sec === 'number' && isFinite(sp.align_sec))
+            ? sp.align_sec : null,
+          anchorSec: (typeof sp.anchor_sec === 'number' && isFinite(sp.anchor_sec) && sp.anchor_sec > 0)
+            ? sp.anchor_sec : 0          // 老记录没有这个字段 → 0, 与"换源视频 0:00 就是那一帧"一致
+        };
+      });
+      srcMasterOn = true;
+      syncSrcSwitch();
+      renderSrcMap();
+      var hasSaved = Object.keys(savedPages).length > 0;
+      setSrcStatus(hasSaved
+        ? '已读取上次保存的对齐。确认无误可直接「切换」；要重调就先播官方源再点「对齐」。'
+        : '分P 已识别。先播官方源，拖到这一局的开头，点「对齐」，再点「切换」。',
+        'ok');
+    }).catch(function (e) {
+      setSrcStatus('识别失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
+    }).finally(function () {
+      srcBusy = false;
+      btnSrcLoad.disabled = false;
+      btnSrcLoad.textContent = '识别分P';
+    });
+  });
+
+  // 总开关: 关掉整个功能(一切回官方源), 打开则恢复上次配的新源
+  srcSwitch && srcSwitch.addEventListener('click', function () {
+    srcMasterOn = !srcMasterOn;
+    syncSrcSwitch();
+    if (!srcMasterOn) {
+      if (srcPlaying) { switchBackToOfficial(); }
+      // 重画一次: 否则关掉的这一刻 DOM 里还留着上一局按钮的「还原」高亮,
+      // 虽然被 src-body 遮住看不见, 但再打开时如果哪条路径没重画就会露出来。
+      renderSrcMap();
+      setSrcStatus('换源功能已关闭，已回到官方源。', 'ok');
+      return;
+    }
+    renderSrcMap();
+    if (srcBv && srcInfo) {
+      setSrcStatus('换源已打开。确认对齐后点「切换」。', 'ok');
+    } else {
+      setSrcStatus('换源已打开：填换源视频 BV 后点「识别分P」。', '');
+    }
+  });
 
   /* ---------------- 刷新赛程(自动发现当天场次 + 搜索官方回放BV) ---------------- */
   var discoverBusy = false;

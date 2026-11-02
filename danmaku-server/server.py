@@ -1225,6 +1225,66 @@ async def handle_match_get(request: web.Request) -> web.Response:
                   meta_missing=meta_missing)
 
 
+def _parse_pages_field(pages_in) -> dict:
+    """校验并规整 /api/match 的 pages 字段(换源用)。
+
+    换源把弹幕挂到另一条同场比赛的视频上, 结果就是给**新源 BV** 写一份与官方源
+    形状相同的 pages(每局一个 offset), 播放时走原有管线 —— 所以复用这个字段,
+    而不是新增存储层。结构坏了会让整场播不了, 且报错很难指到这里, 故逐项校验。
+    """
+    if not isinstance(pages_in, dict):
+        raise ApiError("字段 pages 应为对象")
+    clean = {}
+    for pk, pv in pages_in.items():
+        if not isinstance(pv, dict):
+            raise ApiError("pages 的每个值应为对象")
+        off = pv.get("offset_sec")
+        if isinstance(off, bool) or not isinstance(off, (int, float)):
+            raise ApiError("pages[*].offset_sec 应为数字")
+        if not math.isfinite(float(off)):
+            raise ApiError("pages[*].offset_sec 应为有限数字")
+        item = dict(pv)
+        item["offset_sec"] = round(float(off), 3)
+        clean[str(pk)] = item
+    return clean
+
+
+def _parse_offset_sec(raw) -> float:
+    """把请求里的 offset_sec 规整成有限浮点数(兼容字符串形式的数字)。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        try:
+            raw = float(str(raw).strip())
+        except ValueError:
+            raise ApiError("offset_sec 应为数字")
+    if not math.isfinite(raw):
+        raise ApiError("offset_sec 应为有限数字")
+    return raw
+
+
+def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title):
+    """换源写回: 给新源 BV 单独存一份逐分P 记录。
+
+    **只写带 BV 的详细 key, 完全不碰会话级 key**: 会话级 `{date}|{file}` 是一晚所有
+    场次的汇总(记录对齐过哪些 bv), 写进去会把整晚汇总覆盖成单个 bv, 并让其它场次的
+    读取错位(实测因此把 MKOI 的 offset 当成了 HLE 的)。带 BV 的 key 才是"每场比赛的
+    详细分P 记录", 与官方源记录形状、语义完全一致(见 SCHEMA §4.1)。
+
+    连 `bvs` 也不登记: 换源记录是**派生**数据(挂在官方源那场比赛上), 不是"这一晚又对齐
+    了一场"。登记进去会让 `/api/sources` 的官方源兜底(bvs[0])可能取到新源, 把派生记录
+    当成基准 —— 那是会算错 offset 的错误基准。读取走精确 key `{date}|{file}|{bv}`, 不需要它。
+    """
+    if not BV_RE.fullmatch(bv):
+        raise ApiError("字段 bv 缺失或格式不正确(换源需要新源的 BV)")
+    clean = _parse_pages_field(pages_in)
+    detail = dict(matches["align"].get(f"{key}|{bv}") or {})
+    detail.update({"date": date, "file": file, "bv": bv,
+                   "offset_sec": raw, "pages": clean,
+                   "source_swap": True})
+    if title is not None:
+        detail["title"] = str(title)
+    matches["align"][key + "|" + bv] = detail
+
+
 async def handle_match_post(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -1241,14 +1301,7 @@ async def handle_match_post(request: web.Request) -> web.Response:
     if not FILE_RE.fullmatch(file):
         raise ApiError("字段 file 非法(只允许字母/数字/下划线/连字符)")
     bv = str(body.get("bv") or "").strip()
-    raw = body.get("offset_sec", 0)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        try:
-            raw = float(str(raw).strip())
-        except ValueError:
-            raise ApiError("offset_sec 应为数字")
-    if not math.isfinite(raw):
-        raise ApiError("offset_sec 应为有限数字")
+    raw = _parse_offset_sec(body.get("offset_sec", 0))
     key = f"{date}|{file}"
     lt = str(body.get("list_title") or "").strip()
     new_title = body.get("title")
@@ -1259,6 +1312,11 @@ async def handle_match_post(request: web.Request) -> web.Response:
     is_manual = bool(body.get("manual"))
 
     def _mut(matches):
+        # 换源: 前端带 pages 时走独立写回, 完全不碰会话级记录与原场次数据。
+        if body.get("pages") is not None:
+            _write_source_swap(matches, key, date, file, bv, raw,
+                               body.get("pages"), new_title)
+            return
         entry = dict(matches["align"].get(key) or {})   # 保留旧字段(如 title)实现合并
         entry.update({"date": date, "file": file, "bv": bv, "offset_sec": raw})
         if new_title is not None:
@@ -2129,6 +2187,86 @@ async def handle_playurl(request: web.Request) -> web.Response:
             raise ApiError("参数 qn 应为整数(画质码, 如 64=720P / 16=360P)")
     play = await bili_playurl_mp4(request.app["http"], bv, page, qn=qn)
     return api_ok(**play)
+
+
+def _merge_official_pages(rec_pages, live_pages) -> dict:
+    """把 align 记录里的官方分P 与 B站 现况的分P 清单合成一份给前端。
+
+    名字与时长以 B站 为准: 记录里的 part 可能是空的旧数据(那时只写了 offset),
+    也可能整局缺失(没参与对齐的局不在记录里)。用户要的是"看官方视频自己写的名字",
+    不是 P3/P4 这种占位。
+    `offset_sec` 只从记录来 —— 没对齐的局也列出来, 由前端标成"无对齐"、不许选。B站 只补名字与时长。
+    """
+    out = {}
+    for pk, pv in (rec_pages or {}).items():
+        out[str(pk)] = dict(pv) if isinstance(pv, dict) else {}
+    for p in (live_pages or []):
+        try:
+            page = int(p.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page <= 0:
+            continue
+        item = out.get(str(page)) or {}
+        item["part"] = str(p.get("part") or "") or item.get("part", "")
+        item["duration"] = int(p.get("duration") or 0) or item.get("duration", 0)
+        out[str(page)] = item
+    return out
+
+
+# ---- /api/sources: 换源(同一场比赛的其他解说版)分P 对照 ----
+# 用途: 用户想把弹幕挂到另一条 B站 视频上(同场比赛、不同解说)。两源音轨/剪辑都不同,
+# 无法自动对齐(实测音频交叉对齐置信度 ~1.0, 画面滑窗 delta 极差 2340s), 所以只能
+# 人工标定**每局在换源视频里的参照帧**(N = 官方侧秒数, A = 换源侧秒数)。
+#
+# 这里只做"读": 列出新源的分P、以及该场次已有的官方对齐结果, 供前端做对照表。
+# 真正的对齐值由 /api/match 带 manual 写回(复用现有管线, 不新增存储层)。
+async def handle_sources(request: web.Request) -> web.Response:
+    """返回新源的分P 清单 + 本场次官方对齐结果, 供前端配对。
+
+    参数: date / file / bv(新源) / official_bv(可选, 官方源; 缺省用 align 记录里的)
+    """
+    date, file = require_date_file(request)
+    new_bv = (request.query.get("bv") or "").strip()
+    if not BV_RE.fullmatch(new_bv):
+        raise ApiError("参数 bv 缺失或格式不正确(应形如 BV1xx411c7mD)")
+
+    # 取新源分P(含每局的时长), 失败要如实报错 —— 前端靠它渲染对照表
+    info = await bili_view(request.app["http"], new_bv)
+    new_pages = [{"page": int(p.get("page") or 0),
+                  "part": str(p.get("part") or ""),
+                  "duration": int(p.get("duration") or 0)}
+                 for p in (info.get("pages") or [])]
+
+    # 官方源: 优先用显式参数, 否则从 align 记录里找该场次对齐过的 bv
+    official_bv = (request.query.get("official_bv") or "").strip()
+    align = load_matches()["align"]
+    if not official_bv:
+        rec = align.get(f"{date}|{file}")
+        if isinstance(rec, dict):
+            bvs = rec.get("bvs")
+            if isinstance(bvs, list) and bvs:
+                official_bv = str(bvs[0] or "")
+            elif rec.get("bv"):
+                official_bv = str(rec["bv"])
+
+    official_pages = {}
+    if official_bv and BV_RE.fullmatch(official_bv):
+        rec = align.get(f"{date}|{file}|{official_bv}")
+        if isinstance(rec, dict) and isinstance(rec.get("pages"), dict):
+            official_pages = rec["pages"]
+        # 再取一次官方源的 B站 分P 清单, 把名字补齐(见 _merge_official_pages)。
+        # 仅"显示用的名字", offset 还是从记录来 —— 所以 B站 抖动时退回记录,
+        # 不换源整体报错。代价是多一次接口往返(识别分P 本来就是 10~60 秒的动作)。
+        try:
+            olive = (await bili_view(request.app["http"], official_bv)).get("pages") or []
+        except ApiError:
+            olive = []
+        official_pages = _merge_official_pages(official_pages, olive)
+
+    return api_ok(new_bv=new_bv, new_title=str(info.get("title") or ""),
+                  new_pages=new_pages, official_bv=official_bv,
+                  official_pages=official_pages)
 
 
 # ---- /api/markers: B站 看点(view_points) 当作时间标记 ----
@@ -3436,6 +3574,7 @@ def build_app() -> web.Application:
     r.add_get("/api/overview", handle_overview)
     r.add_get("/api/discover", handle_discover)
     r.add_get("/api/playurl", handle_playurl)
+    r.add_get("/api/sources", handle_sources)
     r.add_get("/api/markers", handle_markers)
     r.add_get("/api/stream", handle_stream)
     r.add_post("/api/autocalign", handle_autocalign)

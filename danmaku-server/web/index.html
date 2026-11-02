@@ -210,6 +210,28 @@
         <button type="button" class="nbtn" data-d="-30">-30</button><button type="button" class="nbtn" data-d="-10">-10</button><button type="button" class="nbtn" data-d="-5">-5</button><button type="button" class="nbtn" data-d="5">+5</button><button type="button" class="nbtn" data-d="10">+10</button><button type="button" class="nbtn" data-d="30">+30</button>
       </span>
       <div id="align-status" class="align-status" hidden></div>
+
+      <!-- 换源: 把本场次弹幕挂到另一条同场比赛的视频上(不同解说)。
+           低频功能, 收在「更多」里。总开关关掉时一切走官方源, 与没有这个功能时完全一样。 -->
+      <div class="src-box" id="src-box">
+        <div class="src-head">
+          <b>换源</b>
+          <button type="button" class="btn btn-toggle" id="src-switch" title="总开关：关掉即整个功能关闭，完全回到官方源">换源：关</button>
+          <span class="src-hint">同一场比赛的其他解说版</span>
+        </div>
+        <!-- 总开关之外的内容: 关掉时整块收起, 只留上面那行开关 -->
+        <div id="src-body" hidden>
+          <div class="src-row">
+            <label class="fld"><span>换源视频 BV</span>
+              <input id="inp-src-bv" type="text" placeholder="BV1xx411c7mD"
+                     spellcheck="false" autocomplete="off">
+            </label>
+            <button type="button" class="nbtn" id="btn-src-load">识别分P</button>
+          </div>
+          <div id="src-status" class="align-status" hidden></div>
+          <div id="src-map" class="src-map" hidden></div>
+        </div>
+      </div>
     </div>
   </section>
 

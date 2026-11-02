@@ -18,6 +18,7 @@
 """
 
 import argparse
+import os
 import shutil
 import socket
 import subprocess
@@ -64,6 +65,33 @@ def wait_port_free(port: int, timeout: float = 60.0) -> bool:
             return True
         time.sleep(0.4)
     return not port_busy(port)
+
+
+def dir_renameable(path: Path, timeout: float = 30.0) -> bool:
+    """这个目录现在能不能改名(即: 没有别的进程把它当工作目录/句柄)。
+
+    为什么需要: 端口空出来**不等于**目录能改名。实测两种都会卡住改名(WinError 32):
+      - 旧程序是用 `cd 包根 && python server.py` 起的, 它的工作目录就是包根;
+      - 早期版本把替换器的 cwd 也设成了包根。
+    这两种锁都只持续到对应进程真正退出。与其改名失败后回滚(用户看到"更新失败"),
+    不如在这里等到能改名为止; 等不到再报错, 报错信息也直接告诉用户怎么办。
+
+    等待时长可用环境变量 UPDATE_DIR_LOCK_WAIT 缩短 —— 回归测试要用(否则每次慢 30 秒)。
+    """
+    env = os.environ.get("UPDATE_DIR_LOCK_WAIT", "").strip()
+    if env.isdigit():
+        timeout = float(env)
+    probe = path.with_name(path.name + ".probe-" + str(os.getpid()))
+    deadline = time.time() + timeout
+    while True:
+        try:
+            path.rename(probe)
+            probe.rename(path)          # 立刻改回来, 只在毫秒级内动这一下
+            return True
+        except OSError:
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.5)
 
 
 def safe_extract(zip_path: Path, dest: Path) -> Path:
@@ -118,19 +146,49 @@ def check_package(new_root: Path, want_version: str) -> None:
 
 
 def swap(old_root: Path, new_root: Path, port: int) -> None:
-    """把 new_root 的内容换成包根的新内容, 保留 KEEP_NAMES。
+    """把新版内容换到包根, 用户数据原样保留。
 
-    顺序不能改: 先把用户数据从旧目录**复制**到新目录(不是移动), 因为紧接着
-    要整体删除旧目录 —— 复制的失败点在"新目录还不完整", 此时旧目录完好, 可以直接放弃;
-    移动的失败点则在"旧目录已经缺了一块", 回滚就得靠备份, 难得多。
+    两种方式, 先试快的那种, 不行再退化成慢的:
 
-    `.old` 目录**不删**任何 KEEP 内容, 所以即使新包启动失败, 用户的数据仍在两处之一。
+      改名: 旧目录整体挪开、新目录挪进来。原子、失败可整体回滚, 是首选。
+      覆盖: 把新文件逐个盖进旧目录。改不了名时用它 —— 而"改不了名"恰恰是
+            **标准启动方式下的常态**(见下面第 2 步的注释)。
+
+    .old 备份目录里保留着旧版全部内容, 即使新版起不来, 用户的数据与旧程序都还在。
     """
     if not wait_port_free(port):
         raise RuntimeError(f"端口 {port} 一直被占用，旧程序没有退出，已中止替换")
 
-    # 1. 用户数据先进新目录。只复制顶层的那几个名字, 不递归挑拣 —— 目录内部结构
-    #    属于用户, 我们不该理解它。
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    # 两种方式都要先把用户数据带进新目录: 覆盖方式同样会以新目录为源,
+    # 若那里缺了 data/, 覆盖时旧目录的 data/ 虽然不会被动, 但"新包自带的 data/"
+    # 这类意外会悄悄盖掉用户数据。统一在这里做, 两边行为一致。
+    _carry_user_data(old_root, new_root)
+
+    # 2. 换上去。首选"改名"(原子、失败能整体回滚); 改不了名就退化成"就地覆盖"。
+    #
+    #    为什么会改不了名: Start.bat 第一行是 cd /d "%~dp0", 于是那个控制台窗口的
+    #    工作目录就是包根, 一直锁到用户关窗口为止。实测在 Windows 上这时
+    #    rename() 必然 WinError 32 —— 也就是说"改名"这条路对**标准启动方式**根本
+    #    走不通。等用户关窗口不可接受(他正是点了更新去泡咖啡的那个), 所以必须有退路。
+    #
+    #    退路是"把新文件逐个覆盖进旧目录": 不需要改名, 只在写单个文件时短暂占用。
+    #    比改名少一层原子性 —— 但前面已经把新包解压并校验过, 只剩"写文件"这一步,
+    #    真的写失败时会如实报错并提示再点一次。
+    if dir_renameable(old_root, timeout=8.0):
+        _swap_by_rename(old_root, new_root, stamp)
+        log("替换完成（改名方式）")
+    else:
+        _swap_in_place(old_root, new_root, stamp)
+        log("替换完成（就地覆盖方式：程序目录被控制台窗口占用，已直接覆盖文件）")
+
+
+def _carry_user_data(old_root: Path, new_root: Path) -> None:
+    """把旧目录里的用户数据复制进新目录, 覆盖新包里的同名条目。
+
+    只复制顶层的那几个名字(KEEP_NAMES), 不递归挑拣 —— 目录内部结构属于用户,
+    我们不该理解它。这既是"覆盖方式的数据来源", 也是"改名方式换目录后的数据来源"。
+    """
     for name in KEEP_NAMES:
         src = old_root / name
         if not src.exists():
@@ -143,9 +201,9 @@ def swap(old_root: Path, new_root: Path, port: int) -> None:
         else:
             shutil.copy2(src, dst)
 
-    # 2. 旧目录改名(这不删任何东西), 新目录改名到位。
-    #    新目录要**先搬到最终位置**才能删旧的 —— 顺序反过来的话, 中途失败就两头空。
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+def _swap_by_rename(old_root: Path, new_root: Path, stamp: str) -> None:
+    """改名方式: 旧目录整体挪开, 新目录挪进来。快且失败可整体回滚。"""
     backup = old_root.with_name(old_root.name + ".old-" + stamp)
     new_home = old_root.with_name(old_root.name + ".new-" + stamp)
     new_root.rename(new_home)              # 先搬离 _update(否则 _update 跟着进新目录)
@@ -157,11 +215,52 @@ def swap(old_root: Path, new_root: Path, port: int) -> None:
         backup.rename(old_root)
         raise
 
-    # 3. 新目录就位后才删旧的。失败也不能影响新目录 —— 旧目录留在那里用户可以自己删。
+    # 新目录就位后才删旧的。失败也不能影响新目录 —— 旧目录留着用户可以自己删。
     try:
         shutil.rmtree(backup)
     except OSError:
         log(f"旧目录没能删掉，可手动删除: {backup}")
+
+
+# 就地覆盖时**绝不能动**的顶层名字: 用户数据(KEEP_NAMES) + 更新过程自己的落脚点。
+# _update 里装着正在被执行的 updater 脚本与刚下载的包, 删了它等于把脚下的地板抽掉。
+_IN_PLACE_SKIP = KEEP_NAMES | {"_update"}
+
+
+def _swap_in_place(old_root: Path, new_root: Path, stamp: str) -> None:
+    """覆盖方式: 把 new_root 里的条目逐个盖进 old_root, 跳过用户数据与 _update。
+
+    为什么逐个删再拷, 而不是先删整个旧目录: 旧目录本身就是当前工作目录(锁着),
+    删不掉; 但删它**里面的文件**是允许的 —— Windows 锁的是目录句柄, 不是每个子文件。
+
+    顺序: 先删掉旧目录里"新包没有"的顶层条目(例如某个已下线的模块), 再逐个拷新的。
+    只删**顶层**: 子目录里残留的旧文件无害(同名会被覆盖), 而递归删只会增加失败点。
+    """
+    for name in sorted(os.listdir(old_root)):
+        if name in _IN_PLACE_SKIP:
+            continue
+        p = old_root / name
+        if p.name in os.listdir(new_root):
+            continue                        # 新包里也有 → 下面整体替换
+        try:
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+        except OSError as e:
+            log(f"旧文件没能删掉（不影响新程序）: {name}: {e}")
+
+    for name in sorted(os.listdir(new_root)):
+        if name in _IN_PLACE_SKIP:
+            continue
+        src = new_root / name
+        dst = old_root / name
+        if dst.is_dir() and not src.is_dir():
+            shutil.rmtree(dst, ignore_errors=True)
+        elif dst.is_file() and src.is_dir():
+            dst.unlink(missing_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+    log(f"旧目录里的用户数据未动；被替换的旧文件已覆盖（时间戳 {stamp}）")
 
 
 def relaunch(root: Path) -> None:
@@ -214,10 +313,17 @@ def main(argv=None) -> int:
             log("仅校验模式，未替换任何文件")
             return 0
         swap(root, new_root, args.port)
-        log("替换完成")
     except Exception as e:                    # noqa: BLE001 —— 任何失败都必须留下可读原因
         log(f"更新失败: {e}")
         return 1
+
+    # 解压出来的暂存目录含整个新包, 留着会白白多占一份磁盘。
+    # 下载的 zip 也一起删 —— 它已经用完了, 留着只会让下次误以为"已下好"。
+    # runner/ 是临时复制出去的解释器(约 30MB), 同样用完即删。
+    shutil.rmtree(stage, ignore_errors=True)
+    zip_path.unlink(missing_ok=True)
+    shutil.rmtree(work / "runner", ignore_errors=True)
+    log("暂存与安装包已清理")
 
     relaunch(root)
     return 0

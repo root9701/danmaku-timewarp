@@ -14,8 +14,10 @@ Release 的解析也放在这里(而不是 srcfetch): srcfetch 是通用抓取�
 import asyncio
 import html
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -199,17 +201,17 @@ def check_zip(path: Path, want_version: str) -> None:
 def download(version: str, root: Path, kind: str = "slim") -> Path:
     """下载指定版本的程序包到 <root>/_update/ 下, 返回文件路径。
 
-    走 srcfetch.download_mirrors 的通道链(镜像优先)。**下完立刻校验**, 坏包当场
+    走 mirrors_release 的通道链(镜像优先)。**下完立刻校验**, 坏包当场
     丢掉 —— 留着会让下一次"更新"误以为已经下好了。
     """
-    url = srcfetch.release_download_url(version, kind)
+    url = release_download_url(version, kind)
     stage = root / STAGE_DIRNAME
     stage.mkdir(parents=True, exist_ok=True)
     dest = stage / package_name(version, kind)
     tmp = dest.with_suffix(".part")
 
     last = None
-    for u in srcfetch.mirrors_release(url):
+    for u in mirrors_release(url):
         try:
             data = srcfetch.get_once(u, timeout=60)
         except Exception as e:              # noqa: BLE001 —— 换下一个通道
@@ -231,21 +233,77 @@ async def run_update(version: str, root: Path, port: int,
                      kind: str = "slim") -> dict:
     """下载 -> 校验 -> 起替换器。**不负责退出主进程**, 由调用方在响应发出后再退。
 
-    用一个独立进程做替换, 是因为 Windows 不允许删除正在运行的程序文件。
-    替换器会等端口释放(旧进程真的退出了)再动目录, 所以主进程退出得越晚,
-    替换器等得越久但不会出错 —— 顺序是安全的。
+    三个"必须"合起来决定这段怎么写:
+
+    1. **必须换一个进程**做替换 —— Windows 不允许覆盖正在运行的程序文件。
+    2. **必须换一份解释器**: 替换范围包括 python/ 目录, 而本项目自带的解释器正是
+       当前进程。用它去起替换器, 替换时就会卡在 python312.dll / _socket.pyd 等
+       被自己占用(WinError 32, 实测)。用户机器上**不能假设有系统 Python**(便携版
+       存在的理由就是不需要装)。所以: 把一份最小的解释器目录复制到临时目录再用。
+    3. **cwd 必须离开包根** —— Start.bat 用 cd /d "%~dp0" 把控制台的工作目录
+       钉在包根上, 那里一锁, 目录改名就失败。替换器同样跑在临时目录。
     """
     pkg = await asyncio.to_thread(download, version, root, kind)
     script = Path(__file__).resolve().parent / "update_apply.py"
     if not script.is_file():
         raise UpdateError("缺少 update_apply.py，无法替换程序文件")
-    log = root / STAGE_DIRNAME / "update.log"
-    # 脱离父进程启动: 父进程马上要退出, 子进程不能跟着一起死。
+
+    work = root / STAGE_DIRNAME
+    carrier = work / "runner"
+    exe = await asyncio.to_thread(_prepare_runner, root, carrier)
+    # 替换器本体也复制出去: 它自己就在被替换的目录里, 不能一边跑一边被覆盖。
+    runner_script = carrier / "update_apply.py"
+    shutil.copy2(script, runner_script)
+
+    log = work / "update.log"
     flags = 0x00000008 if sys.platform == "win32" else 0   # DETACHED_PROCESS
     subprocess.Popen(
-        [sys.executable, str(script), "--zip", str(pkg), "--root", str(root),
+        [str(exe), str(runner_script), "--zip", str(pkg), "--root", str(root),
          "--port", str(port), "--version", version, "--log", str(log)],
-        cwd=str(root), creationflags=flags, close_fds=True,
+        cwd=tempfile.gettempdir(), creationflags=flags, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL)
     return {"package": str(pkg), "log": str(log)}
+
+
+def _prepare_runner(root: Path, carrier: Path) -> Path:
+    """把一份能独立运行的最小解释器复制到 carrier, 返回它的 python.exe。
+
+    复制哪些: python.exe + python3.dll/python3XX.dll + vcruntime + DLLs/。
+    这些是**启动一个纯标准库脚本**所需的全部 —— update_apply.py 只用
+    argparse/os/shutil/socket/subprocess/sys/time/zipfile, 都不需要 Lib/ 里的
+    大量纯 Python 模块以外的依赖(而 Lib/ 里确实是标准库, 必需, 所以一起复制)。
+
+    为什么不直接复制整个 python/ 目录: 包内 python/ 约 90MB, 用户点一次更新就
+    多占一份。只复制 DLLs/ 与解释器本体(约 30MB), 且用完即删。
+
+    复制来源**必须是包内的 python/**: 用系统 Python 需要用户装过, 而便携版的前提
+    就是没装。
+    """
+    src = root / "python"
+    exe_src = src / "python.exe"
+    if not exe_src.is_file():
+        # 源码运行环境(没有 python/): 退回当前解释器。这条路本来就被
+        # handle_app_update 挡在门外, 走到这里只是防御性兜底。
+        return Path(sys.executable)
+
+    if carrier.exists():
+        shutil.rmtree(carrier, ignore_errors=True)
+    carrier.mkdir(parents=True, exist_ok=True)
+
+    for name in ("python.exe", "python3.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+        p = src / name
+        if p.is_file():
+            shutil.copy2(p, carrier / name)
+    for p in src.glob("python3*.dll"):          # python312.dll 之类
+        shutil.copy2(p, carrier / p.name)
+    # DLLs/ 里有 _socket.pyd 等扩展模块, 缺了连 zipfile 都用不了
+    if (src / "DLLs").is_dir():
+        shutil.copytree(src / "DLLs", carrier / "DLLs")
+    # Lib/ 是标准库源码(zip / json / http 等都要), 不可省
+    if (src / "Lib").is_dir():
+        shutil.copytree(src / "Lib", carrier / "Lib",
+                        ignore=shutil.ignore_patterns("__pycache__", "site-packages"))
+
+    exe = carrier / "python.exe"
+    return exe if exe.is_file() else Path(sys.executable)

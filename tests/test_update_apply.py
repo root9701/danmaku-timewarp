@@ -21,6 +21,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 UPDATER = ROOT / "danmaku-server" / "update_apply.py"
 
+# 与别的 test_*.py 一样直接 import 被测模块: run_all.py 已在 sys.path 里放了 danmaku-server/
+sys.path.insert(0, str(ROOT / "danmaku-server"))   # noqa: E402
+
 
 def make_pkg(root: Path, version: str, marker: str) -> None:
     """造一个符合真实包结构的最小包(顶层一层同名目录)。"""
@@ -55,6 +58,69 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def check_download_path(payload: bytes) -> list:
+    """验 appupdate.download 的整条路径(地址拼装 -> 取通道 -> 落盘 -> 校验)。
+
+    为什么要单独测这条: 1.5.0 开发时 Release 解析从 srcfetch 搬到了 appupdate,
+    `download()` 里漏改了两处调用(`srcfetch.release_download_url` / `srcfetch.mirrors_release`),
+    而当时的测试只覆盖了"查版本" —— 真机点「立即更新」才崩。这条测试就是补那个洞:
+    起一个本地 HTTP 服务当"发布页", 让 download() 真的走一遍下载+校验。
+    """
+    import http.server
+    import threading
+
+    import appupdate
+
+    problems = []
+    saved_reader = appupdate.mirrors_release
+    httpd = None
+    try:
+        hits = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        port = free_port()
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        # 把"官方地址"换成本地服务, 只改通道来源而不改 download 的任何逻辑
+        appupdate.mirrors_release = lambda url: [f"http://127.0.0.1:{port}/pkg.zip"]
+        with tempfile.TemporaryDirectory() as td2:
+            dest = appupdate.download("1.5.0", Path(td2))
+            if dest.name != "danmaku-timewarp-1.5.0-slim.zip":
+                problems.append(f"落地文件名不对: {dest.name}")
+            if dest.read_bytes() != payload:
+                problems.append("下载内容与源文件不一致")
+            if not (dest.parent.name == appupdate.STAGE_DIRNAME):
+                problems.append(f"没落在 {appupdate.STAGE_DIRNAME}/ 下: {dest.parent}")
+            if list(dest.parent.glob("*.part")):
+                problems.append("留下了 .part 半截文件")
+            if not hits:
+                problems.append("根本没发出请求(通道链是空的?)")
+        # 版本对不上时必须拒绝
+        with tempfile.TemporaryDirectory() as td3:
+            try:
+                appupdate.download("9.9.9", Path(td3))
+                problems.append("版本对不上却下载成功")
+            except appupdate.UpdateError:
+                pass
+    finally:
+        appupdate.mirrors_release = saved_reader
+        if httpd:
+            httpd.shutdown()
+    return problems
 
 
 def main() -> int:
@@ -94,6 +160,8 @@ def main() -> int:
             sock.close()
 
         # --- 2) 端口空出来, 真正替换 ---
+        # 先把 zip 读进内存: 替换成功后整个 tmp 目录会被清掉, 后面那条下载测试还要用。
+        zip_bytes = z.read_bytes()
         port2 = free_port()
         r = subprocess.run([sys.executable, str(UPDATER), "--zip", str(z), "--root", str(old),
                             "--port", str(port2), "--version", "1.5.0"],
@@ -136,9 +204,55 @@ def main() -> int:
         if "NEW" not in (old / "danmaku-server" / "server.py").read_text(encoding="utf-8"):
             fails.append("版本不符时把已装好的新目录改坏了")
 
+        # --- 4) 下载路径(1.5.0 在这儿漏改过调用) ---
+        fails.extend(check_download_path(zip_bytes))
+
+        # --- 5) 目录被别的进程当工作目录时, 必须能靠"就地覆盖"完成更新 ---
+        # 真实场景: Start.bat 第一行是 cd /d "%~dp0", 那个控制台窗口的工作目录就是
+        # 包根, 一直锁到用户关窗口为止。这时改名必然失败, 所以要求退化成覆盖方式,
+        # 并且**不能**碰用户数据。
+        b5 = base / "case5"
+        b5.mkdir()
+        make_pkg(b5, "1.4.0", "OLD5")
+        (b5 / "pkg-1.4.0").rename(b5 / "target")
+        tgt = b5 / "target"
+        (tgt / "Start.bat").write_text("@echo off\n", encoding="utf-8")
+        (tgt / "data").mkdir()
+        (tgt / "data" / "keep.bin").write_bytes(b"USERDATA")
+        make_pkg(b5, "1.5.0", "NEW5")
+        z5 = zip_pkg(b5, "1.5.0", b5 / "new5.zip")
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(25)"], cwd=str(tgt))
+        try:
+            env_upd = dict(os.environ)
+            env_upd["UPDATE_DIR_LOCK_WAIT"] = "2"     # 别让回归等 8 秒
+            r5 = subprocess.run([sys.executable, str(UPDATER), "--zip", str(z5),
+                                 "--root", str(tgt), "--port", str(free_port()),
+                                 "--version", "1.5.0"],
+                                capture_output=True, text=True, encoding="utf-8",
+                                timeout=180, env=env_upd)
+            out5 = (r5.stdout or "") + (r5.stderr or "")
+            if r5.returncode != 0:
+                fails.append(f"目录锁着时没能覆盖安装: {out5[-300:]}")
+            server5 = tgt / "danmaku-server" / "server.py"
+            if not server5.is_file() or "NEW5" not in server5.read_text(encoding="utf-8"):
+                fails.append("目录锁着时程序文件没更新")
+            if not (tgt / "data" / "keep.bin").is_file():
+                fails.append("覆盖方式把 data/ 弄丢了")
+            if (tgt / "VERSION").read_text(encoding="utf-8").strip() != "1.5.0":
+                fails.append("覆盖方式没更新 VERSION")
+            if (tgt / "_update" / "stage").exists():
+                fails.append("覆盖方式没清理解压暂存")
+            if "覆盖" not in out5:
+                fails.append("没说明用的是覆盖方式")
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+
     for f in fails:
         print("FAIL:", f)
-    print("OK: 替换器四项验收全过" if not fails else f"FAILED {len(fails)} 项")
+    print("OK: 替换器与下载路径全部验收通过" if not fails else f"FAILED {len(fails)} 项")
     return 1 if fails else 0
 
 

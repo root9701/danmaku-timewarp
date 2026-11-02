@@ -2195,7 +2195,7 @@ def _merge_official_pages(rec_pages, live_pages) -> dict:
     名字与时长以 B站 为准: 记录里的 part 可能是空的旧数据(那时只写了 offset),
     也可能整局缺失(没参与对齐的局不在记录里)。用户要的是"看官方视频自己写的名字",
     不是 P3/P4 这种占位。
-    `offset_sec` 只从记录来 —— 没对齐的局也列出来, 由前端标成"无对齐"、不许选。
+    `offset_sec` 只从记录来 —— 没对齐的局也列出来, 由前端标成"无对齐"、不许选。B站 只补名字与时长。
     """
     out = {}
     for pk, pv in (rec_pages or {}).items():
@@ -2217,7 +2217,7 @@ def _merge_official_pages(rec_pages, live_pages) -> dict:
 # ---- /api/sources: 换源(同一场比赛的其他解说版)分P 对照 ----
 # 用途: 用户想把弹幕挂到另一条 B站 视频上(同场比赛、不同解说)。两源音轨/剪辑都不同,
 # 无法自动对齐(实测音频交叉对齐置信度 ~1.0, 画面滑窗 delta 极差 2340s), 所以只能
-# 人工标定**每局在新源里的起点**。
+# 人工标定**每局在换源视频里的参照帧**(N = 官方侧秒数, A = 换源侧秒数)。
 #
 # 这里只做"读": 列出新源的分P、以及该场次已有的官方对齐结果, 供前端做对照表。
 # 真正的对齐值由 /api/match 带 manual 写回(复用现有管线, 不新增存储层)。
@@ -2256,7 +2256,7 @@ async def handle_sources(request: web.Request) -> web.Response:
         if isinstance(rec, dict) and isinstance(rec.get("pages"), dict):
             official_pages = rec["pages"]
         # 再取一次官方源的 B站 分P 清单, 把名字补齐(见 _merge_official_pages)。
-        # 这一步只是"显示用的名字", offset 还是从记录来 —— 所以 B站 抖动时退回记录,
+        # 仅"显示用的名字", offset 还是从记录来 —— 所以 B站 抖动时退回记录,
         # 不换源整体报错。代价是多一次接口往返(识别分P 本来就是 10~60 秒的动作)。
         try:
             olive = (await bili_view(request.app["http"], official_bv)).get("pages") or []

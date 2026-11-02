@@ -682,7 +682,7 @@ button, input, select { font-family: inherit; }
   padding: 3px 4px; font-size: 11px;
 }
 .src-map-anchor-lab { flex: 0 0 auto; font-size: 11px; color: var(--text-faint); }
-/* 锚点输入: 每局一个「新源第几秒算这局的起点」。数字只有 1~4 位, 给固定宽度;
+/* 锚点输入: 每局一个「官方那一帧在换源视频里的第几秒」。数字只有 1~4 位, 给固定宽度;
    number 的原生步进箭头要吃掉 ~12px, 所以 52px 而不是 40px。
    这一行现在 6 个控件 —— 窄容器靠标签收缩, 手机档(≤480px)整行换行兜住。 */
 .src-map-anchor-in {
@@ -700,14 +700,14 @@ button, input, select { font-family: inherit; }
 .src-map-anchor.warn { color: var(--warn); }
 .src-map-row .nbtn { padding: 2px 5px; font-size: 11px; flex: 0 0 auto; }
 .src-map-foot { margin-top: 2px; display: flex; gap: 8px; align-items: center; }
-/* 切换/还原: 一个按钮两用。开启态(正在播新源)沿用 .btn-toggle.on 的写法 ——
+/* 切换/还原: 一个按钮两用。开启态(正在播换源视频)沿用 .btn-toggle.on 的写法 ——
    白字 + 亮边框, 靠明度差而不是新色相(单色纪律见文件头注释)。 */
 .src-sw-btn { min-width: 42px; }
 .src-sw-btn.on {
   background: transparent; color: var(--text);
   box-shadow: inset 0 0 0 1px var(--text-dim);
 }
-/* 对齐按钮在已切到新源时置灰 —— 参照物(官方画面)不在了, 点这里没有意义。
+/* 对齐按钮在已切到换源视频时置灰 —— 参照物(官方画面)不在了, 点这里没有意义。
    两个按钮共用同一种"点不动"的表达, 不引入第三种灰阶。 */
 .src-sw-btn:disabled, .src-al-btn:disabled { opacity: .4; cursor: not-allowed; }
 /* 窄屏(手机): 允许换行, 否则 5 个控件挤在 300px 里必然溢出 */

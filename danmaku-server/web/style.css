@@ -641,6 +641,57 @@ button, input, select { font-family: inherit; }
 .more-box .align-status { flex: 1 0 100%; margin-top: 2px; }
 .nudge { display: inline-flex; gap: 4px; align-items: center; }
 
+/* ---------- 换源(更多面板里的低频小功能) ----------
+   形状跟「更多」里其它控件一致: 虚线分隔 + 小字号, 不抢主操作。
+   只在展开「更多」后才可见, 默认不占首屏空间。 */
+.src-box {
+  flex: 1 0 100%;
+  margin-top: 4px; padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.src-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.src-head b { font-size: 12px; font-weight: 600; color: var(--text); }
+.src-hint { font-size: 11px; color: var(--text-faint); }
+.src-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.src-row .fld { flex: 1 1 200px; }
+.src-row .fld > input { flex: 1 1 auto; }
+.src-map { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.src-map[hidden] { display: none; }
+.src-map-head { font-size: 11px; color: var(--text-faint); }
+/* 一行排开: 标签(可省略) + 对应局下拉 + 当前值 + 取初值 + 微调组。
+   标签不独占一行 —— 那会把每局撑到三行, 两局就占掉一大块「更多」面板。 */
+.src-map-row {
+  display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
+  font-size: 12px; color: var(--text-dim);
+}
+.src-map-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.src-map-sel {
+  flex: 0 0 92px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 3px 4px; font-size: 11px;
+}
+.src-map-anchor {
+  flex: 0 0 56px; text-align: right;
+  font-variant-numeric: tabular-nums; font-size: 11px;
+  color: var(--text-faint);
+}
+.src-map-anchor.ok { color: var(--ok); }
+.src-map-anchor.warn { color: var(--warn); }
+.src-map-row .nbtn { padding: 2px 5px; font-size: 11px; flex: 0 0 auto; }
+.src-nudge { min-width: 30px; }
+/* 微调按钮并成一组, 组内不换行 —— 面板窄, 单个按钮散排会被挤到下一行 */
+.src-nudge-wrap { display: inline-flex; gap: 3px; flex: 0 0 auto; }
+.src-map-foot { margin-top: 2px; }
+/* 窄屏(手机): 允许换行, 否则 5 个控件挤在 300px 里必然溢出 */
+@media (max-width: 480px) {
+  .src-map-row { flex-wrap: wrap; row-gap: 4px; }
+  .src-map-label { flex: 1 1 100%; }
+}
+
 .align-cur {
   font-weight: 400; color: var(--text-faint);
   font-variant-numeric: tabular-nums; font-size: 11px; white-space: nowrap;

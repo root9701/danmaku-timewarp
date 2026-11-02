@@ -39,6 +39,8 @@
   var btnOvRefresh = $('btn-ov-refresh'), btnOvExpand = $('btn-ov-expand');
   var elTopMeta = $('topbar-meta');
   var btnMore = $('btn-more'), moreBox = $('more-box');
+  var inpSrcBv = $('inp-src-bv'), btnSrcLoad = $('btn-src-load');
+  var srcStatus = $('src-status'), srcMap = $('src-map');
 
   /* ---------------- 全局状态 ---------------- */
   // 防剧透等用户偏好。**必须在任何函数之前声明**:
@@ -2610,6 +2612,317 @@
     }
     setAlignStatus(msg, errKeys.length ? 'warn' : 'ok');
   }
+
+  /* ---------------- 换源: 把弹幕挂到另一条同场比赛的视频 ----------------
+     为什么需要人工标定: 实测两源音频交叉对齐置信度约 1.0(随机水平), 画面滑窗匹配
+     反推的 delta 极差 2340 秒 —— 两源剪辑不同(官方 P1 3771s vs 解说 2953s),
+     没有可靠的自动手段。但"每一局内部"的比赛进程是连续的, 所以只要标出每局在
+     新源里的起点, 该局弹幕整体平移即可。
+
+     设计原则(零侵入): 不新增存储层、不改播放路径。换源结果就是给**新源 BV**
+     写一份与官方源形状完全相同的 pages 记录(每局一个 offset), 之后播放新源走的
+     就是原有管线 —— buildPageSegs / pageOffsets / 分段映射全都不变。
+     所以现有功能(官方源播放、自动校准、手动微调)完全不受影响。
+
+     标定方式: 每局一行, 用户把新源拖到"这一局刚开始"的位置, 点「设为起点」。
+     程序把该位置换算成该局在新源里的 offset(墙钟参照), 换算规则见 setSrcAnchor。
+     为什么用播放位置而不让用户填秒数: 用户只能看到"这局打到哪", 换算成墙钟由
+     程序做, 不用人算。 */
+  var srcBusy = false;
+  var srcState = null;   // {newBv, newPages, officialPages, map:{newPage:{fromPage, anchorSec}}}
+
+  function setSrcStatus(msg, cls) {
+    srcStatus.hidden = !msg;
+    srcStatus.textContent = msg || '';
+    srcStatus.className = 'align-status' + (cls ? ' ' + cls : '');
+  }
+
+  function fmtDur(sec) {
+    var s = Math.max(0, Math.round(sec || 0));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) +
+           ':' + String(ss).padStart(2, '0');
+  }
+
+  function officialOffsetOf(page) {
+    if (!srcState) { return null; }
+    var pv = (srcState.officialPages || {})[String(page)];
+    if (!pv || typeof pv.offset_sec !== 'number' || !isFinite(pv.offset_sec)) { return null; }
+    return pv.offset_sec;
+  }
+
+  // 新源某局在虚拟轴上的起点(page_marks 里的 start_sec)
+  function newPageStart(page) {
+    var pms = state.pageMarks || [];
+    for (var i = 0; i < pms.length; i++) {
+      if (pms[i].page === page) { return pms[i].start_sec; }
+    }
+    return null;
+  }
+
+  // 某局的初始 offset: 直接沿用对应官方源那一局的 offset。
+  //
+  // 为什么这是对的: offset 的语义是"该局第一帧对应的墙钟偏移", 而两源是同一场比赛,
+  // 同一局在墙钟上的起点本来就该是同一个值。两源唯一的差别是**片头/局间剪掉了多少**,
+  // 那部分由用户用 ±微调修正。所以初值取官方值, 比"当前播放位置"可靠得多
+  // (后者在首次标定时根本无从换算)。
+  function setSrcAnchor(page) {
+    if (!srcState) { return; }
+    var st = srcState.map[page] || {};
+    if (!st.fromPage) { setSrcStatus('先给这一局选对应官方源的分P。', 'err'); return; }
+    var off = officialOffsetOf(st.fromPage);
+    if (off == null) {
+      setSrcStatus('官方源 P' + st.fromPage + ' 没有对齐结果，无法作为初值。', 'err');
+      return;
+    }
+    srcState.map[page] = { fromPage: st.fromPage, anchorSec: off };
+    setSrcStatus('P' + page + ' 已取官方源 P' + st.fromPage + ' 的对齐值 ' +
+                 fmtDur(off) + ' 作初值。播放新源后若弹幕有偏移，用该行的 ± 微调。', 'ok');
+    renderSrcMap();
+  }
+
+  // 单局微调: 直接改该行的 offset(不影响其它局, 也不动全局 offsetDelta)。
+  function nudgeSrcPage(page, delta) {
+    var st = srcState && srcState.map[page];
+    if (!st || typeof st.anchorSec !== 'number') { return; }
+    st.anchorSec += delta;
+    // 立刻预览: 正在播新源时把这批 offset 推进当前状态, 用户边调边看
+    var probe = {};
+    probe[String(page)] = st.anchorSec;
+    applyPageOffsets(probe);
+    renderSrcMap();
+  }
+
+  function renderSrcMap() {
+    if (!srcState || !srcState.newPages.length) { srcMap.hidden = true; return; }
+    srcMap.hidden = false;
+    srcMap.innerHTML = '';
+
+    // 初始化配对表: 每一局默认按序号配对到官方源同序号的分P。
+    // 必须在渲染前先落进 srcState.map —— 否则"下拉框显示 P1, 但按钮按 st 判空而禁用",
+    // 用户看到的是"明明选了却不给点"。
+    srcState.newPages.forEach(function (np) {
+      if (!srcState.map[np.page]) {
+        var paired = officialOffsetOf(np.page) != null ? np.page : 0;
+        srcState.map[np.page] = { fromPage: paired, anchorSec: null };
+      }
+    });
+
+    var head = document.createElement('div');
+    head.className = 'src-map-head';
+    head.textContent = '新源 ' + srcState.newBv +
+      (srcState.new_title ? '（' + srcState.new_title + '）' : '') +
+      ' · ' + srcState.newPages.length + ' 个分P';
+    srcMap.appendChild(head);
+
+    srcState.newPages.forEach(function (np) {
+      var row = document.createElement('div');
+      row.className = 'src-map-row';
+
+      var label = document.createElement('div');
+      label.className = 'src-map-label';
+      // 紧凑写法: "P1 第一局 49:13"。原始时长用括号会多占两字符, 而这一行已经很挤。
+      label.textContent = 'P' + np.page + ' ' + (np.part || '') +
+        (np.duration ? ' ' + fmtDur(np.duration) : '');
+      label.title = '新源 P' + np.page + ' ' + (np.part || '') +
+        (np.duration ? '（' + fmtDur(np.duration) + '）' : '');
+      row.appendChild(label);
+
+      // 对应官方源哪一局: 默认按序号, 用户可改(有的源多插赛前评论/赛后采访)
+      var sel = document.createElement('select');
+      sel.className = 'src-map-sel';
+      var opt0 = document.createElement('option');
+      opt0.value = '0'; opt0.textContent = '不挂弹幕';
+      sel.appendChild(opt0);
+      Object.keys(srcState.officialPages || {}).sort(function (a, b) {
+        return Number(a) - Number(b);
+      }).forEach(function (op) {
+        var pv = srcState.officialPages[op] || {};
+        var o = document.createElement('option');
+        o.value = op;
+        o.textContent = 'P' + op + ' ' + (pv.part || '');
+        sel.appendChild(o);
+      });
+      var cur = srcState.map[np.page];
+      sel.value = cur && cur.fromPage ? String(cur.fromPage) : '0';
+      sel.addEventListener('change', function () {
+        var v = sel.value;
+        if (!srcState.map[np.page]) { srcState.map[np.page] = { anchorSec: null }; }
+        srcState.map[np.page].fromPage = v === '0' ? 0 : Number(v);
+        srcState.map[np.page].anchorSec = null;   // 换了对应局, 旧值作废
+        renderSrcMap();
+      });
+      row.appendChild(sel);
+
+      var anchor = document.createElement('div');
+      anchor.className = 'src-map-anchor';
+      var st = srcState.map[np.page];
+      if (!st || !st.fromPage) {
+        anchor.textContent = '—';
+      } else if (typeof st.anchorSec === 'number') {
+        // 显示成时分秒: 原始秒数(如 17340.6s)对用户没有意义, 用户要看的是"第几小时第几分"
+        anchor.textContent = fmtDur(st.anchorSec);
+        anchor.title = st.anchorSec.toFixed(1) + ' 秒';
+        anchor.classList.add('ok');
+      } else {
+        anchor.textContent = '未取初值';
+        anchor.classList.add('warn');
+      }
+      row.appendChild(anchor);
+
+      // 「取初值」: 用官方源同局的 offset 打底。之后靠 ± 微调。
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nbtn';
+      btn.textContent = '取初值';
+      btn.disabled = !(st && st.fromPage);
+      btn.title = '用官方源对应那一局的对齐值作为初值';
+      btn.addEventListener('click', function () { setSrcAnchor(np.page); });
+      row.appendChild(btn);
+
+      // 单局微调: 只动这一局, 不影响其它局。
+      // 为什么不做成全局微调: 两源每局剪掉的片头长度不同, 必须逐局独立修正。
+      // 控件压成 ±5 / ±10 两个按钮(单击即 ±5, 按住 Shift 或长按无效, 直接给两个档):
+      // 「更多」面板只有约 255px 宽, 四个独立按钮必然换行, 每局白白多占一行。
+      var nudgeWrap = document.createElement('span');
+      nudgeWrap.className = 'src-nudge-wrap';
+      [[-5, '−5'], [5, '+5'], [-10, '−10'], [10, '+10']].forEach(function (pair) {
+        var nb = document.createElement('button');
+        nb.type = 'button';
+        nb.className = 'nbtn src-nudge';
+        nb.textContent = pair[1];
+        nb.disabled = !(st && st.fromPage && typeof st.anchorSec === 'number');
+        nb.addEventListener('click', function () { nudgeSrcPage(np.page, pair[0]); });
+        nudgeWrap.appendChild(nb);
+      });
+      row.appendChild(nudgeWrap);
+      srcMap.appendChild(row);
+    });
+
+    var foot = document.createElement('div');
+    foot.className = 'src-map-foot';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary btn-sm';
+    save.textContent = '保存换源对齐';
+    save.addEventListener('click', saveSrcMap);
+    foot.appendChild(save);
+    srcMap.appendChild(foot);
+  }
+
+  // 把标定结果写成新源自己的 pages, 走现有 /api/match 写回。
+  function saveSrcMap() {
+    if (!srcState || srcBusy) { return; }
+    // 日期/文件取自**当前选择**, 不依赖 state.curDate/curFile:
+    // 后者只在点过「播放」后才被 setup() 填充, 而换源标定完全可以在没播的情况下做
+    // (实测此时 state.curDate 为空, 保存会报"缺少字段 date 或 file")。
+    var date = selDate.value, file = selFile.value;
+    if (!date || !file) { setSrcStatus('先选日期与弹幕文件。', 'err'); return; }
+    var pages = {}, missing = [];
+    srcState.newPages.forEach(function (np) {
+      var st = srcState.map[np.page];
+      if (!st || !st.fromPage) { return; }
+      if (typeof st.anchorSec !== 'number') { missing.push('P' + np.page); return; }
+      pages[String(np.page)] = {
+        part: np.part || '',
+        duration: np.duration || 0,
+        offset_sec: Math.round(st.anchorSec * 1000) / 1000,
+        // 标记来源: 不是音频自动校准, 而是换源人工标定。留着方便以后排查。
+        source_swap: true,
+        from_page: Number(st.fromPage)
+      };
+    });
+    if (!Object.keys(pages).length) {
+      setSrcStatus('还没有任何一局完成标定。', 'err');
+      return;
+    }
+    if (missing.length) { setSrcStatus('这些局还没标定，不会保存：' + missing.join('、'), 'warn'); }
+    var ks = Object.keys(pages).sort(function (a, b) { return Number(a) - Number(b); });
+    srcBusy = true;
+    fetch('/api/match', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: date, file: file,
+        bv: srcState.newBv, offset_sec: pages[ks[0]].offset_sec,
+        pages: pages, manual: true,
+        title: (selMatch.value || undefined)
+      })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j || !j.ok) {
+        setSrcStatus('保存失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
+        return;
+      }
+      var newOffsets = {};
+      ks.forEach(function (k) { newOffsets[k] = pages[k].offset_sec; });
+      applyPageOffsets(newOffsets);
+      setSrcStatus('已保存 ' + ks.length + ' 个分P 的换源对齐' +
+                   (state.curBv === srcState.newBv ? '，当前播放已生效。' : '。'), 'ok');
+    }).catch(function (e) {
+      setSrcStatus('保存失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
+    }).finally(function () { srcBusy = false; });
+  }
+
+  btnSrcLoad.addEventListener('click', function () {
+    if (srcBusy) { return; }
+    var newBv = (inpSrcBv.value || '').trim();
+    if (!newBv) { setSrcStatus('先填新源的 BV 号。', 'err'); return; }
+    var date = selDate.value, file = selFile.value;
+    if (!date || !file) { setSrcStatus('先选日期与弹幕文件。', 'err'); return; }
+    srcBusy = true;
+    btnSrcLoad.disabled = true;
+    btnSrcLoad.textContent = '识别中…';
+    setSrcStatus('正在读取新源分P…', '');
+    var q = '/api/sources?date=' + enc(date) + '&file=' + enc(file) + '&bv=' + enc(newBv);
+    // 官方源必须**显式**指定为当前选中场次的 BV。
+    // 不能让服务端自己猜(它会在没传时回退到 align 记录里的第一个 bv): 一晚多场共用
+    // 一个会话, 那个"第一个 bv"很可能是别场比赛 —— 实测因此把 MKOI 的 offset
+    // 当成 HLE 的初值, 弹幕会整体错到另一场比赛的时间上, 且界面看不出异常。
+    var offBv = (inpBv.value || '').trim();
+    var matchTitle = selMatch.value || '';
+    if (!offBv) {
+      setSrcStatus('请先选好场次（或填官方源 BV），否则不知道该以哪场比赛为基准。', 'err');
+      return;
+    }
+    // 防串场: 若选了场次, 该场次的 BV 必须与输入框里的一致。
+    // 两者不一致说明场次列表刚被刷新、BV 还是上一场的残留(实测会拿 MKOI 的
+    // offset 当 HLE 的初值), 这种情况宁可停下让人确认, 也不能默默算错。
+    if (matchTitle) {
+      var wantBv = '';
+      matchListCache.forEach(function (x) { if (x.title === matchTitle && x.bv) { wantBv = x.bv; } });
+      if (wantBv && wantBv !== offBv) {
+        setSrcStatus('场次「' + matchTitle + '」的回放 BV 是 ' + wantBv +
+                     '，与当前输入框的 ' + offBv + ' 不一致。请重选一次场次再试。', 'err');
+        return;
+      }
+    }
+    q += '&official_bv=' + enc(offBv);
+    getJson(q).then(function (j) {
+      if (!j || !j.ok) {
+        setSrcStatus('识别失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
+        return;
+      }
+      if (!j.new_pages || !j.new_pages.length) {
+        setSrcStatus('这条视频没有分P，无法作为换源目标。', 'err');
+        return;
+      }
+      if (!j.official_pages || !Object.keys(j.official_pages).length) {
+        setSrcStatus('本场次还没有官方源的分P 对齐结果，无法换源。', 'err');
+        return;
+      }
+      srcState = {
+        newBv: newBv, new_title: j.new_title || '',
+        newPages: j.new_pages, officialPages: j.official_pages, map: {}
+      };
+      setSrcStatus('识别成功。把新源拖到某一局刚开始的位置，点该行的「设为起点」。', 'ok');
+      renderSrcMap();
+    }).catch(function (e) {
+      setSrcStatus('识别失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
+    }).finally(function () {
+      srcBusy = false;
+      btnSrcLoad.disabled = false;
+      btnSrcLoad.textContent = '识别分P';
+    });
+  });
 
   /* ---------------- 刷新赛程(自动发现当天场次 + 搜索官方回放BV) ---------------- */
   var discoverBusy = false;

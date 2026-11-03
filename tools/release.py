@@ -38,6 +38,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gitpush  # noqa: E402  —— 与 nightly 共用代理探测, 避免两处各写一份
+
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -59,51 +62,6 @@ def say(msg=""):
     print(msg, flush=True)
 
 
-def _system_proxy() -> str:
-    """Windows 系统代理(如 http://127.0.0.1:7897), 没配返回空串。
-
-    为什么要读注册表: `git` 与 `gh` 都**不读** Windows 的"设置 -> 网络 -> 代理"，
-    只认 HTTPS_PROXY/HTTP_PROXY 环境变量。而实测本机 github.com 直连 15 秒超时、
-    设了代理 2.7 秒通 —— 于是"代理开着、浏览器正常、git push 却 Connection reset"
-    这种状态很常见, 且报错完全不提代理。这里系统代理开着就自动沿用,
-    与浏览器/git 的既有行为保持一致, 不让用户为发布脚本单独记一套配置。
-    """
-    if os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"):
-        return ""                     # 用户已自己设了, 不覆盖
-    if os.name != "nt":
-        return ""
-    try:
-        import winreg
-        key = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
-            on = winreg.QueryValueEx(k, "ProxyEnable")[0]
-            server = winreg.QueryValueEx(k, "ProxyServer")[0]
-    except (OSError, ImportError):
-        return ""
-    if not on or not server:
-        return ""
-    server = str(server).split(";")[0].strip()      # "http=x;https=y" 取第一段
-    if "=" in server:
-        server = server.split("=", 1)[1].strip()
-    if not server.startswith("http"):
-        server = "http://" + server
-    return server
-
-
-def _tool_env() -> dict:
-    """给 git/gh 用的环境: 补上系统代理。
-
-    只影响本脚本派生的子进程, 不改用户的环境变量、也不写任何配置 ——
-    用你的机器可以随便折腾, 但别把设备状态改坏。
-    """
-    env = dict(os.environ)
-    px = _system_proxy()
-    if px:
-        env["HTTPS_PROXY"] = px
-        env["HTTP_PROXY"] = px
-    return env
-
-
 def _run(cmd, cwd=None, env=None, timeout=1800):
     """跑一条命令, 返回 (ok, 合并输出)。**不抛异常** —— 由调用方决定怎么报。
 
@@ -113,7 +71,7 @@ def _run(cmd, cwd=None, env=None, timeout=1800):
     try:
         r = subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=True,
                            text=True, encoding="utf-8", errors="replace",
-                           env=env if env is not None else _tool_env(),
+                           env=env if env is not None else gitpush.tool_env(),
                            timeout=timeout)
     except FileNotFoundError:
         return False, f"找不到可执行文件: {cmd[0]}（不在 PATH 里?）"
@@ -141,7 +99,7 @@ def _git_token() -> str:
             ["git", "credential", "fill"],
             input="protocol=https\nhost=github.com\n\n",
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=60, env=_tool_env())
+            errors="replace", timeout=60, env=gitpush.tool_env())
     except (OSError, subprocess.TimeoutExpired):
         return ""
     for line in (r.stdout or "").splitlines():
@@ -156,7 +114,7 @@ def _gh_env() -> dict:
     显式传 GH_TOKEN 的好处: 不必要求用户 `gh auth login`。git 里那份凭据
     与 gh 用的是同一个 GitHub 账号, 权限也够(需要 repo 与 workflow)。
     """
-    env = _tool_env()
+    env = gitpush.tool_env()
     if not (env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")):
         tok = _git_token()
         if tok:
@@ -260,7 +218,7 @@ def _proxy_hint() -> str:
     实测本机: github.com 直连 15 秒超时, 而 api.github.com 直连 0.55 秒正常。
     两个域名解析到同一段的 IP 却表现不同, 所以"能上网"不代表 gh 能登录。
     """
-    px = _system_proxy() or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897"
+    px = gitpush.system_proxy() or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897"
     return (
         "\n  gh 不读 Windows 系统代理, 只认 HTTPS_PROXY/HTTP_PROXY 环境变量。\n"
         f"  你那台机器上 github.com 直连会超时, 请先设好再登录"

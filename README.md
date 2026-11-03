@@ -283,7 +283,7 @@ flowchart TD
 | 命令 | 用途 |
 |---|---|
 | `python tools/calibrate.py --date 2026-10-31` | 无头校准：不启动播放端，直接对官方回放算 offset |
-| `python tools/nightly.py --loop` | 夜间流水线：每小时巡检，有回放就校准、落 `data/`、本地提交（不推送） |
+| `python tools/nightly.py --loop` | 夜间流水线：每小时巡检，有回放就校准、落 `data/`、本地提交并推送（仅数据提交，失败下轮重试） |
 | `python tools/nightly.py --discover-only --date 2026-10-31` | 只刷新赛程与回放 BV |
 | `python tools/pack_data.py --index --staged` | 按 git 暂存区生成数据清单（夜间发布用） |
 | `python tools/split_matches.py --apply` | 把本地层对齐记录搬进 `data/{日期}/align.json` |

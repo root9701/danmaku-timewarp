@@ -6,7 +6,8 @@
     python tools/nightly.py --date 2026-10-31 --dry-run
 
 边界:
-- 只写本地层与 `data/`; 不推送(push 永远等人工授权)。
+- 只写本地层与 `data/`; 只自动推送**仅含数据**的提交(边界见 AGENTS.md
+  「夜间流水线的自动推送」)。混入代码/文档的提交停下等人工推送。
 - 有新增内容才提交, 没有就静默退出, 不产生空提交。
 - 回放未上传/分P 取不到音频时跳过, 下一轮再试; 不写失败标记。
 - 采集端负责写 manifest 快照; 本脚本不重新解释"哪些片已封口"。
@@ -30,8 +31,11 @@ for sub in ("danmaku-server", "tools"):
 
 import server  # noqa: E402
 import calibrate  # noqa: E402
+import gitpush  # noqa: E402
 
 DATA = server.DATA_DIR
+PUSH_REMOTE = "origin"
+PUSH_BRANCH = "main"
 
 
 def _valid_day(name: str) -> bool:
@@ -130,8 +134,70 @@ def publish(day: str, dry_run: bool = False) -> bool:
         print(f"{day}: 没有新增内容, 跳过提交")
         return False
     _git("commit", "-m", f"data({day}): 夜间增量发布")
-    print(f"{day}: 已提交本地增量(未推送)")
+    print(f"{day}: 已提交本地增量")
     return True
+
+
+def unpushed_commits() -> list:
+    """本地领先 origin/main 的提交。远端引用不存在时抛 RuntimeError。"""
+    out = _git("rev-list", f"{PUSH_REMOTE}/{PUSH_BRANCH}..HEAD")
+    return [x for x in out.split() if x]
+
+
+def _commit_paths(sha: str) -> list:
+    # --no-renames: 重命名会把"data/x -> README.md"折叠成一行, 只看新路径会漏判。
+    out = _git("show", "--pretty=format:", "--name-only", "--no-renames", sha)
+    return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
+
+
+def is_data_only(commits: list) -> bool:
+    """待推提交是否只动数据。
+
+    自动推送的授权只覆盖数据。混入代码/文档/配置, 或夹带合并提交时返回 False ——
+    宁可停下等人工推, 也不把没看过的内容送出去。
+    """
+    if not commits:
+        return True
+    if _git("rev-list", "--merges",
+            f"{PUSH_REMOTE}/{PUSH_BRANCH}..HEAD").split():
+        return False
+    for sha in commits:
+        for path in _commit_paths(sha):
+            if path != "data-index.json" and not path.startswith("data/"):
+                return False
+    return True
+
+
+def push_pending(dry_run: bool = False) -> bool:
+    """把本地待推的数据提交推到 origin/main。
+
+    返回 True = 已推或无需推。失败只打印, 不抛 —— 夜间流水线是常驻进程,
+    一次网络抖动不该让它退出; 下一轮巡检会再试。
+    """
+    try:
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        if branch != PUSH_BRANCH:
+            print(f"当前分支 {branch}, 不自动推送(只自动推 {PUSH_BRANCH})")
+            return False
+        commits = unpushed_commits()
+        if not commits:
+            return True
+        if not is_data_only(commits):
+            print(f"有 {len(commits)} 个待推提交含非数据改动, 不自动推送(需人工确认)")
+            return False
+    except RuntimeError as e:
+        print(f"推送检查失败(本轮跳过): {e}")
+        return False
+    if dry_run:
+        print(f"[dry-run] 将推送 {len(commits)} 个数据提交到 "
+              f"{PUSH_REMOTE}/{PUSH_BRANCH}")
+        return False
+    ok, out = gitpush.push(PUSH_REMOTE, PUSH_BRANCH, cwd=ROOT)
+    if ok:
+        print(f"已推送 {len(commits)} 个数据提交到 {PUSH_REMOTE}/{PUSH_BRANCH}")
+    else:
+        print(f"推送失败(下轮重试): {out[-400:]}")
+    return ok
 
 
 async def discover(day: str) -> None:
@@ -202,6 +268,7 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
         print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
         for day in days:
             publish(day, dry_run=True)
+        push_pending(dry_run=True)
         return
     async with aiohttp.ClientSession() as session:
         for day in active:
@@ -216,6 +283,8 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
             publish(day, dry_run=False)
         except Exception as e:
             print(f"{day}: 发布失败({e})")
+    # 即使今天没有新日期, 也要试一次: 上一轮可能提交成功但推送失败。
+    push_pending(dry_run=False)
 
 
 async def discover_days(days: list) -> None:
@@ -228,7 +297,7 @@ async def discover_days(days: list) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="夜间巡检: 校准 + 分发 + 本地提交")
+    ap = argparse.ArgumentParser(description="夜间巡检: 校准 + 分发 + 提交/推送")
     ap.add_argument("--date", default="", help="只处理这一天(默认扫描正在采集的日期)")
     ap.add_argument("--loop", action="store_true", help="常驻, 按 --interval 循环")
     ap.add_argument("--interval", type=int, default=3600, help="巡检间隔(秒)")

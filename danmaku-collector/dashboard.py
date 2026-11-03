@@ -20,11 +20,12 @@ PORT = 8787
 STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
          "deadline": None, "current_task": None, "manual_stop": False,
-         "pipeline": None, "pipeline_log": None}
+         "pipeline": None, "pipeline_log": None, "push_running": False}
 TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
 WEB_DIR = collector.SCRIPT_DIR / "web"
 ROOT = collector.SCRIPT_DIR.parent
 NIGHTLY = ROOT / "tools" / "nightly.py"
+PUSHCTL = ROOT / "tools" / "pushctl.py"
 PIPELINE_INTERVAL = 3600     # 每小时巡检一次
 
 
@@ -38,6 +39,31 @@ def _read_json_config():
 def _latest_file(pattern_dir, pattern):
     files = sorted(Path(pattern_dir).glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
+
+
+def _run_pushctl(*args, timeout=360):
+    """跑 tools/pushctl.py 并取最后一行 JSON。
+
+    为什么走子进程而不是 import: 采集端要能独立部署, 不能 import 播放端/工具链;
+    pushctl 只依赖标准库, 用控制台自己的解释器就能跑。失败也返回 JSON, 让前端
+    统一按 ok=false 处理。
+    """
+    if not PUSHCTL.is_file():
+        return {"ok": False, "error": "当前不是仓库布局，无法推送（缺 tools/pushctl.py）"}
+    try:
+        r = subprocess.run([sys.executable, str(PUSHCTL), *args, "--json"],
+                           cwd=str(ROOT), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": f"推送工具运行失败: {e}"}
+    out = (r.stdout or "").strip()
+    if out:
+        try:
+            return json.loads(out.splitlines()[-1])
+        except ValueError:
+            pass
+    tail = ((r.stderr or "") + (r.stdout or "")).strip()[-500:]
+    return {"ok": False, "error": tail or "推送工具无输出"}
 
 
 async def api_config(request):
@@ -495,6 +521,42 @@ async def api_schedule_refresh(request):
     return web.json_response(data)
 
 
+async def api_push_status(request):
+    data = await asyncio.to_thread(_run_pushctl, "status", timeout=60)
+    data["running"] = bool(STATE.get("push_running"))
+    return web.json_response(data)
+
+
+async def api_push(request):
+    if STATE.get("push_running"):
+        return web.json_response({"ok": False, "error": "正在推送，请稍候"})
+    STATE["push_running"] = True
+    try:
+        data = await asyncio.to_thread(_run_pushctl, "push", "--manual", timeout=360)
+    finally:
+        STATE["push_running"] = False
+    if not data.get("ok") and data.get("message") and not data.get("error"):
+        data["error"] = data["message"]
+    return web.json_response(data)
+
+
+async def api_push_settings(request):
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"ok": False, "error": "设置格式不对"})
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "设置格式不对"})
+    args = ["settings",
+            "--auto", "on" if body.get("auto", True) else "off",
+            "--retries", str(body.get("retries", 3)),
+            "--delay", str(body.get("delay_sec", 10))]
+    data = await asyncio.to_thread(_run_pushctl, *args, timeout=60)
+    if not data.get("ok") and data.get("message") and not data.get("error"):
+        data["error"] = data["message"]
+    return web.json_response(data)
+
+
 async def api_status(request):
     running = bool(STATE["task"] and not STATE["task"].done())
     log_tail = ""
@@ -583,6 +645,9 @@ def main():
     app.router.add_get("/api/danmaku", api_danmaku)
     app.router.add_get("/api/schedule", api_schedule)
     app.router.add_post("/api/schedule/refresh", api_schedule_refresh)
+    app.router.add_get("/api/push", api_push_status)
+    app.router.add_post("/api/push", api_push)
+    app.router.add_post("/api/push/settings", api_push_settings)
     app.on_shutdown.append(on_shutdown)
     print("=" * 46)
     print("  弹幕采集控制台已启动")

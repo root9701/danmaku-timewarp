@@ -6,8 +6,9 @@
     python tools/nightly.py --date 2026-10-31 --dry-run
 
 边界:
-- 只写本地层与 `data/`; 只自动推送**仅含数据**的提交(边界见 AGENTS.md
-  「夜间流水线的自动推送」)。混入代码/文档的提交停下等人工推送。
+- 只写本地层与 `data/`; 只自动推送**仅含数据**的提交, 且受控制台「自动推送」
+  开关控制(边界见 AGENTS.md「夜间流水线的自动推送」)。混入代码/文档的提交
+  停下等人工推送。
 - 有新增内容才提交, 没有就静默退出, 不产生空提交。
 - 回放未上传/分P 取不到音频时跳过, 下一轮再试; 不写失败标记。
 - 采集端负责写 manifest 快照; 本脚本不重新解释"哪些片已封口"。
@@ -31,11 +32,9 @@ for sub in ("danmaku-server", "tools"):
 
 import server  # noqa: E402
 import calibrate  # noqa: E402
-import gitpush  # noqa: E402
+import pushctl  # noqa: E402
 
 DATA = server.DATA_DIR
-PUSH_REMOTE = "origin"
-PUSH_BRANCH = "main"
 
 
 def _valid_day(name: str) -> bool:
@@ -138,68 +137,6 @@ def publish(day: str, dry_run: bool = False) -> bool:
     return True
 
 
-def unpushed_commits() -> list:
-    """本地领先 origin/main 的提交。远端引用不存在时抛 RuntimeError。"""
-    out = _git("rev-list", f"{PUSH_REMOTE}/{PUSH_BRANCH}..HEAD")
-    return [x for x in out.split() if x]
-
-
-def _commit_paths(sha: str) -> list:
-    # --no-renames: 重命名会把"data/x -> README.md"折叠成一行, 只看新路径会漏判。
-    out = _git("show", "--pretty=format:", "--name-only", "--no-renames", sha)
-    return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
-
-
-def is_data_only(commits: list) -> bool:
-    """待推提交是否只动数据。
-
-    自动推送的授权只覆盖数据。混入代码/文档/配置, 或夹带合并提交时返回 False ——
-    宁可停下等人工推, 也不把没看过的内容送出去。
-    """
-    if not commits:
-        return True
-    if _git("rev-list", "--merges",
-            f"{PUSH_REMOTE}/{PUSH_BRANCH}..HEAD").split():
-        return False
-    for sha in commits:
-        for path in _commit_paths(sha):
-            if path != "data-index.json" and not path.startswith("data/"):
-                return False
-    return True
-
-
-def push_pending(dry_run: bool = False) -> bool:
-    """把本地待推的数据提交推到 origin/main。
-
-    返回 True = 已推或无需推。失败只打印, 不抛 —— 夜间流水线是常驻进程,
-    一次网络抖动不该让它退出; 下一轮巡检会再试。
-    """
-    try:
-        branch = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
-        if branch != PUSH_BRANCH:
-            print(f"当前分支 {branch}, 不自动推送(只自动推 {PUSH_BRANCH})")
-            return False
-        commits = unpushed_commits()
-        if not commits:
-            return True
-        if not is_data_only(commits):
-            print(f"有 {len(commits)} 个待推提交含非数据改动, 不自动推送(需人工确认)")
-            return False
-    except RuntimeError as e:
-        print(f"推送检查失败(本轮跳过): {e}")
-        return False
-    if dry_run:
-        print(f"[dry-run] 将推送 {len(commits)} 个数据提交到 "
-              f"{PUSH_REMOTE}/{PUSH_BRANCH}")
-        return False
-    ok, out = gitpush.push(PUSH_REMOTE, PUSH_BRANCH, cwd=ROOT)
-    if ok:
-        print(f"已推送 {len(commits)} 个数据提交到 {PUSH_REMOTE}/{PUSH_BRANCH}")
-    else:
-        print(f"推送失败(下轮重试): {out[-400:]}")
-    return ok
-
-
 async def discover(day: str) -> None:
     """把当天赛程与 B站回放 BV 刷进本地层。失败不阻断校准。"""
     match_date = await asyncio.to_thread(server._session_match_date, day)
@@ -258,6 +195,25 @@ async def calibrate_day(day: str, session: aiohttp.ClientSession) -> int:
     return ok
 
 
+def _auto_push(dry_run: bool) -> None:
+    """夜间自动推送。失败只打印, 不抛 —— 一次网络抖动不该让常驻进程退出。"""
+    if dry_run:
+        s = pushctl.status(ROOT)
+        if s["pending"]:
+            print(f"[dry-run] 待推 {s['pending']} 个提交，自动推送"
+                  f"{'开' if s['settings']['auto'] else '关'}")
+        return
+    r = pushctl.auto_push(ROOT)
+    if r.get("reason") == "nothing":
+        return
+    if r.get("ok"):
+        print(r.get("message", "已推送"))
+        return
+    print(f"推送未完成: {r.get('message', '')}")
+    if r.get("detail"):
+        print(r["detail"])
+
+
 async def tick(dry_run: bool, only_date: str = "") -> None:
     active = [only_date] if only_date else running_days()
     if not active:
@@ -268,7 +224,7 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
         print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
         for day in days:
             publish(day, dry_run=True)
-        push_pending(dry_run=True)
+        _auto_push(dry_run=True)
         return
     async with aiohttp.ClientSession() as session:
         for day in active:
@@ -284,7 +240,7 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
         except Exception as e:
             print(f"{day}: 发布失败({e})")
     # 即使今天没有新日期, 也要试一次: 上一轮可能提交成功但推送失败。
-    push_pending(dry_run=False)
+    _auto_push(dry_run=False)
 
 
 async def discover_days(days: list) -> None:

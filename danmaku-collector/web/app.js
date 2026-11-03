@@ -23,7 +23,10 @@ async function api(path, opts) {
   } catch (e) {
     throw new Error('服务返回异常');
   }
-  if (!j || j.ok === false) { throw new Error((j && j.error) || '请求失败'); }
+  if (!j || j.ok === false) {
+    const msg = (j && (j.error || j.message)) || '请求失败';
+    throw new Error(j && j.detail ? (msg + '\n' + j.detail) : msg);
+  }
   return j;
 }
 

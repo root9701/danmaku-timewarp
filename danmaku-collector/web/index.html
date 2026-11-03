@@ -6,6 +6,7 @@
 <title>弹幕采集控制台</title>
 <link rel="stylesheet" href="/web/style.css">
 <script src="/web/app.js" defer></script>
+<script src="/web/push.js" defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -56,6 +57,32 @@
           <input id="test-sec" type="number" min="10" max="600" value="60" class="narrow">
           <span class="hint" style="margin:0">秒（使用下面的默认房间）</span>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>数据推送</h2>
+        <div class="kv">
+          <span class="k">自动推送</span><span id="push-auto-text">—</span>
+          <span class="k">待推提交</span><span id="push-pending">—</span>
+          <span class="k">最近结果</span><span id="push-result">—</span>
+        </div>
+        <div class="btns">
+          <button id="btn-push-now">立即推送</button>
+          <button id="btn-push-refresh" class="ghost">刷新状态</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <label class="check"><input id="push-auto" type="checkbox"> 自动推送（仅数据提交）</label>
+          <div>
+            <label>失败重试次数</label>
+            <input id="push-retries" type="number" min="1" max="5" class="narrow">
+          </div>
+          <div>
+            <label>重试间隔（秒）</label>
+            <input id="push-delay" type="number" min="5" max="120" class="narrow">
+          </div>
+          <button id="btn-save-push" style="align-self:flex-end">保存推送设置</button>
+        </div>
+        <div class="hint">只推仅含 data/ 与 data-index.json 的提交；混入代码或文档时停下等人工。设置下一轮巡检生效。</div>
       </div>
 
       <div class="card">

@@ -206,6 +206,9 @@ def _auto_push(dry_run: bool) -> None:
     r = pushctl.auto_push(ROOT)
     if r.get("reason") == "nothing":
         return
+    if r.get("reason") == "auto-off":
+        print(r.get("message", "自动推送已关闭"))
+        return
     if r.get("ok"):
         print(r.get("message", "已推送"))
         return

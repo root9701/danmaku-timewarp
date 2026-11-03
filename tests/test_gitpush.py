@@ -25,6 +25,8 @@ def test_classify():
           gitpush.is_transient("fatal: unable to access ... Connection timed out"))
     check("DNS 失败算瞬时",
           gitpush.is_transient("fatal: Could not resolve host: github.com"))
+    check("命令超时算瞬时",
+          gitpush.is_transient("命令超时(90s): git push origin"))
     check("非快进不重试",
           not gitpush.is_transient("! [rejected] main -> main (non-fast-forward)"))
     check("认证失败不重试",
@@ -59,6 +61,12 @@ def test_retry():
         return True, ""
 
     gitpush.push("origin", "main", attempts=1, runner=no_prompt)
+
+    def pinned(cmd, env, timeout):
+        check("可推指定提交", cmd[-1] == "abc123:refs/heads/main", str(cmd))
+        return True, ""
+
+    gitpush.push("origin", "main", attempts=1, runner=pinned, ref="abc123")
 
 
 def main() -> int:

@@ -24,7 +24,7 @@ _PERMANENT = (
 # 瞬时失败: 网络/代理抖动, 下一轮或下一次重试可能成功。
 _TRANSIENT = (
     "Could not resolve host", "Failed to connect", "Connection reset",
-    "Connection timed out", "timed out", "TLS", "SSL",
+    "Connection timed out", "timed out", "timeout", "超时", "TLS", "SSL",
     "unable to access", "early EOF", "RPC failed", "remote end hung up",
     "The requested URL returned error: 5",
 )
@@ -96,19 +96,20 @@ def is_transient(output: str) -> bool:
 
 
 def push(remote: str, branch: str, timeout: int = 180, attempts: int = 3,
-         delays=(10, 30), runner=None, cwd=None) -> tuple:
-    """把当前 HEAD 推到 `remote/branch`。返回 `(ok, 输出)`。
+         delays=(10, 30), runner=None, cwd=None, ref: str = "HEAD") -> tuple:
+    """把 `ref` 推到 `remote/branch`。返回 `(ok, 输出)`。
 
-    为什么用 `HEAD:refs/heads/<branch>` 而不是 `git push origin <branch>`:
+    为什么用 `<ref>:refs/heads/<branch>` 而不是 `git push origin <branch>`:
     夜间流水线可能由控制台以任意工作目录拉起, 显式写全 ref 才能保证推的是
-    当前检出的提交, 而不是某个同名但指向别处的本地分支。
+    指定提交。`pushctl` 会传入检查过数据范围的 HEAD SHA, 避免"检查完又冒出一个
+    提交"时把它一起推走。
 
     `runner` 可注入, 测试用它替掉真实 git; 默认跑子进程。
     """
     env = tool_env()
     env["GIT_TERMINAL_PROMPT"] = "0"   # 无人值守: 不能停在等账号密码
     env["GCM_INTERACTIVE"] = "never"   # 凭据过期时也别弹 GUI 把夜间进程挂住
-    cmd = ["git", "push", remote, f"HEAD:refs/heads/{branch}"]
+    cmd = ["git", "push", remote, f"{ref}:refs/heads/{branch}"]
     run = runner or (lambda c, e, t: _run(c, e, t, cwd))
     last = ""
     for i in range(max(1, attempts)):

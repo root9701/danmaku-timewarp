@@ -85,8 +85,11 @@ def save_settings(raw, root=None) -> dict:
 
 
 def _git(root, *args) -> str:
-    r = subprocess.run(["git", *args], cwd=str(root), capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
+    try:
+        r = subprocess.run(["git", *args], cwd=str(root), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError as e:
+        raise RuntimeError(f"git 运行失败: {e}") from None
     if r.returncode != 0:
         raise RuntimeError(
             f"git {' '.join(args)} 失败: {(r.stderr or r.stdout).strip()[:300]}")
@@ -153,6 +156,9 @@ def push(root=None, manual: bool = False) -> dict:
         if branch != BRANCH:
             return {"ok": False, "reason": "not-main", "count": 0,
                     "message": f"当前分支 {branch}，只推 {BRANCH}"}
+        # 先固定要推的提交, 再检查它之前的提交范围。检查完到 push 之间若又产生
+        # 新提交, 也不会被这趟带走 —— 下一轮会重新检查。
+        head = _git(root, "rev-parse", "HEAD").strip()
         commits = pending_commits(root)
         if not commits:
             return {"ok": True, "reason": "nothing", "count": 0,
@@ -168,7 +174,8 @@ def push(root=None, manual: bool = False) -> dict:
                 "message": f"推送检查失败: {e}"}
     delays = (cfg["delay_sec"], min(120, cfg["delay_sec"] * 3))
     ok, out = gitpush.push(REMOTE, BRANCH, timeout=90 if manual else 180,
-                           attempts=cfg["retries"], delays=delays, cwd=root)
+                           attempts=cfg["retries"], delays=delays, cwd=root,
+                           ref=head)
     if ok:
         return {"ok": True, "reason": "pushed", "count": len(commits),
                 "message": f"已推送 {len(commits)} 个数据提交"}

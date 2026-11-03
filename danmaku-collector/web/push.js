@@ -13,6 +13,11 @@ function renderPush(j) {
     $('push-result').textContent = j.error;
     return;
   }
+  if (j.branch && j.branch !== 'main') {
+    $('push-pending').textContent = '—';
+    $('push-result').textContent = '当前分支 ' + j.branch + '，只推 main';
+    return;
+  }
   const pending = j.pending || 0;
   $('push-pending').textContent = pending ? (pending + ' 个') : '无';
   $('push-result').textContent = pending

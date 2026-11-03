@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "room": 7734200,
+  "match_date": "2026-11-04",
+  "is_test": false,
+  "start_ms": 1793743201872,
+  "end_ms": 1793746799896,
+  "dm_count": 48341,
+  "sc_count": 15,
+  "files": [
+    "7734200_s0600.jsonl.gz"
+  ],
+  "afp": null,
+  "meta": null,
+  "collector_version": "1.4.0",
+  "ended_by": "running"
+}

@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 let taskCache = [];
 let dataDates = [];
 let cfgCache = {};
+let lastStatus = null;
 
 function toast(msg, ok = true) {
   const el = $('toast');
@@ -299,9 +300,10 @@ async function refreshStatus() {
     ? ('队列运行中' + (j.pipeline_running ? ' · 发布流水线运行中' : ' · 发布流水线未运行'))
     : '队列未启动';
 
-  const t = j.current_task;
+  const t = j.current_task || (j.task_kind === 'next' ? j.plan_task : null);
   $('current-task').textContent = t
-    ? (t.date + ' ' + t.start + ' – ' + t.end) : '无';
+    ? (t.date + ' ' + t.start + ' – ' + t.end +
+       (j.task_kind === 'next' ? '（下一场）' : '')) : '无';
   $('deadline').textContent = j.deadline || '—';
   $('btn-stop-task').disabled = !running;
   $('btn-extend-30').disabled = !running || !j.deadline;
@@ -316,6 +318,8 @@ async function refreshStatus() {
     if (stick) { log.scrollTop = log.scrollHeight; }
   }
   renderResult(j.last_result);
+  lastStatus = j;
+  renderPlan(j);
 }
 
 async function showDanmaku() {
@@ -354,6 +358,7 @@ async function init() {
   await loadSchedule();
   await refreshStatus();
   setInterval(refreshStatus, 2000);
+  setInterval(() => { if (lastStatus) { renderPlan(lastStatus); } }, 1000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

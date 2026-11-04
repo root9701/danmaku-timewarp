@@ -6,17 +6,22 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from aiohttp import web
 
 import collector
+import datablocks
 import tasks
 
-PORT = 8787
+PORT = int(os.environ.get("DANMAKU_CONSOLE_PORT", "8787"))
+BLOCKS_TTL = 10.0
+_BLOCKS_CACHE = {"key": None, "ts": 0.0, "data": []}
 STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
          "deadline": None, "current_task": None, "manual_stop": False,
@@ -521,9 +526,117 @@ async def api_schedule_refresh(request):
     return web.json_response(data)
 
 
+def _room_list(value) -> list:
+    if isinstance(value, str):
+        value = [x.strip() for x in value.split(",") if x.strip()]
+    out = []
+    for r in value or []:
+        try:
+            out.append(int(r))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _default_rooms() -> list:
+    try:
+        return _room_list(_read_json_config().get("rooms"))
+    except (OSError, ValueError):
+        return []
+
+
+def _push_scope() -> dict:
+    """数据块展示范围: 当前任务优先, 否则取最新有数据的一天。"""
+    task = STATE.get("current_task")
+    if task:
+        try:
+            rooms = _room_list(task.get("rooms")) or _default_rooms()
+            return {"date": tasks.data_date(task), "rooms": rooms,
+                    "source": "current"}
+        except (ValueError, TypeError):
+            pass
+    data_dir = ROOT / "data"
+    days = []
+    if data_dir.is_dir():
+        days = sorted(p.name for p in data_dir.iterdir()
+                      if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
+    date = days[-1] if days else datetime.now().strftime("%Y-%m-%d")
+    day = data_dir / date
+    rooms = sorted(int(p.name) for p in day.iterdir()
+                   if p.is_dir() and p.name.isdigit()) if day.is_dir() else []
+    return {"date": date, "rooms": rooms, "source": "latest"}
+
+
+def _calibration_info(date: str) -> dict:
+    path = ROOT / "data" / date / "align.json"
+    if not path.is_file():
+        return {"ok": False, "message": "还没有对齐记录"}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": False, "message": "align.json 读取失败"}
+    items = []
+    for entry in (data.get("lists") or {}).get(date) or []:
+        if not isinstance(entry, dict):
+            continue
+        pages = entry.get("pages") or {}
+        total = entry.get("total_pages")
+        if not isinstance(total, int):
+            total = len(pages)
+        items.append({"title": str(entry.get("title") or ""),
+                      "aligned": len(pages), "total": total})
+    if not items:
+        return {"ok": False, "message": "还没有对齐记录"}
+    return {"ok": True, "items": items}
+
+
+def _plan_info(now=None) -> dict:
+    """给前端的采集时钟: 当前/下一任务、计划起止、服务器当前时间。"""
+    now = now or datetime.now()
+    task = STATE.get("current_task")
+    kind = "current" if task else "none"
+    if task is None:
+        try:
+            task = tasks.next_task(_load_tasks()["tasks"], now)
+        except Exception:
+            task = None
+        kind = "next" if task else "none"
+    if not task or task.get("action") == "missed":
+        return {"now_ts": now.timestamp() * 1000, "task_kind": "none"}
+    try:
+        start, end = tasks.window(task)
+    except (ValueError, TypeError):
+        return {"now_ts": now.timestamp() * 1000, "task_kind": "none"}
+    return {"now_ts": now.timestamp() * 1000, "task_kind": kind,
+            "plan_start_ts": start.timestamp() * 1000,
+            "plan_end_ts": end.timestamp() * 1000 if end else None,
+            "plan_task": task}
+
+
+def _blocks_for(scope: dict, failed: bool, remote_head: str) -> list:
+    key = (scope["date"], tuple(scope["rooms"]), bool(failed), remote_head)
+    now = time.monotonic()
+    if _BLOCKS_CACHE["key"] == key and now - _BLOCKS_CACHE["ts"] < BLOCKS_TTL:
+        return _BLOCKS_CACHE["data"]
+    running = bool(STATE["task"] and not STATE["task"].done())
+    blocks = datablocks.scan(ROOT, scope["date"], scope["rooms"],
+                             datetime.now(), push_failed=failed,
+                             running=running)
+    _BLOCKS_CACHE.update(key=key, ts=now, data=blocks)
+    return blocks
+
+
 async def api_push_status(request):
     data = await asyncio.to_thread(_run_pushctl, "status", timeout=60)
     data["running"] = bool(STATE.get("push_running"))
+    scope = _push_scope()
+    data["scope"] = {"date": scope["date"], "rooms": scope["rooms"],
+                     "source": scope["source"]}
+    data["calibration"] = _calibration_info(scope["date"])
+    last = data.get("last_push") or {}
+    failed = "失败" in str(last.get("message") or "")
+    data["blocks"] = await asyncio.to_thread(
+        _blocks_for, scope, failed, data.get("remote_head", ""))
     return web.json_response(data)
 
 
@@ -588,14 +701,16 @@ async def api_status(request):
     proc = STATE.get("pipeline")
     pipeline_running = bool(proc is not None and proc.poll() is None)
     deadline = STATE.get("deadline")
-    return web.json_response({"running": running, "mode": STATE["mode"],
-                              "started_at": STATE["started_at"],
-                              "queue_running": queue_running,
-                              "pipeline_running": pipeline_running,
-                              "current_task": STATE.get("current_task"),
-                              "deadline": deadline.at.strftime("%H:%M") if deadline else None,
-                              "finished_reason": STATE["reason"]["value"] if (not running and STATE["reason"]) else None,
-                              "log_tail": log_tail, "last_result": last_result})
+    data = {"running": running, "mode": STATE["mode"],
+            "started_at": STATE["started_at"],
+            "queue_running": queue_running,
+            "pipeline_running": pipeline_running,
+            "current_task": STATE.get("current_task"),
+            "deadline": deadline.at.strftime("%H:%M") if deadline else None,
+            "finished_reason": STATE["reason"]["value"] if (not running and STATE["reason"]) else None,
+            "log_tail": log_tail, "last_result": last_result}
+    data.update(_plan_info())
+    return web.json_response(data)
 
 
 async def on_shutdown(app):

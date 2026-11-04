@@ -81,6 +81,37 @@ input.rooms { width: 112px; }
 }
 .kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; font-size: 12.5px; }
 .kv .k { color: var(--text-faint); }
+.progress {
+  height: 6px; background: var(--line-soft); border-radius: 3px;
+  overflow: hidden; margin-top: 10px;
+}
+.progress > div {
+  height: 100%; width: 0; background: var(--blue);
+  transition: width .3s;
+}
+.blocks { margin-top: 10px; }
+.blocks td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.blocks tr.active td { color: var(--blue); }
+.badge {
+  display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 99px;
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.badge.ok { color: #7bc47f; border-color: #2d4a2f; }
+.badge.wait { color: var(--warn); border-color: #4a3a2c; }
+.badge.fail { color: #e06c6c; border-color: #4a2c2c; }
+.badge.live { color: var(--blue); border-color: #2d3d63; }
+.commits { margin-top: 10px; font-size: 12px; }
+.commit {
+  display: flex; gap: 8px; align-items: baseline; padding: 4px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.commit:first-child { border-top: none; }
+.tag {
+  font-size: 10.5px; padding: 0 6px; border-radius: 3px;
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.tag.data { color: #7bc47f; border-color: #2d4a2f; }
+.tag.code { color: var(--warn); border-color: #4a3a2c; }
 .dm {
   margin-top: 10px; background: #0b0c0f; border: 1px solid var(--line-soft);
   border-radius: 4px; padding: 10px; font: 12px/1.8 Consolas, monospace;

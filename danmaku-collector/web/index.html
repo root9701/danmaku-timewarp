@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>弹幕采集控制台</title>
-<link rel="stylesheet" href="/web/style.css">
-<script src="/web/app.js" defer></script>
-<script src="/web/push.js" defer></script>
+<link rel="stylesheet" href="/web/style.css?v=1.4.1">
+<script src="/web/clock.js?v=1.4.1" defer></script>
+<script src="/web/app.js?v=1.4.1" defer></script>
+<script src="/web/push.js?v=1.4.1" defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -14,6 +15,7 @@
     弹幕采集控制台
     <span id="status" class="pill">加载中</span>
     <span id="queue-info" class="sub grow"></span>
+    <span id="clock" class="sub"></span>
     <span class="sub">http://127.0.0.1:8787</span>
   </h1>
 
@@ -44,9 +46,14 @@
       <div class="card">
         <h2>运行控制</h2>
         <div class="kv">
+          <span class="k">当前时间</span><span id="now-text">—</span>
+          <span class="k">计划采集</span><span id="plan-text">—</span>
+          <span class="k">已运行</span><span id="elapsed-text">—</span>
+          <span class="k">剩余</span><span id="remaining-text">—</span>
           <span class="k">当前任务</span><span id="current-task">无</span>
           <span class="k">预计收尾</span><span id="deadline">—</span>
         </div>
+        <div class="progress"><div id="plan-bar"></div></div>
         <div class="btns">
           <button id="btn-stop-task" class="danger" disabled>结束本次</button>
           <button id="btn-extend-30" disabled>延长 30 分钟</button>
@@ -63,9 +70,18 @@
         <h2>数据推送</h2>
         <div class="kv">
           <span class="k">自动推送</span><span id="push-auto-text">—</span>
-          <span class="k">待推提交</span><span id="push-pending">—</span>
-          <span class="k">最近结果</span><span id="push-result">—</span>
+          <span class="k">远端</span><span id="push-remote">—</span>
+          <span class="k">最近推送</span><span id="push-result">—</span>
         </div>
+        <div class="sub" id="push-summary"></div>
+        <table class="blocks">
+          <thead>
+            <tr><th>时段</th><th>弹幕数</th><th>状态</th><th>推送</th></tr>
+          </thead>
+          <tbody id="push-blocks"></tbody>
+        </table>
+        <div class="sub" id="push-calibration"></div>
+        <div id="push-commits" class="commits"></div>
         <div class="btns">
           <button id="btn-push-now">立即推送</button>
           <button id="btn-push-refresh" class="ghost">刷新状态</button>

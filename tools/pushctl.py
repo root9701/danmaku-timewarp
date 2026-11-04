@@ -39,12 +39,19 @@ def log_path(root=None) -> Path:
 
 
 def log_line(root=None) -> str:
-    """最近一次推送活动的单行摘要, 给控制台卡片直接显示。空 = 还没有推送记录。"""
+    """最近一次推送活动的单行摘要, 给控制台卡片直接显示。空 = 还没有推送记录。
+
+    跳过缩进的细节行: 日志格式是 `时间 | 消息` + 缩进的 git 输出, 直接取最后一行
+    可能拿到 "Connection reset" 而丢掉时间和结果。
+    """
     try:
         lines = log_path(root).read_text(encoding="utf-8").splitlines()
-        return lines[-1] if lines else ""
     except OSError:
         return ""
+    for line in reversed(lines):
+        if " | " in line:
+            return line
+    return lines[-1] if lines else ""
 
 
 def log_event(message: str, root=None, detail: str = "") -> None:
@@ -154,6 +161,35 @@ def _commit_paths(root, sha: str) -> list:
     return [ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()]
 
 
+def pending_details(root=None, commits=None) -> list:
+    """待推提交明细: 每个提交标成 data / code, 供控制台直接展示。"""
+    root = Path(root or ROOT)
+    if commits is None:
+        commits = pending_commits(root)
+    out = []
+    for sha in commits:
+        paths = _commit_paths(root, sha)
+        kind = "data" if paths and all(
+            p == "data-index.json" or p.startswith("data/") for p in paths) else "code"
+        out.append({
+            "sha": sha[:7],
+            "subject": _git(root, "log", "-1", "--format=%s", sha).strip(),
+            "kind": kind,
+            "when": _git(root, "log", "-1", "--format=%ci", sha).strip(),
+            "paths": paths[:8],
+        })
+    return out
+
+
+def last_push(root=None) -> dict:
+    """最近一条推送日志拆成 {time, message}; 没有日志返回空字段。"""
+    line = log_line(root)
+    if " | " in line:
+        ts, msg = line.split(" | ", 1)
+        return {"time": ts.strip(), "message": msg.strip()}
+    return {"time": "", "message": line.strip()}
+
+
 def is_data_only(root=None, commits=None) -> bool:
     """待推提交是否只动数据。混入代码/文档/配置或夹带合并提交时返回 False。"""
     root = Path(root or ROOT)
@@ -171,23 +207,32 @@ def is_data_only(root=None, commits=None) -> bool:
 
 
 def status(root=None) -> dict:
-    """给控制台看的只读状态: 设置、待推数量、是否只含数据。"""
+    """给控制台看的只读状态: 设置、待推数量、提交明细、是否只含数据。"""
     root = Path(root or ROOT)
     cfg = load_settings(root)
+    details, remote_head = [], ""
     try:
         branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
         commits = pending_commits(root) if branch == BRANCH else []
         data_only = is_data_only(root, commits) if commits else True
+        details = pending_details(root, commits) if commits else []
+        remote_head = _git(root, "rev-parse", "--short", f"{REMOTE}/{BRANCH}").strip()
         error = ""
     except RuntimeError as e:
         branch, commits, data_only, error = "", [], False, str(e)
+    data_n = sum(1 for c in details if c["kind"] == "data")
     return {
         "ok": True,
         "settings": cfg,
         "branch": branch,
+        "remote_head": remote_head,
         "pending": len(commits),
+        "data_pending": data_n,
+        "code_pending": len(details) - data_n,
+        "pending_commits": details,
         "data_only": data_only,
         "last_log": log_line(root),
+        "last_push": last_push(root),
         "can_push": bool(branch == BRANCH and commits and data_only),
         "error": error,
     }

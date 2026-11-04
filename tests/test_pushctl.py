@@ -118,6 +118,22 @@ def test_push_boundary():
         check("远端没有文档提交", "docs" not in out, out)
 
 
+def test_pending_details():
+    with tempfile.TemporaryDirectory(prefix="dmk_pc_") as td:
+        work, _remote = _repo(td)
+        _data_commit(work)
+        (work / "README.md").write_text("y", encoding="utf-8")
+        _commit(work, "docs", ["README.md"])
+        s = pushctl.status(work)
+        details = s.get("pending_commits") or []
+        check("待推明细 2 条", len(details) == 2, str(details))
+        check("明细区分 data/code",
+              {d["kind"] for d in details} == {"data", "code"}, str(details))
+        check("data/code 计数",
+              s.get("data_pending") == 1 and s.get("code_pending") == 1, str(s))
+        check("remote_head 有值", bool(s.get("remote_head")), str(s))
+
+
 def test_auto_switch():
     with tempfile.TemporaryDirectory(prefix="dmk_pc_") as td:
         work, _remote = _repo(td)
@@ -137,6 +153,7 @@ def main() -> int:
     test_settings()
     test_log()
     test_push_boundary()
+    test_pending_details()
     test_auto_switch()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项失败: {', '.join(FAILED)}")

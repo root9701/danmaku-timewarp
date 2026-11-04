@@ -10,7 +10,9 @@ BLG vs TES 的回放也上线了, 但点「刷新赛程」刷不出来 —— �
 
 不联网: draft 由 _mk 造, 只测写回规则。
 """
+import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -136,6 +138,79 @@ def t_sort():
           got == ["KC vs CFO", "BLG vs TES", "GEN vs LYON"], f"实际 {got}")
 
 
+def t_bili_date_fallback():
+    print("\n[兜底] Riot 当天无场次时, 从官方账号回放标题发现对阵")
+    body = {"code": 0, "data": {"result": [
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月4日 TES vs IG",
+         "bvid": "BV_TEST_SHORT", "pubdate": 1793746793, "duration": "1:00:00"},
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月4日 TES vs IG",
+         "bvid": "BV_TEST_FULL", "pubdate": 1793746793, "duration": "2:59:30"},
+        {"type": "video", "mid": 123,
+         "title": "【2026全球总决赛】11月4日 TES vs IG",
+         "bvid": "BV_TEST_COPY", "pubdate": 1793746793, "duration": "2:59:30"},
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月4日 淘汰赛宣传片",
+         "bvid": "BV_TEST_TRAILER", "pubdate": 1793746793, "duration": "0:30"},
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月4日 TES vs IG 解说合集",
+         "bvid": "BV_TEST_COLL", "pubdate": 1793746793, "duration": "2:00:00"},
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月1日 HLE vs BLG",
+         "bvid": "BV_TEST_OLD", "pubdate": 1793487388, "duration": "1:00:00"},
+    ]}}
+    old_get = server._http_get
+    old_cache = dict(server._BUVID3_CACHE)
+    server._BUVID3_CACHE.update(ts=time.monotonic(), value="test")
+    server._http_get = lambda url, headers, timeout=8: (200, json.dumps(body))
+    try:
+        got = server.bili_discover_date("2026-11-04")
+    finally:
+        server._http_get = old_get
+        server._BUVID3_CACHE.clear()
+        server._BUVID3_CACHE.update(old_cache)
+    check("只认官方正片, 同场去重", len(got) == 1, str(got))
+    if got:
+        m = got[0]
+        check("标题解析为对阵", m["title"] == "TES vs IG", str(m))
+        check("同场取时长最长的官方正片", m["bv"] == "BV_TEST_FULL", str(m))
+        check("开始时间用回放发布时间",
+              m["start"].strftime("%Y-%m-%d %H:%M") == "2026-11-04 06:59",
+              str(m["start"]))
+
+
+def t_discover_fallback():
+    print("\n[兜底] 只在 Riot 当天无场次时启用")
+    old_riot, old_bili = server.discover_draft_for_date, server.bili_discover_date
+    riot = [dict(D_KCCFO)]
+    fallback = [dict(D_BLGTES)]
+    try:
+        server.discover_draft_for_date = lambda d: riot
+        server.bili_discover_date = lambda d: fallback
+        check("Riot 有场次 -> 不用兜底", server.discover_draft("2026-10-30") == riot)
+        server.discover_draft_for_date = lambda d: []
+        check("Riot 无场次 -> 用兜底", server.discover_draft("2026-10-30") == fallback)
+    finally:
+        server.discover_draft_for_date = old_riot
+        server.bili_discover_date = old_bili
+
+
+def t_apply_fallback():
+    print("\n[兜底] 兜底草稿能落进列表")
+    m = {"lists": {}, "align": {}}
+    r = _result()
+    draft = [{"title": "TES vs IG", "teams": ["TES", "IG"],
+              "bv": "BV_TEST_FULL",
+              "start": datetime(2026, 11, 4, 6, 59, 53, tzinfo=TZ)}]
+    server._apply_discover(m, "2026-11-04", draft, r)
+    got = m["lists"].get("2026-11-04") or []
+    check("创建了当天列表", len(got) == 1, str(got))
+    if got:
+        check("带 BV", got[0]["bv"] == "BV_TEST_FULL", str(got[0]))
+        check("带 start_ms", got[0]["start_ms"] == 1793746793000, str(got[0]))
+
+
 def main() -> int:
     t_need()
     t_append()
@@ -143,6 +218,9 @@ def main() -> int:
     t_team_order()
     t_fill()
     t_sort()
+    t_bili_date_fallback()
+    t_discover_fallback()
+    t_apply_fallback()
     print()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项未过")

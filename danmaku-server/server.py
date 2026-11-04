@@ -1775,10 +1775,8 @@ def _team_in_title(title: str, code: str) -> bool:
     return False
 
 
-def bili_search_replay(c1: str, c2: str, date: str) -> str:
-    """搜官方账号单场回放, 返回 BV 号(搜不到/未上传/请求失败 -> "")。
-    关键词 "全球总决赛 队1 队2"; 结果筛 mid=官方 且标题同时含两队(词边界+别名);
-    官方往届回放(如 2025 同对阵)可能排在前面, 故优先取标题含北京日期"M月D日"与年份者。"""
+def _bili_search_headers() -> dict:
+    """B 站搜索请求头: 带 buvid3 与用户 cookie, 降低被风控概率。"""
     cookie_parts = []
     buvid3 = _bili_buvid3()
     if buvid3:
@@ -1790,6 +1788,14 @@ def bili_search_replay(c1: str, c2: str, date: str) -> str:
                "Accept": "application/json, text/plain, */*"}
     if cookie_parts:
         headers["Cookie"] = "; ".join(cookie_parts)
+    return headers
+
+
+def bili_search_replay(c1: str, c2: str, date: str) -> str:
+    """搜官方账号单场回放, 返回 BV 号(搜不到/未上传/请求失败 -> "")。
+    关键词 "全球总决赛 队1 队2"; 结果筛 mid=官方 且标题同时含两队(词边界+别名);
+    官方往届回放(如 2025 同对阵)可能排在前面, 故优先取标题含北京日期"M月D日"与年份者。"""
+    headers = _bili_search_headers()
     url = ("https://api.bilibili.com/x/web-interface/search/type"
            "?search_type=video&page=1&keyword=" + quote(f"全球总决赛 {c1} {c2}"))
     try:
@@ -1817,6 +1823,103 @@ def bili_search_replay(c1: str, c2: str, date: str) -> str:
         if best is None or key < best[0]:
             best = (key, str(r.get("bvid") or ""))
     return best[1] if best else ""
+
+
+def _bili_search_videos(keyword: str) -> list:
+    """搜 B 站视频, 返回原始 result 列表(失败 -> [])。"""
+    headers = _bili_search_headers()
+    url = ("https://api.bilibili.com/x/web-interface/search/type"
+           "?search_type=video&page=1&keyword=" + quote(keyword))
+    try:
+        _, body = _http_get(url, headers)
+        data = json.loads(body)
+    except Exception as e:
+        print(f"[discover] B站日期搜索失败 {keyword}: {e.__class__.__name__}: {e}")
+        return []
+    if not isinstance(data, dict) or data.get("code") != 0:
+        code = data.get("code") if isinstance(data, dict) else "?"
+        print(f"[discover] B站日期搜索返回异常 {keyword}: code={code}")
+        return []
+    return (data.get("data") or {}).get("result") or []
+
+
+def _duration_sec(s) -> int:
+    """B 站搜索结果的 duration 可能是 "2:59:30" / "179:30" / 10770。"""
+    parts = str(s or "").strip().split(":")
+    try:
+        nums = [int(x) for x in parts]
+    except ValueError:
+        return 0
+    sec = 0
+    for n in nums:
+        sec = sec * 60 + n
+    return sec
+
+
+# 官方回放标题形如 "【2026全球总决赛】11月4日 TES vs IG"; 队名允许 GEN.G 这类带点的。
+_BILI_DATE_TEAMS_RE = re.compile(
+    r"([0-9A-Za-z.]+)\s+vs\s+([0-9A-Za-z.]+)", re.IGNORECASE)
+# 这些标题通常不是正片: 不能把宣传片/合集当成一场比赛。
+_BILI_DATE_SKIP = ("宣传片", "预告", "解说合集", "高光", "集锦", "采访", "切片", "花絮")
+
+
+def _parse_date_videos(results: list, date: str) -> list:
+    """从官方账号当天上传的视频标题里解析对阵(同场取时长最长的正片)。"""
+    _, m, d = (int(x) for x in date.split("-"))
+    date_strs = {f"{m}月{d}日", f"{m}月{d:02d}日"}
+    day = datetime.strptime(date, "%Y-%m-%d").date()
+    best = {}
+    for r in results:
+        if not isinstance(r, dict) or r.get("type") != "video":
+            continue
+        if r.get("mid") != BILI_OFFICIAL_MID:
+            continue
+        title = html.unescape(_BILI_TAG_RE.sub("", str(r.get("title") or "")))
+        if not any(s in title for s in date_strs):
+            continue
+        if any(k in title for k in _BILI_DATE_SKIP):
+            continue
+        mt = _BILI_DATE_TEAMS_RE.search(title)
+        if not mt:
+            continue
+        c1, c2 = mt.group(1), mt.group(2)
+        try:
+            pub = int(r.get("pubdate") or 0)
+        except (TypeError, ValueError):
+            pub = 0
+        if pub:
+            local = datetime.fromtimestamp(pub, DISCOVER_TZ)
+            if abs((local.date() - day).days) > 1:   # 往届同日期回放: 按上传时间排除
+                continue
+        else:
+            local = datetime.combine(day, datetime.min.time(), tzinfo=DISCOVER_TZ)
+        bv = str(r.get("bvid") or "").strip()
+        if not bv:
+            continue
+        key = frozenset((c1.lower(), c2.lower()))
+        cand = {"title": f"{c1} vs {c2}", "teams": [c1, c2],
+                "start": local, "bv": bv}
+        dur = _duration_sec(r.get("duration"))
+        if key not in best or dur > best[key][0]:
+            best[key] = (dur, cand)
+    return [cand for _, cand in best.values()]
+
+
+def bili_discover_date(date: str) -> list:
+    """Riot 赛程没有当天场次时的兜底: 从官方账号当天回放标题发现对阵。
+
+    2026-11-04 实测: Riot getSchedule 与 lolesports 官网页都没有当天这场
+    (淘汰赛首日/表演赛), 但官方账号 06:59 已上传 "【2026全球总决赛】11月4日
+    TES vs IG", 于是「刷新赛程」发现 0 场, 用户拿不到 BV。只信 Riot 不够。
+    """
+    y, m, d = (int(x) for x in date.split("-"))
+    return _parse_date_videos(_bili_search_videos(f"{y}全球总决赛 {m}月{d}日"), date)
+
+
+def discover_draft(date: str) -> list:
+    """当天场次草稿: 优先 Riot 赛程; 当天 Riot 没有场次时用官方回放兜底。"""
+    draft = discover_draft_for_date(date)
+    return draft or bili_discover_date(date)
 
 
 # 从标题解析两队 code。**不能**要求 "G1 " 前缀: 新数据标题就是 "HLE vs IG",
@@ -1942,10 +2045,13 @@ async def handle_discover(request: web.Request) -> web.Response:
     # 若按 10-25 去 discover, 拿到的是"TES vs AL"那一晚的场次, 与正在看的比赛完全不符,
     # 且因为 lists["2026-10-25"] 已存在(只回填空 bv), 真正的次日场次永远补不上 BV。
     date = await asyncio.to_thread(_session_match_date, raw_date)
-    # a) Riot 赛程 -> 草稿(阻塞网络全部在 worker 线程, 8s 超时, 带内存缓存)
-    draft = await asyncio.to_thread(discover_draft_for_date, date)
+    # a) Riot 赛程 -> 草稿; Riot 当天没有场次时退回官方账号回放标题(兜底)。
+    #    阻塞网络全部在 worker 线程, 8s 超时, 带内存缓存。
+    draft = await asyncio.to_thread(discover_draft, date)
     # b) 逐场搜B站官方回放(顺序请求, 避免并发触发风控); 失败按 found=false 降级不炸整体
     for m in draft:
+        if m.get("bv"):
+            continue                     # 日期兜底已经带 BV, 不再多搜一次
         m["bv"] = await asyncio.to_thread(
             bili_search_replay, m["teams"][0], m["teams"][1], date)
     # c) 写回: 已有条目只补空 bv/缺失 start_ms, 草稿里列表还没有的场次追加进去

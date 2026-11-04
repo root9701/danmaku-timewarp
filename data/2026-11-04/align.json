@@ -1,0 +1,99 @@
+{
+  "align": {
+    "2026-11-04|7734200": {
+      "bv": "BV1XwxU6xEnL",
+      "bvs": [
+        "BV1XwxU6xEnL"
+      ],
+      "date": "2026-11-04",
+      "file": "7734200",
+      "offset_sec": 0,
+      "title": "TES vs IG"
+    },
+    "2026-11-04|7734200|BV1XwxU6xEnL": {
+      "auto": {
+        "confidence": 3.824,
+        "method": "audiofp",
+        "ts": "2026-11-04T10:32:01"
+      },
+      "bv": "BV1XwxU6xEnL",
+      "date": "2026-11-04",
+      "file": "7734200",
+      "offset_sec": 43.335,
+      "page_errors": {
+        "4": "该分P 的音频在直播里找不到自洽位置(最多 2/8 段指向同一处, 最强票 conf=1.08); 可能是这场直播没有转播, 或采集期间音频断流"
+      },
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 3.824,
+          "duration": 3241,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 43.335,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-04T10:32:01",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 10.285,
+          "duration": 3822,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3514.515,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-04T10:32:01",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 3.98,
+          "duration": 2791,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 7539.594,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、5 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-04T10:32:01",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月4日 TES vs IG",
+      "total_pages": 4
+    }
+  },
+  "lists": {
+    "2026-11-04": [
+      {
+        "bv": "BV1XwxU6xEnL",
+        "offset_sec": 43.335,
+        "pages": {
+          "1": {
+            "confidence": 3.824,
+            "offset_sec": 43.335,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 10.285,
+            "offset_sec": 3514.515,
+            "part": "第二局"
+          },
+          "3": {
+            "confidence": 3.98,
+            "offset_sec": 7539.594,
+            "part": "第三局"
+          }
+        },
+        "start_ms": 1793746800000,
+        "title": "TES vs IG",
+        "total_pages": 4
+      }
+    ]
+  }
+}

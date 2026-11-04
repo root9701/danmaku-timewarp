@@ -219,4 +219,6 @@ document.addEventListener('DOMContentLoaded', () => {
   bindPush();
   loadPush();
   loadPushLog();
+  // 每小时巡检 + 采集中的块都在变; 30 秒拉一次, 不用一直点「刷新状态」。
+  setInterval(loadPush, 30000);
 });

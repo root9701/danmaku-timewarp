@@ -12,10 +12,12 @@
   - 本模块不 import 播放端任何代码, 采集端可以把它当独立 CLI 调用。
 """
 import argparse
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,6 +28,49 @@ REMOTE = "origin"
 BRANCH = "main"
 DEFAULTS = {"auto": True, "retries": 3, "delay_sec": 10}
 LIMITS = {"retries": (1, 5), "delay_sec": (5, 120)}
+LOG_MAX = 200          # 日志环形上限, 防止长期挂机无限增长
+LOG_PATH = ROOT / "danmaku-collector" / "logs" / "push.log"
+
+
+def log_path(root=None) -> Path:
+    if root:
+        return Path(root) / "danmaku-collector" / "logs" / "push.log"
+    return LOG_PATH
+
+
+def log_line(root=None) -> str:
+    """最近一次推送活动的单行摘要, 给控制台卡片直接显示。空 = 还没有推送记录。"""
+    try:
+        lines = log_path(root).read_text(encoding="utf-8").splitlines()
+        return lines[-1] if lines else ""
+    except OSError:
+        return ""
+
+
+def log_event(message: str, root=None, detail: str = "") -> None:
+    """追加一条推送日志: `时间 | 消息` + 可选的细节缩进行。
+
+    夜间流水线是无人值守的, 不写日志的话"推没推、为什么没推"只能翻 shell 输出;
+    控制台的推送卡片也靠它显示最近结果。
+    """
+    p = log_path(root)
+    with contextlib.suppress(OSError):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"{now} | {message}\n")
+            if detail:
+                for ln in detail.strip().splitlines()[-3:]:
+                    f.write(f"    {ln.strip()}\n")
+        # 环形上限: 读整份、留尾部、原子替换; 日志很小, 不构成负担
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+            if len(lines) > LOG_MAX:
+                tmp = p.with_name(p.name + ".tmp")
+                tmp.write_text("\n".join(lines[-LOG_MAX:]) + "\n", encoding="utf-8")
+                os.replace(tmp, p)
+        except OSError:
+            pass
 
 
 def settings_path(root=None) -> Path:
@@ -142,6 +187,7 @@ def status(root=None) -> dict:
         "branch": branch,
         "pending": len(commits),
         "data_only": data_only,
+        "last_log": log_line(root),
         "can_push": bool(branch == BRANCH and commits and data_only),
         "error": error,
     }
@@ -154,8 +200,9 @@ def push(root=None, manual: bool = False) -> dict:
     try:
         branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
         if branch != BRANCH:
-            return {"ok": False, "reason": "not-main", "count": 0,
-                    "message": f"当前分支 {branch}，只推 {BRANCH}"}
+            msg = f"当前分支 {branch}，只推 {BRANCH}"
+            log_event(msg, root)
+            return {"ok": False, "reason": "not-main", "count": 0, "message": msg}
         # 先固定要推的提交, 再检查它之前的提交范围。检查完到 push 之间若又产生
         # 新提交, 也不会被这趟带走 —— 下一轮会重新检查。
         head = _git(root, "rev-parse", "HEAD").strip()
@@ -164,23 +211,34 @@ def push(root=None, manual: bool = False) -> dict:
             return {"ok": True, "reason": "nothing", "count": 0,
                     "message": "没有待推送的数据提交"}
         if not is_data_only(root, commits):
+            msg = f"有 {len(commits)} 个待推提交含非数据改动，需人工推送"
+            log_event(f"未推送: {msg}（{'手动' if manual else '自动'}）", root)
             return {"ok": False, "reason": "non-data", "count": len(commits),
-                    "message": f"有 {len(commits)} 个待推提交含非数据改动，需人工推送"}
+                    "message": msg}
         if not manual and not cfg["auto"]:
+            msg = f"有 {len(commits)} 个数据提交待推，自动推送已关闭"
+            log_event(f"未推送: {msg}", root)
             return {"ok": False, "reason": "auto-off", "count": len(commits),
-                    "message": f"有 {len(commits)} 个数据提交待推，自动推送已关闭"}
+                    "message": msg}
     except RuntimeError as e:
-        return {"ok": False, "reason": "error", "count": 0,
-                "message": f"推送检查失败: {e}"}
+        msg = f"推送检查失败: {e}"
+        log_event(msg, root)
+        return {"ok": False, "reason": "error", "count": 0, "message": msg}
     delays = (cfg["delay_sec"], min(120, cfg["delay_sec"] * 3))
+    mode = "手动" if manual else "自动"
+    log_event(f"开始推送 {len(commits)} 个提交（{mode}, 重试至多 {cfg['retries']} 次）",
+              root)
     ok, out = gitpush.push(REMOTE, BRANCH, timeout=90 if manual else 180,
                            attempts=cfg["retries"], delays=delays, cwd=root,
                            ref=head)
     if ok:
-        return {"ok": True, "reason": "pushed", "count": len(commits),
-                "message": f"已推送 {len(commits)} 个数据提交"}
+        msg = f"已推送 {len(commits)} 个数据提交"
+        log_event(msg, root)
+        return {"ok": True, "reason": "pushed", "count": len(commits), "message": msg}
+    msg = "推送失败，稍后重试"
+    log_event(f"{msg}（{mode}）", root, detail=out)
     return {"ok": False, "reason": "push-failed", "count": len(commits),
-            "message": "推送失败，稍后重试", "detail": out[-500:]}
+            "message": msg, "detail": out[-500:]}
 
 
 def auto_push(root=None) -> dict:
@@ -189,6 +247,9 @@ def auto_push(root=None) -> dict:
 
 
 def _print_human(cmd: str, data: dict) -> None:
+    if cmd == "log":
+        print("\n".join(data["lines"]) or "（还没有推送记录）")
+        return
     if cmd == "settings":
         s = data["settings"]
         print(f"自动推送 {'开' if s['auto'] else '关'}，"
@@ -198,6 +259,8 @@ def _print_human(cmd: str, data: dict) -> None:
         s = data["settings"]
         print(f"自动推送: {'开' if s['auto'] else '关'}")
         print(f"待推提交: {data['pending']}（{'可推' if data['can_push'] else '不可推'}）")
+        if data.get("last_log"):
+            print(f"最近推送: {data['last_log']}")
         if data.get("error"):
             print(f"检查失败: {data['error']}")
         return
@@ -224,11 +287,20 @@ def main(argv=None) -> int:
     p.add_argument("--delay", type=int)
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("log", help="查看推送日志尾部")
+    p.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
     if args.cmd == "status":
         data = status()
     elif args.cmd == "push":
         data = push(manual=args.manual)
+    elif args.cmd == "log":
+        try:
+            lines = log_path().read_text(encoding="utf-8").splitlines()[-30:]
+        except OSError:
+            lines = []
+        data = {"ok": True, "lines": lines}
     else:
         cur = load_settings()
         if args.auto is not None:

@@ -194,12 +194,37 @@ def test_live_snapshot_manifest() -> None:
         check("快照不产生归档文件", not archived, str(archived))
 
 
+def test_initial_snapshot_without_slices() -> None:
+    """会话开始、一片未滚时也要有 manifest: 否则夜间发布校验整轮被拒
+    (实测 2026-11-04 06:39 轮, 06:00 开录后第一小时内无快照)。"""
+    with tempfile.TemporaryDirectory(prefix="dmk_mf0_") as td:
+        sess = Path(td) / "2026-11-05" / "7734200"
+        r = make_recorder(sess, "7734200_s0600.jsonl", 1_793_000_000_000, 0)
+        r.start_snapshot_now(sess)
+
+        mf_path = sess / "manifest.json"
+        check("开录即有 manifest", mf_path.is_file())
+        mf = json.loads(mf_path.read_text(encoding="utf-8"))
+        check("初始快照 files 为空", mf["files"] == [], str(mf["files"]))
+        check("初始快照标记 running", mf["ended_by"] == "running", str(mf["ended_by"]))
+        check("初始快照计数 0", mf["dm_count"] == 0, str(mf["dm_count"]))
+        check("初始快照不指向 afp", mf["afp"] is None, str(mf["afp"]))
+
+        # 滚出第一片后, 快照能正常覆盖初始版
+        write_slices(sess, [("7734200_s0600.jsonl.gz", 10, 1_793_000_000_000)])
+        r._write_live_manifest(sess)
+        mf2 = json.loads(mf_path.read_text(encoding="utf-8"))
+        check("滚片后快照更新", mf2["files"] == ["7734200_s0600.jsonl.gz"],
+              str(mf2["files"]))
+
+
 def main() -> int:
     print("manifest 权威性回归")
     for fn in (test_second_session_keeps_first,
                test_no_data_no_manifest,
                test_afp_not_counted_as_danmaku,
-               test_live_snapshot_manifest):
+               test_live_snapshot_manifest,
+               test_initial_snapshot_without_slices):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

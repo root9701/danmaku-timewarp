@@ -73,6 +73,26 @@ def test_settings():
         check("坏 JSON 回默认", pushctl.load_settings(root)["auto"] is True)
 
 
+def test_log():
+    with tempfile.TemporaryDirectory(prefix="dmk_pc_") as td:
+        root = Path(td)
+        check("无日志返回空", pushctl.log_line(root) == "")
+        pushctl.log_event("开始推送 2 个提交（自动）", root)
+        pushctl.log_event("已推送 2 个数据提交", root)
+        last = pushctl.log_line(root)
+        check("最近一条可读", "已推送 2 个数据提交" in last, last)
+        check("日志带时间戳", last[:4].isdigit(), last)
+
+        pushctl.log_event("推送失败（手动）", root, detail="fatal: unable to access\nConnection reset")
+        text = pushctl.log_path(root).read_text(encoding="utf-8")
+        check("细节缩进落盘", "    Connection reset" in text, text)
+
+        for i in range(pushctl.LOG_MAX + 20):
+            pushctl.log_event(f"filler {i}", root)
+        n = len(pushctl.log_path(root).read_text(encoding="utf-8").splitlines())
+        check("日志不超过环形上限", n <= pushctl.LOG_MAX + 5, n)
+
+
 def test_push_boundary():
     with tempfile.TemporaryDirectory(prefix="dmk_pc_") as td:
         work, remote = _repo(td)
@@ -115,6 +135,7 @@ def test_auto_switch():
 def main() -> int:
     print("pushctl 回归")
     test_settings()
+    test_log()
     test_push_boundary()
     test_auto_switch()
     if FAILED:

@@ -494,6 +494,10 @@ class Recorder:
                           if self._afp_enabled else None)
         self._archive_stale_ledgers()  # 收尾未执行(被强制终止)的旧会话账本, 先归档再开写
         self._open_slice()
+        # 会话诞生即有 manifest: 第一片要等下一个整点, 这之前夜间流水线的发布
+        # 校验会因"会话目录缺 manifest"整轮被拒。测试会话不发布, 不需要。
+        if not self.is_test:
+            self.start_snapshot_now(self._session_dir_path())
         if self._afp_path is not None:  # 异步启动, 失败自吞
             self._afp_task = asyncio.create_task(self._start_afp())
 
@@ -1196,13 +1200,45 @@ class Recorder:
                 continue                  # 坏文件跳过, 不让整个 manifest 失败
         return parts, dms, first, last
 
+    def _manifest_payload(self, day, files, dm_total, first_ms, last_ms,
+                          meta_path, afp_gz, meta, snapshot):
+        """组装 manifest 字典。抽出来只为压住 _write_manifest_atomic 的长度。"""
+        # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
+        # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
+        try:
+            from live_audiofp import HOP_SEC as _HOP, WIN_SEC as _WIN
+        except Exception:
+            _HOP, _WIN = 0.4, 0.4
+        return {
+            "schema_version": 1,
+            "room": self.room_id,
+            "match_date": day,
+            "is_test": bool(self.is_test),
+            "start_ms": first_ms or self.first_ts or (
+                int(self.record_start.timestamp() * 1000) if self.record_start else None),
+            "end_ms": last_ms or self.last_ts or (
+                int(self.record_end.timestamp() * 1000) if self.record_end else None),
+            "dm_count": dm_total if snapshot else (dm_total or self.dm_count),
+            "sc_count": self.sc_count,
+            "files": files,
+            "afp": (None if snapshot else
+                    ({"file": afp_gz.name if afp_gz else None,
+                      "hop": _HOP, "win": _WIN}
+                     if self._afp_path is not None else None)),
+            "meta": None if snapshot else (meta_path.name if meta_path else None),
+            "collector_version": VERSION,
+            "ended_by": "running" if snapshot else meta.get("ended_by"),
+        }
+
     def _write_manifest_atomic(self, meta_path, afp_gz, meta, snapshot=False, target=None):
         """写 manifest.json(schema_version 契约)。失败只告警, 不影响其他产物。
 
         snapshot=True 是采集期间的快照: 只含已封口切片, afp/meta 置空,
         ended_by="running"; 收尾时 finalize 会用最终版覆盖它。快照覆盖快照不归档,
         否则每滚一小时就多一份 manifest_runN.json。target 由快照线程传入(后台线程
-        不能再读会被改写的 self.file_path)。
+        不能再读会被改写的 self.file_path)。快照允许 files 为空: 会话刚开始、
+        一片还没滚完时也要有 manifest, 否则夜间发布的 pack_data 校验会因
+        "会话目录缺 manifest"整轮被拒(实测 2026-11-04 06:39 轮)。
         """
         manifest_path = target or self._manifest_target_path()
         if manifest_path is None:
@@ -1212,8 +1248,8 @@ class Recorder:
             sess_dir = manifest_path.parent
             files, dm_total, first_ms, last_ms = self._scan_session_files(
                 sess_dir, completed_only=snapshot)
-            if snapshot and not files:
-                return                      # 一个已封口切片都没有: 还没什么可发布
+            if snapshot and not files and self._parts:
+                return                  # 已滚过片却扫不到: 异常状态, 保留旧 manifest
             # 同目录里的旧 manifest 先归档(manifest_runN.json), 绝不静默覆盖:
             # 它记录的是上一次会话的账, 直接顶掉就查不到那次录了多久/多少条了。
             # 例外: 本次采集自己的快照不是"上一次会话的账", 直接覆盖即可。
@@ -1221,34 +1257,8 @@ class Recorder:
                     and not self._manifest_is_live_snapshot(manifest_path)):
                 with contextlib.suppress(Exception):
                     self._archive_existing([manifest_path])
-            start_ms = first_ms or self.first_ts or (
-                int(self.record_start.timestamp() * 1000) if self.record_start else None)
-            end_ms = last_ms or self.last_ts or (
-                int(self.record_end.timestamp() * 1000) if self.record_end else None)
-            # afp 参数**不要硬编码**: 从 sidecar 模块读实际常量, 否则将来调了
-            # hop/win 而这里没同步, manifest 会记录错误的参数, 下游按它算指纹就错了。
-            try:
-                from live_audiofp import HOP_SEC as _HOP, WIN_SEC as _WIN
-            except Exception:
-                _HOP, _WIN = 0.4, 0.4
-            mf = {
-                "schema_version": 1,
-                "room": self.room_id,
-                "match_date": day,
-                "is_test": bool(self.is_test),
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "dm_count": dm_total if snapshot else (dm_total or self.dm_count),
-                "sc_count": self.sc_count,
-                "files": files,
-                "afp": (None if snapshot else
-                        ({"file": afp_gz.name if afp_gz else None,
-                          "hop": _HOP, "win": _WIN}
-                         if self._afp_path is not None else None)),
-                "meta": None if snapshot else (meta_path.name if meta_path else None),
-                "collector_version": VERSION,
-                "ended_by": "running" if snapshot else meta.get("ended_by"),
-            }
+            mf = self._manifest_payload(day, files, dm_total, first_ms, last_ms,
+                                        meta_path, afp_gz, meta, snapshot)
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps(mf, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1281,6 +1291,18 @@ class Recorder:
             return
         self._snapshot_task = asyncio.create_task(
             asyncio.to_thread(self._write_live_manifest, sess_dir))
+
+    def start_snapshot_now(self, sess_dir):
+        """会话开始时写第一份 manifest 快照(同步, 只在录制启动路径调用)。
+
+        为什么不能等第一次滚切片: 滚切片要等到下一个整点, 这一小时内会话目录
+        没有 manifest, 夜间流水线的 pack_data 校验会整轮拒绝发布。
+        """
+        try:
+            self._write_manifest_atomic(None, None, {}, snapshot=True,
+                                        target=Path(sess_dir) / "manifest.json")
+        except Exception as e:              # 快照失败不影响开录, 滚片时会再写
+            log.warning("初始 manifest 快照失败(不影响采集): %s", e)
 
     def _write_meta_atomic(self, meta_path, meta):
         """归档已存在的 meta(无论来源) -> tmp 原子写入 -> Path.replace 顶上。

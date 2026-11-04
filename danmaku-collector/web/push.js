@@ -16,13 +16,28 @@ function renderPush(j) {
   if (j.branch && j.branch !== 'main') {
     $('push-pending').textContent = '—';
     $('push-result').textContent = '当前分支 ' + j.branch + '，只推 main';
-    return;
+  } else {
+    const pending = j.pending || 0;
+    $('push-pending').textContent = pending ? (pending + ' 个') : '无';
+    $('push-result').textContent = pending
+      ? (j.data_only ? '可推送' : '含非数据改动，需人工推送')
+      : '无待推送';
   }
-  const pending = j.pending || 0;
-  $('push-pending').textContent = pending ? (pending + ' 个') : '无';
-  $('push-result').textContent = pending
-    ? (j.data_only ? '可推送' : '含非数据改动，需人工推送')
-    : '无待推送';
+  if (j.last_log) {
+    const box = $('push-log');
+    box.textContent = j.last_log;
+    box.hidden = false;
+  }
+}
+
+async function loadPushLog() {
+  try {
+    const j = await api('/api/push/log');
+    const lines = j.lines || [];
+    const box = $('push-log');
+    box.textContent = lines.length ? lines.join('\n') : '（还没有推送记录）';
+    box.hidden = false;
+  } catch (e) { /* 日志拉不到不打扰用户, 卡片上已有最近结果 */ }
 }
 
 async function loadPush() {
@@ -68,9 +83,11 @@ function bindPush() {
   $('btn-push-now').addEventListener('click', pushNow);
   $('btn-push-refresh').addEventListener('click', loadPush);
   $('btn-save-push').addEventListener('click', savePushSettings);
+  $('push-log').addEventListener('click', loadPushLog);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   bindPush();
   loadPush();
+  loadPushLog();
 });

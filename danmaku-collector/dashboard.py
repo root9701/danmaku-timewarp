@@ -527,6 +527,10 @@ async def api_push_status(request):
     return web.json_response(data)
 
 
+async def api_push_log(request):
+    return web.json_response(await asyncio.to_thread(_run_pushctl, "log", timeout=60))
+
+
 async def api_push(request):
     if STATE.get("push_running"):
         return web.json_response({"ok": False, "error": "正在推送，请稍候"})
@@ -646,6 +650,7 @@ def main():
     app.router.add_get("/api/schedule", api_schedule)
     app.router.add_post("/api/schedule/refresh", api_schedule_refresh)
     app.router.add_get("/api/push", api_push_status)
+    app.router.add_get("/api/push/log", api_push_log)
     app.router.add_post("/api/push", api_push)
     app.router.add_post("/api/push/settings", api_push_settings)
     app.on_shutdown.append(on_shutdown)

@@ -3,11 +3,13 @@
   "room": 7734200,
   "match_date": "2026-11-06",
   "is_test": false,
-  "start_ms": 1793916000309,
-  "end_ms": null,
-  "dm_count": 0,
-  "sc_count": 0,
-  "files": [],
+  "start_ms": 1793916002419,
+  "end_ms": 1793919600199,
+  "dm_count": 42474,
+  "sc_count": 21,
+  "files": [
+    "7734200_s0600.jsonl.gz"
+  ],
   "afp": null,
   "meta": null,
   "collector_version": "1.4.2",

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-05T22:38:34Z",
+  "generated_at": "2026-11-05T23:39:08Z",
   "latest": "2026-11-06",
   "days": {
     "2026-10-26": {
@@ -572,19 +572,25 @@
     },
     "2026-11-06": {
       "files": [
+        "data/2026-11-06/7734200/7734200_s0600.jsonl.gz",
         "data/2026-11-06/7734200/manifest.json"
       ],
       "file_sizes": [
         {
+          "name": "data/2026-11-06/7734200/7734200_s0600.jsonl.gz",
+          "bytes": 916661,
+          "sha256": "8e510300b380b87ed672bad71a6cdb2f5fa1807f20124c3de4008b660b5e439d"
+        },
+        {
           "name": "data/2026-11-06/7734200/manifest.json",
-          "bytes": 292,
-          "sha256": "43ffb014598f458e822f3aaf7eadfb740ec180a7a393827d4976aa79924223c1"
+          "bytes": 340,
+          "sha256": "2b831770b7efb694fc4f5b2b3ceb719edefe8c078407a5f5c8418e46c0aec9ba"
         }
       ],
       "sessions": [
         "data/2026-11-06/7734200"
       ],
-      "bytes": 292
+      "bytes": 917001
     }
   }
 }

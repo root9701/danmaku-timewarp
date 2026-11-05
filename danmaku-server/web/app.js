@@ -295,7 +295,7 @@
     });
   }
 
-  function loadDays() {
+  function loadDays(keepDate) {
     getJson('/api/days').then(function (j) {
       if (!j || !j.ok || !Array.isArray(j.days)) { throw new Error('数据格式错误'); }
       daysCache = j.days;
@@ -327,7 +327,9 @@
         if (!daysCache[di].is_test_group) { firstReal = di; break; }
       }
       if (daysCache.length) {
-        var pick = firstReal >= 0 ? daysCache[firstReal].date : daysCache[0].date;
+        // keepDate: 只补对齐/指纹时留在原地; 有新日期时传空串, 回到最新那天。
+        var keep = keepDate && daysCache.some(function (d) { return d.date === keepDate; });
+        var pick = keep ? keepDate : (firstReal >= 0 ? daysCache[firstReal].date : daysCache[0].date);
         selDate.value = pick;
         loadFiles(pick);
         loadOverview(pick);
@@ -2488,8 +2490,8 @@
   // 复用 loadDays(): 它已处理"数据目录日 vs 比赛日"的显示差异与测试会话分组 ——
   // 这里手写一份只会漏掉那些细节。代价是丢失用户当前的日期选择, 但刚下完新数据时
   // 用户本来就想看新的那天, 重置反而是期望行为。
-  function reloadDays() {
-    loadDays();
+  function reloadDays(keepDate) {
+    loadDays(keepDate);
   }
 
   btnUpdate.addEventListener('click', function () {
@@ -2572,7 +2574,15 @@
         setUpdateStatus(j.message + '（' + fmtMB(j.bytes) + '），日期列表已刷新' + appNotice,
           appNotice ? 'warn' : 'ok');
       }
-      if ((j.updated || []).length) { reloadDays(); }
+      // 刷新条件必须用 touched 而不是 updated: 只补对齐/只补指纹时 updated 为空,
+      // 但场次列表和 offset 已经变了 —— 不刷新就要用户自己按 F5。
+      // loadDays 内部会连带重载会话、场次下拉与总览, 所以这里只需决定"停在哪个日期"。
+      var touched = (j.touched || []).concat(j.updated || []);
+      if (touched.length) {
+        // 有新日期时回到最新那天(用户刚拉完新弹幕, 想看的就是它);
+        // 只补对齐/指纹时留在原地 —— 把正在看的那天顶掉反而更烦。
+        reloadDays((j.updated || []).length > 0 ? '' : selDate.value);
+      }
     }).catch(function (e) {
       setUpdateStatus('拉取失败：' + (e && e.message ? e.message : '未知错误'), 'err');
     }).then(function () {

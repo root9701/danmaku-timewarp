@@ -337,6 +337,36 @@ def check(data_dir: Path, want_afp: bool = True) -> dict:
     }
 
 
+def _download_all(todo, fix, redo_day, redo, data_dir, want_afp, on_progress) -> tuple:
+    """按四类补充依次下载, 返回 (新日期列表, 动过的日期列表, 总字节)。
+
+    "动过的日期"(touched) 是前端刷新的唯一依据。历史缺陷: 旧实现只把新日期
+    记进 updated, 于是"只补对齐/只补指纹"时 updated 为空 —— 界面提示"已刷新"
+    却什么都没变, 用户必须按 F5。
+    """
+    groups = (todo, fix, redo_day, redo)       # 顺序即下载顺序
+    total = sum(len(g) for g in groups)
+    nbytes, touched = 0, []
+    for i, (day, entry) in enumerate(todo + fix + redo_day + redo, 1):
+        if on_progress:
+            on_progress(i, total, day)
+
+        def _cb(rel, n, _d=day, _i=i):
+            if on_progress:
+                on_progress(_i, total, f"{_d}  {Path(rel).name}")
+        try:
+            nbytes += download_day(day, entry, data_dir, _cb, want_afp=want_afp)
+        except UpdateError:
+            raise
+        except OSError as e:
+            raise UpdateError(f"{day} 写入失败: {e}") from e
+        # 去重保序: 同一天可能既补了指纹又补了对齐, 界面只需刷新一次
+        if day not in touched:
+            touched.append(day)
+    new_days = [d for d, _ in todo]
+    return new_days, touched, nbytes
+
+
 def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
     """执行增量更新。返回结果摘要。
 
@@ -351,24 +381,10 @@ def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
     redo = align_fix_days(idx, have, data_dir)
     redo_day = day_fix_days(idx, have, data_dir)
     if not todo and not fix and not redo and not redo_day:
-        return {"updated": [], "bytes": 0, "message": "已是最新"}
+        return {"updated": [], "touched": [], "bytes": 0, "message": "已是最新"}
 
-    done, nbytes = [], 0
-    total = len(todo) + len(fix) + len(redo_day) + len(redo)
-    for i, (day, entry) in enumerate(todo + fix + redo_day + redo, 1):
-        if on_progress:
-            on_progress(i, total, day)
-        def _cb(rel, n, _d=day, _i=i):
-            if on_progress:
-                on_progress(_i, total, f"{_d}  {Path(rel).name}")
-        try:
-            nbytes += download_day(day, entry, data_dir, _cb, want_afp=want_afp)
-            if i <= len(todo):
-                done.append(day)
-        except UpdateError:
-            raise
-        except OSError as e:
-            raise UpdateError(f"{day} 写入失败: {e}") from e
+    done, touched, nbytes = _download_all(
+        todo, fix, redo_day, redo, data_dir, want_afp, on_progress)
     parts = []
     if done:
         parts.append(f"已新增 {len(done)} 天")
@@ -378,4 +394,5 @@ def update(data_dir: Path, on_progress=None, want_afp: bool = True) -> dict:
         parts.append(f"更新 {len(redo_day)} 天的采集数据（比赛可能仍在进行）")
     if redo:
         parts.append(f"更新 {len(redo)} 天的校准结果")
-    return {"updated": done, "bytes": nbytes, "message": "，并".join(parts) or "已是最新"}
+    return {"updated": done, "touched": touched, "bytes": nbytes,
+            "message": "，并".join(parts) or "已是最新"}

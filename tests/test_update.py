@@ -206,6 +206,12 @@ def main() -> int:
               len(list((tmp / "afp_skip").rglob("*.afp.jsonl"))) == len(idx["days"]),
               "只补了部分")
         check("补齐不动弹幕文件", res_fix["updated"] == [], res_fix["updated"])
+        # touched 必须列出动过的日期: 前端靠它决定要不要刷新界面。
+        # 历史缺陷: 旧实现只把"新日期"放进 updated, 补指纹/补对齐时为空,
+        # 界面提示"已刷新"却什么都没变, 用户得自己按 F5。
+        check("补齐也报出动过的日期",
+              sorted(res_fix.get("touched") or []) == sorted(idx["days"]),
+              res_fix.get("touched"))
         check("补齐的消息说明是补指纹", "指纹" in res_fix["message"], res_fix["message"])
         check("再跑一次不再补", dataupdate.update(skip, want_afp=True).get("message")
               == "已是最新")

@@ -1,12 +1,75 @@
 {
-  "align": {},
+  "align": {
+    "2026-11-05|7734200": {
+      "bvs": [
+        "BV1fAxo6oEPt"
+      ],
+      "date": "2026-11-05",
+      "file": "7734200",
+      "offset_sec": 46.837
+    },
+    "2026-11-05|7734200|BV1fAxo6oEPt": {
+      "auto": {
+        "confidence": 4.06,
+        "method": "audiofp",
+        "ts": "2026-11-05T08:15:21"
+      },
+      "bv": "BV1fAxo6oEPt",
+      "date": "2026-11-05",
+      "file": "7734200",
+      "offset_sec": 46.837,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 4.06,
+          "duration": 3126,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 46.837,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、4 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-05T08:15:21",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 7.353,
+          "duration": 2562,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3391.872,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-05T08:15:21",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月4日 GEN vs LYON",
+      "total_pages": 3
+    }
+  },
   "lists": {
     "2026-11-05": [
       {
         "bv": "BV1fAxo6oEPt",
-        "offset_sec": 0,
+        "offset_sec": 46.837,
+        "pages": {
+          "1": {
+            "confidence": 4.06,
+            "offset_sec": 46.837,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 7.353,
+            "offset_sec": 3391.872,
+            "part": "第二局"
+          }
+        },
         "start_ms": 1793829600000,
-        "title": "GEN vs LYON"
+        "title": "GEN vs LYON",
+        "total_pages": 3
       }
     ]
   }

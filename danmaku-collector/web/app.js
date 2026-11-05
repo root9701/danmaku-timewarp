@@ -234,8 +234,10 @@ function renderSchedule(j) {
       tr.appendChild(td(it.title || ''));
       tr.appendChild(td(it.bv ? it.bv : '未找到回放', it.bv ? '' : 'status warn'));
       const pages = it.pages && typeof it.pages === 'object' ? Object.keys(it.pages).length : 0;
-      tr.appendChild(td(pages ? (pages + '/' + (it.total_pages || '?')) : '未对齐',
-        pages ? 'status' : 'status warn'));
+      const cell = td(pages ? (pages + '/' + (it.total_pages || '?')) : '未对齐',
+        pages ? 'status' : 'status warn');
+      cell.title = pages ? '已对齐的分P' : '还没算出对齐位置';
+      tr.appendChild(cell);
       tbody.appendChild(tr);
       count += 1;
     });

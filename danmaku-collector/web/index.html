@@ -4,10 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>弹幕采集控制台</title>
-<link rel="stylesheet" href="/web/style.css?v=1.4.1">
-<script src="/web/clock.js?v=1.4.1" defer></script>
-<script src="/web/app.js?v=1.4.1" defer></script>
-<script src="/web/push.js?v=1.4.1" defer></script>
+<link rel="stylesheet" href="/web/style.css?v=1.4.2">
+<script src="/web/clock.js?v=1.4.2" defer></script>
+<script src="/web/app.js?v=1.4.2" defer></script>
+<script src="/web/pipeline.js?v=1.4.2" defer></script>
+<script src="/web/push.js?v=1.4.2" defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -64,6 +65,36 @@
           <input id="test-sec" type="number" min="10" max="600" value="60" class="narrow">
           <span class="hint" style="margin:0">秒（使用下面的默认房间）</span>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>发布进程（自动校准 + 提交推送）</h2>
+        <div class="kv">
+          <span class="k">状态</span><span id="pipe-state">—</span>
+          <span class="k">巡检间隔</span><span id="pipe-interval">—</span>
+          <span class="k">最近心跳</span><span id="pipe-heartbeat">—</span>
+        </div>
+        <div class="sub" id="pipe-hint"></div>
+        <div class="btns">
+          <button id="btn-pipe-start" class="primary">启动发布进程</button>
+          <button id="btn-pipe-stop" class="danger">停止发布进程</button>
+        </div>
+        <div class="hint">采集期间由队列自动开启。关掉后仍可用下面的「校准并提交」手动跑一次。</div>
+      </div>
+
+      <div class="card">
+        <h2>校准与提交</h2>
+        <div class="kv">
+          <span class="k">数据日</span><span id="cal-date">—</span>
+          <span class="k">对齐状态</span><span id="cal-state">—</span>
+          <span class="k">校准中</span><span id="cal-running">否</span>
+        </div>
+        <div class="btns">
+          <button id="btn-calibrate" class="primary">校准并提交</button>
+          <button id="btn-cal-refresh" class="ghost">刷新状态</button>
+        </div>
+        <div id="cal-output" class="dm" style="max-height:150px" hidden></div>
+        <div class="hint">提前结束采集后用这个：发现赛程 → 逐分P 对齐 → 分发 → 提交 → 按开关推送。</div>
       </div>
 
       <div class="card">

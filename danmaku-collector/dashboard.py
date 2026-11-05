@@ -19,13 +19,25 @@ import collector
 import datablocks
 import tasks
 
+# 发布进程的锁与心跳住在 tools/ 下: 采集端与发布端都要读同一份状态, 不能各写一套。
+# 控制台本来就只能在仓库布局里用(它要调 tools/nightly.py 与 tools/pushctl.py),
+# 所以这里加一行 sys.path 是安全的; 取不到时降级为"看不见发布进程", 不影响采集。
+_TOOLS = collector.SCRIPT_DIR.parent / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+try:
+    import pipelinelock
+except ImportError:                       # 独立部署的采集端: 没有发布进程概念
+    pipelinelock = None
+
 PORT = int(os.environ.get("DANMAKU_CONSOLE_PORT", "8787"))
 BLOCKS_TTL = 10.0
 _BLOCKS_CACHE = {"key": None, "ts": 0.0, "data": []}
 STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
          "deadline": None, "current_task": None, "manual_stop": False,
-         "pipeline": None, "pipeline_log": None, "push_running": False}
+         "pipeline": None, "pipeline_log": None, "push_running": False,
+         "calibrating": False}
 TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
 WEB_DIR = collector.SCRIPT_DIR / "web"
 ROOT = collector.SCRIPT_DIR.parent
@@ -369,10 +381,28 @@ async def _pause(stop_event, seconds: float) -> None:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
 
 
-def _pipeline_start() -> bool:
-    """随队列启动夜间发布(独立子进程)。发布失败不影响采集 —— 这是硬边界。"""
+def _pipeline_alive() -> dict:
+    """发布进程在不在跑。**认心跳, 不认进程句柄**。
+
+    为什么不能只看 STATE["pipeline"]: 作者可能在终端手动启动过一个发布进程,
+    控制台手里没有它的 Popen 句柄。只看句柄会显示"未运行", 于是用户再点一次
+    启动 -> 两个进程同时 commit(2026-11-05 实测撞 index.lock)。心跳文件是
+    两边都能看见的唯一事实来源。
+    """
+    if pipelinelock is None:
+        proc = STATE.get("pipeline")
+        return {"alive": bool(proc is not None and proc.poll() is None),
+                "owned": True, "no_lock": True}
+    info = pipelinelock.is_alive()
     proc = STATE.get("pipeline")
-    if proc is not None and proc.poll() is None:
+    info["owned"] = bool(proc is not None and proc.poll() is None)
+    return info
+
+
+def _pipeline_start() -> bool:
+    """启动常驻发布进程。已有实例在跑时直接复用, 不再派生第二个。"""
+    if _pipeline_alive().get("alive"):
+        collector.log.info("发布进程已在运行, 复用而不重复启动")
         return True
     if not NIGHTLY.is_file():
         collector.log.warning("夜间发布不可用: 缺少 %s", NIGHTLY)
@@ -382,6 +412,8 @@ def _pipeline_start() -> bool:
     log_file = open(log_path, "ab")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
+        if pipelinelock is not None:
+            pipelinelock.clear_stop()
         STATE["pipeline"] = subprocess.Popen(
             [sys.executable, str(NIGHTLY), "--loop", "--interval", str(PIPELINE_INTERVAL)],
             cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
@@ -397,8 +429,34 @@ def _pipeline_start() -> bool:
 
 
 def _pipeline_stop() -> None:
-    """停止夜间发布子进程; 只影响发布, 不碰采集。"""
-    proc, STATE["pipeline"] = STATE.get("pipeline"), None
+    """停发布进程: 先请求优雅退出, 超时才强杀。
+
+    为什么不一上来就 terminate: 它可能正卡在 git commit / pack_data 里,
+    强杀会留下 index.lock 或半写的 data-index.json。先写停止请求让它自己退,
+    等 8 秒(它在分段睡眠里最多 5 秒就能看到), 不退再强杀。
+    """
+    if pipelinelock is None:
+        _pipeline_kill()
+        return
+    if not pipelinelock.is_alive().get("alive"):
+        STATE["pipeline"] = None
+        _close_pipeline_log()
+        return
+    pipelinelock.request_stop()
+    for _ in range(16):                     # 最多等 8 秒
+        if not pipelinelock.is_alive().get("alive"):
+            break
+        time.sleep(0.5)
+    _pipeline_kill()
+    pipelinelock.clear_stop()
+    pipelinelock.clear_pid()
+    STATE["pipeline"] = None
+    _close_pipeline_log()
+
+
+def _pipeline_kill() -> None:
+    """强杀自己派生的那个(外部启动的杀不到, 只能靠停止请求)。"""
+    proc = STATE.get("pipeline")
     if proc is not None and proc.poll() is None:
         with contextlib.suppress(Exception):
             proc.terminate()
@@ -407,6 +465,9 @@ def _pipeline_stop() -> None:
         except Exception:
             with contextlib.suppress(Exception):
                 proc.kill()
+
+
+def _close_pipeline_log() -> None:
     log_file = STATE.pop("pipeline_log", None)
     if log_file is not None:
         with contextlib.suppress(Exception):
@@ -460,6 +521,70 @@ async def api_queue_start(request):
     return web.json_response({"ok": True})
 
 
+async def api_pipeline(request):
+    """发布进程的开关与状态。GET 只看, POST 开/关。
+
+    开关是显式的: 队列启动时会自动开(采集期间总要有发布), 但用户也能单独关掉
+    —— 比如自己手动跑校准、不想让常驻进程同时在 commit。
+    """
+    if request.method == "GET":
+        info = _pipeline_alive()
+        info["ok"] = True
+        return web.json_response(info)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    action = str((body or {}).get("action") or "").strip()
+    if action == "start":
+        ok = _pipeline_start()
+        return web.json_response(
+            {"ok": ok, "error": "" if ok else "启动失败, 详见控制台日志"})
+    if action == "stop":
+        await asyncio.to_thread(_pipeline_stop)
+        return web.json_response({"ok": True})
+    return web.json_response({"ok": False, "error": "action 必须是 start 或 stop"})
+
+
+async def api_calibrate(request):
+    """手动跑一遍校准并提交: 提前结束采集后用的那条路。
+
+    走 nightly 的一次性模式(不加 --loop): 它会发现赛程 -> 逐分P 校准 ->
+    split_matches -> pack_data -> commit -> 按开关推送, 与常驻进程完全同一套代码。
+    为什么要子进程而不是在控制台里 import: 校准依赖 numpy/ffmpeg 等播放端依赖,
+    控制台的 venv 里不一定有; 子进程跑 tools/nightly.py 用的是它自己那套环境。
+    """
+    if STATE.get("calibrating"):
+        return web.json_response({"ok": False, "error": "正在校准，请稍候"})
+    if not NIGHTLY.is_file():
+        return web.json_response(
+            {"ok": False, "error": "当前不是仓库布局，无法校准（缺 tools/nightly.py）"})
+    day = _latest_data_date() or datetime.now().strftime("%Y-%m-%d")
+    STATE["calibrating"] = True
+
+    def _run():
+        # 常驻进程若在跑, 它会持有单轮锁; nightly 自己会等 90 秒再报冲突
+        return subprocess.run(
+            [sys.executable, str(NIGHTLY), "--date", day],
+            cwd=str(ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=1800)
+
+    try:
+        r = await asyncio.to_thread(_run)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return web.json_response({"ok": False, "error": f"校准失败: {e}"})
+    finally:
+        STATE["calibrating"] = False
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    lines = out.splitlines()
+    if r.returncode != 0:
+        tail = "\n".join(lines[-6:])
+        return web.json_response({"ok": False, "error": tail or "校准进程无输出",
+                                  "detail": out[-2000:]})
+    return web.json_response({"ok": True, "date": day, "output": out[-4000:],
+                              "lines": lines[-40:]})
+
+
 async def api_queue_stop(request):
     qstop = STATE.get("queue_stop")
     if qstop is None:
@@ -484,15 +609,16 @@ def _latest_data_date() -> str:
 
 
 def _load_schedule() -> dict:
-    """读分发层的赛程(align.json 的 lists)。读不到就是空, 不报错。"""
+    """读分发层的赛程(align.json 的 lists + align)。读不到就是空, 不报错。"""
     day = _latest_data_date()
     if not day:
-        return {"ok": True, "date": "", "lists": {}}
+        return {"ok": True, "date": "", "lists": {}, "align": {}}
     try:
         d = json.loads((_data_dir() / day / "align.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"ok": True, "date": day, "lists": {}}
-    return {"ok": True, "date": day, "lists": d.get("lists") or {}}
+        return {"ok": True, "date": day, "lists": {}, "align": {}}
+    return {"ok": True, "date": day,
+            "lists": d.get("lists") or {}, "align": d.get("align") or {}}
 
 
 async def api_schedule(request):
@@ -698,13 +824,16 @@ async def api_status(request):
         except (OSError, ValueError):
             pass
     queue_running = bool(STATE.get("queue_task") and not STATE["queue_task"].done())
-    proc = STATE.get("pipeline")
-    pipeline_running = bool(proc is not None and proc.poll() is None)
+    pipe = _pipeline_alive()
     deadline = STATE.get("deadline")
     data = {"running": running, "mode": STATE["mode"],
             "started_at": STATE["started_at"],
             "queue_running": queue_running,
-            "pipeline_running": pipeline_running,
+            # 认心跳而不认句柄: 外部启动的发布进程也要显示成"运行中", 否则用户会
+            # 以为没跑而再点一次, 变成两个进程同时 commit。
+            "pipeline_running": bool(pipe.get("alive")),
+            "pipeline": pipe,
+            "calibrating": bool(STATE.get("calibrating")),
             "current_task": STATE.get("current_task"),
             "deadline": deadline.at.strftime("%H:%M") if deadline else None,
             "finished_reason": STATE["reason"]["value"] if (not running and STATE["reason"]) else None,
@@ -760,6 +889,8 @@ def main():
     app.router.add_post("/api/extend", api_extend)
     app.router.add_post("/api/queue/start", api_queue_start)
     app.router.add_post("/api/queue/stop", api_queue_stop)
+    app.router.add_route("*", "/api/pipeline", api_pipeline)
+    app.router.add_post("/api/calibrate", api_calibrate)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/danmaku", api_danmaku)
     app.router.add_get("/api/schedule", api_schedule)

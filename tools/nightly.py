@@ -32,6 +32,7 @@ for sub in ("danmaku-server", "tools"):
 
 import server  # noqa: E402
 import calibrate  # noqa: E402
+import pipelinelock  # noqa: E402
 import pushctl  # noqa: E402
 
 DATA = server.DATA_DIR
@@ -259,6 +260,24 @@ async def discover_days(days: list) -> None:
             print(f"{day}: 刷新赛程失败({e})")
 
 
+def _run_once(args) -> int:
+    """跑一轮(或指定日期), 全程持有单轮锁。
+
+    单轮锁的意义: 常驻进程正在 commit 时, 手动点「校准并提交」不能同时进来 ——
+    两边各跑一次 split_matches/pack_data, 轻则重复提交, 重则撞 index.lock。
+    手动那条会等最多 90 秒(一轮通常几十秒), 等不到就明确报"正在跑, 稍后再试"。
+    """
+    lock = pipelinelock.FileLock(pipelinelock.TICK_LOCK)
+    if not lock.acquire(wait_sec=90):
+        print("另一轮巡检正在执行(单轮锁被占用), 本次跳过")
+        return 3
+    try:
+        asyncio.run(tick(args.dry_run, args.date))
+    finally:
+        lock.release()
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="夜间巡检: 校准 + 分发 + 提交/推送")
     ap.add_argument("--date", default="", help="只处理这一天(默认扫描正在采集的日期)")
@@ -273,11 +292,41 @@ def main() -> int:
     if args.discover_only:
         asyncio.run(discover_days([args.date] if args.date else running_days()))
         return 0
-    while True:
-        asyncio.run(tick(args.dry_run, args.date))
-        if not args.loop:
-            return 0
-        time.sleep(max(60, args.interval))
+    if not args.loop:
+        return _run_once(args)
+
+    # 常驻模式: 全机只允许一个。第二个进程直接退出, 而不是两边一起 commit。
+    loop_lock = pipelinelock.FileLock(pipelinelock.LOOP_LOCK)
+    if not loop_lock.acquire():
+        alive = pipelinelock.is_alive()
+        print(f"已有发布进程在运行(PID {alive.get('pid', '?')}), 本进程退出")
+        return 3
+    interval = max(60, args.interval)
+    pipelinelock.clear_stop()
+    try:
+        while True:
+            pipelinelock.beat(interval)
+            rc = _run_once(args)
+            if rc == 3:
+                print("跳过本轮(另一轮正在执行)")
+            # 停止请求由控制台写文件, 这里自己退 —— 不强杀, 免得停在 commit 中间
+            if pipelinelock.stop_requested():
+                print("收到停止请求, 发布进程退出")
+                break
+            # 分段睡眠: 一觉睡一小时会让"停止"要等一小时才生效
+            slept = 0
+            while slept < interval:
+                if pipelinelock.stop_requested():
+                    print("收到停止请求, 发布进程退出")
+                    return 0
+                time.sleep(min(5, interval - slept))
+                slept += 5
+                pipelinelock.beat(interval)
+    finally:
+        pipelinelock.clear_pid()
+        pipelinelock.clear_stop()
+        loop_lock.release()
+    return 0
 
 
 if __name__ == "__main__":

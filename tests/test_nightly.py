@@ -85,6 +85,63 @@ def test_discover_uses_fallback():
         nightly.server.discover_draft_for_date = old_for_date
 
 
+def test_loop_mode_single_instance():
+    """常驻模式必须拒绝第二个实例(实测事故: 两个 nightly 同时 commit)。"""
+    print("\n[单实例] 常驻模式的锁")
+    import argparse
+    import subprocess
+    import sys as _sys
+    tmp = Path(tempfile.mkdtemp(prefix="dmk_nl2_"))
+    try:
+        nightly.pipelinelock.RUN_DIR = tmp
+        nightly.pipelinelock.LOOP_LOCK = tmp / "pipeline.loop.lock"
+        nightly.pipelinelock.PID_PATH = tmp / "pipeline.pid"
+        nightly.pipelinelock.STOP_PATH = tmp / "pipeline.stop"
+        holder = nightly.pipelinelock.FileLock(nightly.pipelinelock.LOOP_LOCK)
+        holder.acquire()
+        args = argparse.Namespace(date="", loop=True, interval=3600,
+                                  dry_run=True, discover_only=False)
+        old_parse = nightly.argparse.ArgumentParser.parse_args
+        nightly.argparse.ArgumentParser.parse_args = lambda self: args
+        try:
+            rc = nightly.main()
+        finally:
+            nightly.argparse.ArgumentParser.parse_args = old_parse
+            holder.release()
+        check("已有实例时第二个退出", rc == 3, f"退出码 {rc}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_tick_lock_conflict():
+    """单轮锁冲突时跳过本轮, 而不是两边一起 commit。"""
+    print("\n[单轮] 冲突时跳过")
+    import argparse
+    tmp = Path(tempfile.mkdtemp(prefix="dmk_nl3_"))
+    try:
+        nightly.pipelinelock.TICK_LOCK = tmp / "pipeline.tick.lock"
+        holder = nightly.pipelinelock.FileLock(nightly.pipelinelock.TICK_LOCK)
+        holder.acquire()
+        args = argparse.Namespace(date="", loop=False, interval=3600,
+                                  dry_run=True, discover_only=False)
+        old_parse = nightly.argparse.ArgumentParser.parse_args
+        old_wait = nightly.pipelinelock.FileLock.acquire
+        # 把 90 秒等待改成 0, 免得测试真等
+        nightly.pipelinelock.FileLock.acquire = lambda self, wait_sec=0: old_wait(self, 0)
+        nightly.argparse.ArgumentParser.parse_args = lambda self: args
+        try:
+            rc = nightly.main()
+        finally:
+            nightly.argparse.ArgumentParser.parse_args = old_parse
+            nightly.pipelinelock.FileLock.acquire = old_wait
+            holder.release()
+        check("锁被占用时跳过", rc == 3, f"退出码 {rc}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_valid_day():
     check("合法日期", nightly._valid_day("2026-10-31"))
     check("拒绝 _test", not nightly._valid_day("_test"))
@@ -94,6 +151,8 @@ def main() -> int:
     print("夜间流水线回归")
     test_running_days_and_publish_paths()
     test_discover_uses_fallback()
+    test_loop_mode_single_instance()
+    test_tick_lock_conflict()
     test_valid_day()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项失败: {', '.join(FAILED)}")

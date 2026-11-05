@@ -57,6 +57,34 @@ def test_running_days_and_publish_paths():
               str(paths))
 
 
+def test_discover_uses_fallback():
+    """夜间流水线必须走带兜底的 discover_draft, 否则 Riot 漏场次的日子永远空列表。
+
+    历史缺陷: 播放端 2026-11-04 加了 B 站兜底, 这里仍调 discover_draft_for_date,
+    于是 2026-11-05 一整轮巡检都报"赛程里没有可识别的场次"。
+    """
+    called = {"fn": None}
+
+    def fake_draft(date):
+        called["fn"] = "discover_draft"
+        return [{"title": "GEN vs LYON", "teams": ["GEN", "LYON"], "bv": "BV_X",
+                 "start": __import__("datetime").datetime(2026, 11, 5, 6, 0)}]
+
+    old_draft, old_for_date = nightly.server.discover_draft, nightly.server.discover_draft_for_date
+    try:
+        nightly.server.discover_draft = fake_draft
+        nightly.server.discover_draft_for_date = lambda d: (_ for _ in ()).throw(
+            AssertionError("不该再调只查 Riot 的 discover_draft_for_date"))
+        import asyncio
+        nightly.server._session_match_date = lambda d: d
+        asyncio.run(nightly.discover("2026-11-05"))
+        check("夜间发现走带兜底的 discover_draft", called["fn"] == "discover_draft",
+              str(called))
+    finally:
+        nightly.server.discover_draft = old_draft
+        nightly.server.discover_draft_for_date = old_for_date
+
+
 def test_valid_day():
     check("合法日期", nightly._valid_day("2026-10-31"))
     check("拒绝 _test", not nightly._valid_day("_test"))
@@ -65,6 +93,7 @@ def test_valid_day():
 def main() -> int:
     print("夜间流水线回归")
     test_running_days_and_publish_paths()
+    test_discover_uses_fallback()
     test_valid_day()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项失败: {', '.join(FAILED)}")

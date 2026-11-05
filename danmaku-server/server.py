@@ -1864,19 +1864,30 @@ _BILI_DATE_SKIP = ("宣传片", "预告", "解说合集", "高光", "集锦", "�
 
 
 def _parse_date_videos(results: list, date: str) -> list:
-    """从官方账号当天上传的视频标题里解析对阵(同场取时长最长的正片)。"""
-    _, m, d = (int(x) for x in date.split("-"))
+    """从官方账号的回放标题里解析某天的对阵(同场取时长最长的正片)。
+
+    归属判定分两档, 先严后宽:
+      A 上传时间落在目标日 —— 官方总在比赛当天早上 7 点左右上传, 这是最可靠的
+        信号。实测 2026-11-05 的 GEN vs LYON 被官方标成"11月4日", 只看标题会
+        把它算到前一天, 目标日永远发现 0 场(2026-11-05 整晚无场次列表的根因)。
+      B 标题里的日期是目标日, 且上传不晚于目标日 —— 兜住官方延迟上传
+        (当晚打完、第二天才发)。要求"不晚于"是为了不把 A 档已归属到后一天的
+        比赛重复算进这一天: GEN vs LYON 标题写 11月4日、上传 11-05, 若不加这条
+        就会被 11-04 也认领一次。
+    往届同月日的回放按上传年份排除。
+
+    两档都保留但优先 A: A 有结果就只返回 A, 否则才退 B。
+    """
+    y, m, d = (int(x) for x in date.split("-"))
     date_strs = {f"{m}月{d}日", f"{m}月{d:02d}日"}
     day = datetime.strptime(date, "%Y-%m-%d").date()
-    best = {}
+    tiers = ({}, {})                      # 0=A(按上传日), 1=B(按标题日)
     for r in results:
         if not isinstance(r, dict) or r.get("type") != "video":
             continue
         if r.get("mid") != BILI_OFFICIAL_MID:
             continue
         title = html.unescape(_BILI_TAG_RE.sub("", str(r.get("title") or "")))
-        if not any(s in title for s in date_strs):
-            continue
         if any(k in title for k in _BILI_DATE_SKIP):
             continue
         mt = _BILI_DATE_TEAMS_RE.search(title)
@@ -1887,11 +1898,17 @@ def _parse_date_videos(results: list, date: str) -> list:
             pub = int(r.get("pubdate") or 0)
         except (TypeError, ValueError):
             pub = 0
-        if pub:
-            local = datetime.fromtimestamp(pub, DISCOVER_TZ)
-            if abs((local.date() - day).days) > 1:   # 往届同日期回放: 按上传时间排除
-                continue
+        local = datetime.fromtimestamp(pub, DISCOVER_TZ) if pub else None
+        if local is not None and local.year != y:
+            continue                       # 往届同月日的回放
+        has_title_date = any(s in title for s in date_strs)
+        if local is not None and local.date() == day:
+            tier = 0
+        elif has_title_date and (local is None or local.date() <= day):
+            tier = 1
         else:
+            continue
+        if local is None:
             local = datetime.combine(day, datetime.min.time(), tzinfo=DISCOVER_TZ)
         bv = str(r.get("bvid") or "").strip()
         if not bv:
@@ -1899,10 +1916,11 @@ def _parse_date_videos(results: list, date: str) -> list:
         key = frozenset((c1.lower(), c2.lower()))
         cand = {"title": f"{c1} vs {c2}", "teams": [c1, c2],
                 "start": local, "bv": bv}
+        best = tiers[tier]
         dur = _duration_sec(r.get("duration"))
         if key not in best or dur > best[key][0]:
             best[key] = (dur, cand)
-    return [cand for _, cand in best.values()]
+    return [cand for _, cand in (tiers[0] or tiers[1]).values()]
 
 
 def bili_discover_date(date: str) -> list:
@@ -1911,9 +1929,19 @@ def bili_discover_date(date: str) -> list:
     2026-11-04 实测: Riot getSchedule 与 lolesports 官网页都没有当天这场
     (淘汰赛首日/表演赛), 但官方账号 06:59 已上传 "【2026全球总决赛】11月4日
     TES vs IG", 于是「刷新赛程」发现 0 场, 用户拿不到 BV。只信 Riot 不够。
+
+    2026-11-05 又踩了一次: 官方把当天的 GEN vs LYON 标成"11月4日", 按标题
+    搜"11月5日"永远找不到。所以先按**不带日期**的关键词取全量官方投稿, 再由
+    _parse_date_videos 按上传时间归属; 标题日期搜索只作为补充(官方延迟上传)。
     """
     y, m, d = (int(x) for x in date.split("-"))
-    return _parse_date_videos(_bili_search_videos(f"{y}全球总决赛 {m}月{d}日"), date)
+    seen = {}
+    for kw in (f"{y}全球总决赛", f"{y}全球总决赛 {m}月{d}日"):
+        for r in _bili_search_videos(kw):
+            bv = str(r.get("bvid") or "").strip()
+            if bv and bv not in seen:
+                seen[bv] = r
+    return _parse_date_videos(list(seen.values()), date)
 
 
 def discover_draft(date: str) -> list:

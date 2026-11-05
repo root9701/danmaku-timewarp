@@ -91,14 +91,19 @@ def check_session(day: str, sess: Path) -> list:
         problems.append(f"{day}/{sess.name}: manifest 缺 schema_version")
 
     files = mf.get("files") or []
-    if not files:
+    # 采集中的会话(ended_by=running)允许 files 为空: 会话刚开始、第一片还没滚完时
+    # 采集端就会写一份空快照。把它当错误会让当天**所有**发布整轮被拒 ——
+    # 实测 2026-11-04 06:39、2026-11-05 06:36 都是这样, 空转一轮才等到整点滚片。
+    # 空快照本身不对外发布(夜间只 add 已封口 gz 与 manifest), 所以放行是安全的。
+    live = mf.get("ended_by") == "running"
+    if not files and not live:
         problems.append(f"{day}/{sess.name}: manifest.files 为空")
     for fn in files:
         # 切片可能是 .jsonl 或 .jsonl.gz
         if not ((sess / fn).is_file() or (sess / (fn + ".gz")).is_file()):
             problems.append(f"{day}/{sess.name}: 切片缺失 {fn}")
 
-    if int(mf.get("dm_count") or 0) <= 0:
+    if int(mf.get("dm_count") or 0) <= 0 and not (live and not files):
         problems.append(f"{day}/{sess.name}: dm_count 为 0")
 
     s, e = mf.get("start_ms"), mf.get("end_ms")

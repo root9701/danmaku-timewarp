@@ -196,6 +196,35 @@ def t_discover_fallback():
         server.bili_discover_date = old_bili
 
 
+def t_bili_date_mismatch():
+    """官方把 11-05 的比赛标成"11月4日" —— 必须按上传时间归属, 不能只看标题。
+
+    实测 2026-11-05: 官方 07:02 上传 "【2026全球总决赛】11月4日 GEN vs LYON",
+    按标题搜"11月5日"永远 0 场, 那一晚就没有场次列表。
+    """
+    print("\n[兜底] 标题日期写错时按上传时间归属")
+    body = {"code": 0, "data": {"result": [
+        {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+         "title": "【2026全球总决赛】11月4日 GEN vs LYON",
+         "bvid": "BV_MISLABELED", "pubdate": 1793833323, "duration": "1:50:04"},
+    ]}}
+    old_get = server._http_get
+    old_cache = dict(server._BUVID3_CACHE)
+    server._BUVID3_CACHE.update(ts=time.monotonic(), value="test")
+    server._http_get = lambda url, headers, timeout=8: (200, json.dumps(body))
+    try:
+        got = server.bili_discover_date("2026-11-05")
+        # 同一条不能被前一天重复认领
+        got_prev = server.bili_discover_date("2026-11-04")
+    finally:
+        server._http_get = old_get
+        server._BUVID3_CACHE.clear()
+        server._BUVID3_CACHE.update(old_cache)
+    check("标题写错日期也能归到上传日", len(got) == 1 and got[0]["bv"] == "BV_MISLABELED",
+          str(got))
+    check("不会被前一天重复认领", not got_prev, str(got_prev))
+
+
 def t_apply_fallback():
     print("\n[兜底] 兜底草稿能落进列表")
     m = {"lists": {}, "align": {}}
@@ -219,6 +248,7 @@ def main() -> int:
     t_fill()
     t_sort()
     t_bili_date_fallback()
+    t_bili_date_mismatch()
     t_discover_fallback()
     t_apply_fallback()
     print()

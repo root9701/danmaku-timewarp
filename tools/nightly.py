@@ -140,7 +140,11 @@ def publish(day: str, dry_run: bool = False) -> bool:
 async def discover(day: str) -> None:
     """把当天赛程与 B站回放 BV 刷进本地层。失败不阻断校准。"""
     match_date = await asyncio.to_thread(server._session_match_date, day)
-    draft = await asyncio.to_thread(server.discover_draft_for_date, match_date)
+    # 必须用带兜底的 discover_draft: Riot 经常漏掉当天场次(表演赛/淘汰赛首日),
+    # 只查 Riot 会让这一晚永远没有场次列表, 用户拉完数据仍然看不了。
+    # 历史缺陷: 播放端 2026-11-04 加了兜底, 这里仍调 discover_draft_for_date,
+    # 于是 2026-11-05 GEN vs LYON 一整轮巡检都报"赛程里没有可识别的场次"。
+    draft = await asyncio.to_thread(server.discover_draft, match_date)
     if not draft:
         print(f"{day}: 赛程里没有可识别的场次")
         return

@@ -1,0 +1,76 @@
+{
+  "align": {
+    "2026-11-06|7734200": {
+      "bvs": [
+        "BV1Zj4v6aEuj"
+      ],
+      "date": "2026-11-06",
+      "file": "7734200",
+      "offset_sec": 48.303
+    },
+    "2026-11-06|7734200|BV1Zj4v6aEuj": {
+      "auto": {
+        "confidence": 6.579,
+        "method": "audiofp",
+        "ts": "2026-11-06T07:58:19"
+      },
+      "bv": "BV1Zj4v6aEuj",
+      "date": "2026-11-06",
+      "file": "7734200",
+      "offset_sec": 48.303,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 6.579,
+          "duration": 3142,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 48.303,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-06T07:58:19",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 10.592,
+          "duration": 2950,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3414.322,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-06T07:58:19",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月6日 DK vs BLG",
+      "total_pages": 3
+    }
+  },
+  "lists": {
+    "2026-11-06": [
+      {
+        "bv": "BV1Zj4v6aEuj",
+        "offset_sec": 48.303,
+        "pages": {
+          "1": {
+            "confidence": 6.579,
+            "offset_sec": 48.303,
+            "part": "第一局"
+          },
+          "2": {
+            "confidence": 10.592,
+            "offset_sec": 3414.322,
+            "part": "第二局"
+          }
+        },
+        "start_ms": 1793919443000,
+        "title": "DK vs BLG",
+        "total_pages": 3
+      }
+    ]
+  }
+}

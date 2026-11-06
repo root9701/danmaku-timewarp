@@ -38,6 +38,7 @@ def test_running_days_and_publish_paths():
         write_text(sess / "7734200_s2300.jsonl.gz", "")
         write_text(sess / "7734200_s0000.jsonl")
         write_text(sess / "7734200.meta.json", "{}")
+        write_text(sess / "7734200_s9999.jsonl.gz", "")     # manifest 未登记
         (base / "2026-10-31" / "align.json").write_text("{}", encoding="utf-8")
         mf = {"schema_version": 1, "ended_by": "running", "files": ["7734200_s2300.jsonl.gz"]}
         write_text(sess / "manifest.json", json.dumps(mf))
@@ -49,6 +50,8 @@ def test_running_days_and_publish_paths():
         paths = [p.name for p in nightly.publish_paths("2026-10-31", base)]
         check("采集中只发布 manifest + 已封口片 + align",
               set(paths) == {"manifest.json", "7734200_s2300.jsonl.gz", "align.json"},
+              str(paths))
+        check("manifest 未登记的切片不发布", "7734200_s9999.jsonl.gz" not in paths,
               str(paths))
 
         mf["ended_by"] = "live_end"
@@ -72,18 +75,25 @@ def test_discover_uses_fallback():
         return [{"title": "GEN vs LYON", "teams": ["GEN", "LYON"], "bv": "BV_X",
                  "start": __import__("datetime").datetime(2026, 11, 5, 6, 0)}]
 
-    old_draft, old_for_date = nightly.server.discover_draft, nightly.server.discover_draft_for_date
+    def fake_update(mut):
+        m = {"lists": {}, "align": {}}
+        mut(m)
+        return True
+
+    old = (nightly.server.discover_draft, nightly.server.discover_draft_for_date,
+           nightly.server._session_match_date, nightly.server.update_matches)
     try:
         nightly.server.discover_draft = fake_draft
         nightly.server.discover_draft_for_date = lambda d: (_ for _ in ()).throw(
             AssertionError("不该再调只查 Riot 的 discover_draft_for_date"))
         nightly.server._session_match_date = lambda d: d
+        nightly.server.update_matches = fake_update
         asyncio.run(nightly.discover("2026-11-05"))
         check("夜间发现走带兜底的 discover_draft", called["fn"] == "discover_draft",
               str(called))
     finally:
-        nightly.server.discover_draft = old_draft
-        nightly.server.discover_draft_for_date = old_for_date
+        (nightly.server.discover_draft, nightly.server.discover_draft_for_date,
+         nightly.server._session_match_date, nightly.server.update_matches) = old
 
 
 def test_loop_mode_single_instance():
@@ -222,6 +232,55 @@ def test_discover_fills_bv_from_date_search():
     check("日期搜索补上了 BV", bool(lst) and lst[0]["bv"] == "BV_DATE", str(lst))
 
 
+def test_discover_merges_missing_match():
+    """Riot 只列了部分场次时, 日期兜底要把另一场补进草稿。
+
+    否则用户拿到的列表永远少一场, 且因为没有"缺失"信号, 后续也不会再补。
+    """
+    print("\n[兜底] Riot 漏场时用日期搜索补齐")
+    seen = {}
+
+    def fake_draft(date):
+        return [{"title": "DK vs BLG", "teams": ["DK", "BLG"],
+                 "start": datetime(2026, 11, 6, 6, 0), "bv": ""}]
+
+    def fake_date_search(date):
+        return [
+            {"title": "DK vs BLG", "teams": ["DK", "BLG"], "bv": "BV_DK",
+             "start": datetime(2026, 11, 6, 6, 57), "start_is_publish": True},
+            {"title": "GEN vs LYON", "teams": ["GEN", "LYON"], "bv": "BV_GEN",
+             "start": datetime(2026, 11, 6, 8, 0), "start_is_publish": True},
+        ]
+
+    def fake_update(mut):
+        m = {"lists": {}, "align": {}}
+        mut(m)
+        seen["lists"] = m["lists"]
+        return True
+
+    old = (nightly.server.discover_draft, nightly.server._session_match_date,
+           nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+           nightly.server.update_matches)
+    try:
+        nightly.server.discover_draft = fake_draft
+        nightly.server._session_match_date = lambda d: d
+        nightly.server.bili_search_replay = lambda a, b, c: ""
+        nightly.server.bili_discover_date = fake_date_search
+        nightly.server.update_matches = fake_update
+        asyncio.run(nightly.discover("2026-11-06"))
+    finally:
+        (nightly.server.discover_draft, nightly.server._session_match_date,
+         nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+         nightly.server.update_matches) = old
+    lst = seen.get("lists", {}).get("2026-11-06") or []
+    got = {e["title"]: e.get("bv") for e in lst}
+    check("两场都在", got == {"DK vs BLG": "BV_DK", "GEN vs LYON": "BV_GEN"},
+          str(got))
+    check("补进来的场次不把投稿时间当开赛时间",
+          "start_ms" not in next(e for e in lst if e["title"] == "GEN vs LYON"),
+          str(lst))
+
+
 def test_discover_without_bv():
     """两个搜索都没有结果时, 仍要建出场次列表(只是 BV 为空)。
 
@@ -336,6 +395,54 @@ def test_publish_collects_align_after_split():
     check("先 split 再收集", order.index("paths") > order.index(split_name),
           str(order))
     check("收集时 align.json 已存在", seen == [True], str(seen))
+
+
+def test_publish_skips_empty_index():
+    print("\n[发布] 没有数据变化时不生成只改时间戳的提交")
+    calls = []
+
+    def fake_run(script, *args):
+        calls.append(script)
+        return ""
+
+    def fake_git(*args):
+        return ""
+
+    old_run, old_git, old_paths = nightly._run_py, nightly._git, nightly.publish_paths
+    try:
+        nightly._run_py, nightly._git = fake_run, fake_git
+        nightly.publish_paths = lambda day, data_dir=None: []
+        got = nightly.publish("2026-11-06")
+    finally:
+        nightly._run_py, nightly._git, nightly.publish_paths = old_run, old_git, old_paths
+    check("返回 False", got is False, str(got))
+    check("没有跑 pack_data", not any("pack_data" in s for s in calls), str(calls))
+
+
+def test_publish_refuses_non_data_staged():
+    print("\n[发布] 暂存区混入非数据文件时拒绝提交")
+    def fake_run(script, *args):
+        return ""
+
+    def fake_git(*args):
+        if tuple(args) == ("diff", "--cached", "--name-only", "--", "data"):
+            return "data/2026-11-06/align.json"
+        if tuple(args) == ("diff", "--cached", "--name-only"):
+            return "data/2026-11-06/align.json\nREADME.md"
+        return ""
+
+    old_run, old_git, old_paths = nightly._run_py, nightly._git, nightly.publish_paths
+    try:
+        nightly._run_py, nightly._git = fake_run, fake_git
+        nightly.publish_paths = lambda day, data_dir=None: []
+        try:
+            nightly.publish("2026-11-06")
+            raised = None
+        except RuntimeError as e:
+            raised = str(e)
+    finally:
+        nightly._run_py, nightly._git, nightly.publish_paths = old_run, old_git, old_paths
+    check("拒绝提交", raised is not None and "README.md" in raised, str(raised))
 
 
 def test_calibrated_gate():
@@ -455,10 +562,13 @@ def main() -> int:
     test_discover_uses_fallback()
     test_discover_keeps_fallback_bv()
     test_discover_fills_bv_from_date_search()
+    test_discover_merges_missing_match()
     test_discover_without_bv()
     test_retry_window()
     test_tick_retry_window()
     test_publish_collects_align_after_split()
+    test_publish_skips_empty_index()
+    test_publish_refuses_non_data_staged()
     test_calibrated_gate()
     test_tick_skips_uncalibrated()
     test_date_run_reports_uncalibrated()

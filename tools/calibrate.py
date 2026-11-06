@@ -25,6 +25,7 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 import server  # noqa: E402
+import pipelinelock  # noqa: E402
 
 
 def targets_from_lists(lists, match_date: str, only_bv: str = "") -> list:
@@ -86,6 +87,22 @@ async def run(date: str, targets: list, files: list, page: int, dry_run: bool) -
     return 0 if ok else 1
 
 
+def _calibrate(args) -> int:
+    match_date = args.match_date or server._session_match_date(args.date)
+    lists = (server.load_matches() or {}).get("lists") or {}
+    targets = targets_from_lists(lists, match_date, args.bv)
+    if not targets:
+        print(f"{match_date} 的赛程里没有可校准的 BV; 先跑 nightly --discover-only 补齐(或等下一轮巡检)")
+        return 2
+    files = [args.file] if args.file else session_files(args.date)
+    if not files:
+        print(f"{args.date} 下没有带音频指纹的会话目录")
+        return 2
+    if len(files) > 1:
+        print(f"注意: {args.date} 有 {len(files)} 个会话目录, 将逐个校准: {files}")
+    return asyncio.run(run(args.date, targets, files, args.page, args.dry_run))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="无头校准: 官方回放 -> 直播 offset")
     ap.add_argument("--date", required=True, help="数据目录日期(YYYY-MM-DD)")
@@ -100,19 +117,15 @@ def main() -> int:
     if not server.DATE_RE.fullmatch(args.date):
         print(f"日期格式不对: {args.date}(应为 YYYY-MM-DD)")
         return 2
-    match_date = args.match_date or server._session_match_date(args.date)
-    lists = (server.load_matches() or {}).get("lists") or {}
-    targets = targets_from_lists(lists, match_date, args.bv)
-    if not targets:
-        print(f"{match_date} 的赛程里没有可校准的 BV; 先跑 nightly --discover-only 补齐(或等下一轮巡检)")
-        return 2
-    files = [args.file] if args.file else session_files(args.date)
-    if not files:
-        print(f"{args.date} 下没有带音频指纹的会话目录")
-        return 2
-    if len(files) > 1:
-        print(f"注意: {args.date} 有 {len(files)} 个会话目录, 将逐个校准: {files}")
-    return asyncio.run(run(args.date, targets, files, args.page, args.dry_run))
+    # 与常驻巡检共用单轮锁: 两边同时写 matches.json / split 会丢记录
+    lock = pipelinelock.FileLock(pipelinelock.TICK_LOCK)
+    if not lock.acquire(wait_sec=90):
+        print("另一轮巡检正在执行(单轮锁被占用), 本次跳过")
+        return 3
+    try:
+        return _calibrate(args)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

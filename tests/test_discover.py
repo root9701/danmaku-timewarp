@@ -215,6 +215,35 @@ def t_replay_search_order():
     check("找回了官方回放", got == "BV_NEW", got)
 
 
+def t_replay_rejects_clips():
+    """高光/切片不能被当成整场回放, 否则错误的 BV 会永久占位。
+
+    `_apply_discover` 只回填空 BV、不覆盖已有 BV; 一旦短片段写进去, 后续每轮
+    发现都会跳过该场, 校准永远失败, 推送闸门也永远不开。
+    """
+    print("\n[兜底] 单场搜索挡掉高光与短切片")
+    official = {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+                "title": "【2026全球总决赛】11月6日 DK vs BLG",
+                "bvid": "BV_FULL", "duration": "1:56:54"}
+    clip = {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+            "title": "【2026全球总决赛】11月6日 DK vs BLG 高光",
+            "bvid": "BV_CLIP", "duration": "3:20"}
+    short = {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+             "title": "【2026全球总决赛】11月6日 DK vs BLG 速看",
+             "bvid": "BV_SHORT", "duration": "3:20"}
+
+    def fake_search(kw, order=""):
+        return [clip, short, official]
+
+    old = server._bili_search_videos
+    server._bili_search_videos = fake_search
+    try:
+        got = server.bili_search_replay("DK", "BLG", "2026-11-06")
+    finally:
+        server._bili_search_videos = old
+    check("选中的是整场回放", got == "BV_FULL", got)
+
+
 def t_discover_fallback():
     print("\n[兜底] 只在 Riot 当天无场次时启用")
     old_riot, old_bili = server.discover_draft_for_date, server.bili_discover_date
@@ -265,14 +294,14 @@ def t_apply_fallback():
     m = {"lists": {}, "align": {}}
     r = _result()
     draft = [{"title": "TES vs IG", "teams": ["TES", "IG"],
-              "bv": "BV_TEST_FULL",
+              "bv": "BV_TEST_FULL", "start_is_publish": True,
               "start": datetime(2026, 11, 4, 6, 59, 53, tzinfo=TZ)}]
     server._apply_discover(m, "2026-11-04", draft, r)
     got = m["lists"].get("2026-11-04") or []
     check("创建了当天列表", len(got) == 1, str(got))
     if got:
         check("带 BV", got[0]["bv"] == "BV_TEST_FULL", str(got[0]))
-        check("带 start_ms", got[0]["start_ms"] == 1793746793000, str(got[0]))
+        check("不把投稿时间当开赛时间", "start_ms" not in got[0], str(got[0]))
 
 
 def t_search_order():
@@ -320,6 +349,7 @@ def main() -> int:
     t_bili_date_mismatch()
     t_search_order()
     t_replay_search_order()
+    t_replay_rejects_clips()
     t_discover_fallback()
     t_apply_fallback()
     print()

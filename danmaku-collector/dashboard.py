@@ -596,8 +596,34 @@ async def api_queue_stop(request):
     return web.json_response({"ok": True})
 
 
+def _day_has_data(day: Path) -> bool:
+    """该日期目录是否真有采集产物(manifest / 切片), 不要求已校准。"""
+    if not day.is_dir() or len(day.name) != 10 or day.name.startswith("_"):
+        return False
+    if (day / "manifest.json").is_file():
+        return True
+    if any(day.glob("*/manifest.json")):
+        return True
+    return any(day.glob("*.jsonl*"))
+
+
 def _latest_data_date() -> str:
-    """最近一个带 align.json 的数据日。"""
+    """最近一个真有采集产物的数据日(可能还没 align.json)。
+
+    控制台「校准并提交」「刷新赛程」必须指向**正在采/刚收尾**的那天;
+    若这里要求 align.json, 新一天永远选不中, 手动校准会一直去跑上一个已发布日。
+    """
+    data_dir = _data_dir()
+    if not data_dir.is_dir():
+        return ""
+    for day in sorted(data_dir.iterdir(), reverse=True):
+        if _day_has_data(day):
+            return day.name
+    return ""
+
+
+def _latest_published_date() -> str:
+    """最近一个带 align.json 的数据日(用于展示已分发的赛程)。"""
     data_dir = _data_dir()
     if not data_dir.is_dir():
         return ""
@@ -608,9 +634,9 @@ def _latest_data_date() -> str:
     return ""
 
 
-def _load_schedule() -> dict:
+def _load_schedule(day: str = "") -> dict:
     """读分发层的赛程(align.json 的 lists + align)。读不到就是空, 不报错。"""
-    day = _latest_data_date()
+    day = day or _latest_published_date()
     if not day:
         return {"ok": True, "date": "", "lists": {}, "align": {}}
     try:
@@ -647,7 +673,7 @@ async def api_schedule_refresh(request):
     if r.returncode != 0:
         tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
         return web.json_response({"ok": False, "error": f"刷新赛程失败: {tail}"})
-    data = _load_schedule()
+    data = _load_schedule(day)
     data["output"] = (r.stdout or "").strip()[-500:]
     return web.json_response(data)
 

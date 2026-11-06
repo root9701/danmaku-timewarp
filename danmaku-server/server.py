@@ -1820,6 +1820,11 @@ def bili_search_replay(c1: str, c2: str, date: str) -> str:
         if r.get("mid") != BILI_OFFICIAL_MID:
             continue                     # 搬运号标题可做到与官方完全一致, 必须 mid 过滤
         title = html.unescape(_BILI_TAG_RE.sub("", str(r.get("title") or "")))
+        if any(k in title for k in _BILI_DATE_SKIP):
+            continue                     # 高光/集锦/预告等短内容, 不是整场回放
+        dur = _duration_sec(r.get("duration"))
+        if 0 < dur < MIN_REPLAY_SEC:
+            continue                     # 标题没写"高光"的短切片也挡掉
         if not (_team_in_title(title, c1) and _team_in_title(title, c2)):
             continue
         key = (0 if date_str in title else 1, 0 if year_str in title else 1, i)
@@ -1871,6 +1876,8 @@ _BILI_DATE_TEAMS_RE = re.compile(
     r"([0-9A-Za-z.]+)\s+vs\s+([0-9A-Za-z.]+)", re.IGNORECASE)
 # 这些标题通常不是正片: 不能把宣传片/合集当成一场比赛。
 _BILI_DATE_SKIP = ("宣传片", "预告", "解说合集", "高光", "集锦", "采访", "切片", "花絮")
+# 官方单场回放通常 30 分钟以上; 短于 15 分钟的一律不当作整场(防高光/切片抢先占位)。
+MIN_REPLAY_SEC = 900
 
 
 def _parse_date_videos(results: list, date: str) -> list:
@@ -1925,7 +1932,7 @@ def _parse_date_videos(results: list, date: str) -> list:
             continue
         key = frozenset((c1.lower(), c2.lower()))
         cand = {"title": f"{c1} vs {c2}", "teams": [c1, c2],
-                "start": local, "bv": bv}
+                "start": local, "bv": bv, "start_is_publish": True}
         best = tiers[tier]
         dur = _duration_sec(r.get("duration"))
         if key not in best or dur > best[key][0]:
@@ -2014,22 +2021,25 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
     def stamp(m) -> int:
         return int(m["start"].timestamp() * 1000)
 
+    def new_entry(m) -> dict:
+        row = {"title": m["title"], "bv": m.get("bv") or "", "offset_sec": 0}
+        # 日期兜底的 start 是**投稿时间**, 不是开赛时间: 写成 start_ms 会让
+        # run_autocalign 按错误的赛程窗口拒绝真实比赛(上传越晚, 窗口越晚)。
+        if not m.get("start_is_publish"):
+            row["start_ms"] = stamp(m)
+        return row
+
     lst = matches["lists"].get(date)
     if not lst:
         if draft:
-            # 草稿可能还没搜到 BV(回放未上传): 这里必须容忍缺键, 否则一次
-            # KeyError 会让整天的赛程发现失败, 连"有哪些场次"都落不了盘。
-            matches["lists"][date] = [
-                {"title": m["title"], "bv": m.get("bv") or "", "offset_sec": 0,
-                 "start_ms": stamp(m)} for m in draft]
+            matches["lists"][date] = [new_entry(m) for m in draft]
             result["created"] = len(draft)
         return
 
     for m in draft:
         if any(_same_match(e, m) for e in lst):
             continue
-        lst.append({"title": m["title"], "bv": m.get("bv") or "", "offset_sec": 0,
-                    "start_ms": stamp(m)})
+        lst.append(new_entry(m))
         result["added"] += 1
 
     if result["added"]:
@@ -2044,6 +2054,8 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
             want0 = _teams_key(entry.get("title"))
             if want0:
                 for m in draft:
+                    if m.get("start_is_publish"):
+                        continue         # 投稿时间不能当赛程开始时间
                     if frozenset(t.lower() for t in m["teams"]) == want0:
                         entry["start_ms"] = stamp(m)
                         result["time_filled"] += 1

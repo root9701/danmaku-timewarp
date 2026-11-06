@@ -39,6 +39,7 @@ import calibrate  # noqa: E402
 import pipelinelock  # noqa: E402
 import pushctl  # noqa: E402
 from daygate import RETRY_DAYS, calibrated, too_old as _too_old  # noqa: E402
+from datapaths import publish_paths  # noqa: E402
 
 DATA = server.DATA_DIR
 
@@ -69,40 +70,6 @@ def running_days() -> list:
     return out
 
 
-def publish_paths(day: str, data_dir=None) -> list:
-    """该日要 `git add` 的文件。
-
-    采集中的会话只加 manifest 与已封口 gz; afp/meta 还在写或还没生成, 不收。
-    收尾后的会话再补 afp/meta/raw(此时文件已关闭, 字节不再变)。
-    """
-    base = data_dir or DATA
-    day_dir = base / day
-    paths = []
-    align = day_dir / "align.json"
-    if align.is_file():
-        paths.append(align)
-    if not day_dir.is_dir():
-        return paths
-    for sess in sorted(day_dir.iterdir()):
-        if not sess.is_dir() or sess.name.startswith("_"):
-            continue
-        mf = sess / "manifest.json"
-        if not mf.is_file():
-            continue
-        try:
-            ended_by = json.loads(mf.read_text(encoding="utf-8")).get("ended_by")
-        except (OSError, ValueError):
-            ended_by = None
-        paths.append(mf)
-        paths.extend(sorted(sess.glob("*.jsonl.gz")))
-        if ended_by == "running":
-            continue
-        paths.extend(sorted(p for p in sess.glob("*.jsonl") if ".afp." not in p.name))
-        paths.extend(sorted(sess.glob("*.meta.json")))
-        paths.extend(sorted(p for p in sess.glob("*.afp.jsonl*") if p.is_file()))
-    return paths
-
-
 def _git(*args) -> str:
     r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
                        text=True, encoding="utf-8")
@@ -131,17 +98,27 @@ def publish(day: str, dry_run: bool = False) -> bool:
     with contextlib.suppress(OSError):
         (ROOT / "danmaku-server" / "matches.json.bak").unlink()
     # 必须在 split 之后收集: data/{day}/align.json 正是 split 写出来的。
-    # 历史缺陷: 之前先收集再 split, 校准当天第一次提交永远漏掉 align.json ——
-    # 本地看着已对齐, 远端却没有场次列表, 用户拉完仍然"没赛程"。
     paths = publish_paths(day)
     rels = [p.relative_to(ROOT).as_posix() for p in paths]
     if rels:
         _git("add", "--", *rels)
+    # 没有任何数据变化时不要跑 pack_data: 它每次都会更新 generated_at,
+    # 否则会产出"只改时间戳"的空数据提交, 还会被自动推送出去。
+    if not _git("diff", "--cached", "--name-only", "--", "data").strip():
+        print(f"{day}: 没有新增数据, 跳过提交")
+        return False
     _run_py("tools/pack_data.py", "--index", "--staged")
     _git("add", "--", "data-index.json")
-    if not _git("diff", "--cached", "--name-only").strip():
+    staged = _git("diff", "--cached", "--name-only").splitlines()
+    if not staged:
         print(f"{day}: 没有新增内容, 跳过提交")
         return False
+    # 只允许提交数据与清单: 暂存区里若有用户/别的流程放的代码或文档, 宁可停下,
+    # 也不能让夜间进程替人提交出去(pushctl 也会因此拒推整条链)。
+    bad = [p for p in staged
+           if p != "data-index.json" and not p.startswith("data/")]
+    if bad:
+        raise RuntimeError("暂存区含非数据文件, 未提交: " + ", ".join(bad[:5]))
     _git("commit", "-m", f"data({day}): 夜间增量发布")
     print(f"{day}: 已提交本地增量")
     return True
@@ -168,8 +145,7 @@ async def discover(day: str) -> None:
             m["bv"] = bv
     missing = [m for m in draft if not m.get("bv")]
     if missing:
-        # 队名搜索仍可能被排序埋掉(2026-11-06 实测综合/最新前 20 都没有官方回放),
-        # 再用"按日期搜官方投稿"兜底; 一次覆盖当天所有缺 BV 的场次, 不逐场重复搜。
+        # 队名搜索可能被排序埋掉; 再用"按日期搜官方投稿"兜底, 一次覆盖所有缺 BV 的场次。
         hits = await asyncio.to_thread(server.bili_discover_date, match_date)
         by_teams = {frozenset(t.lower() for t in (h.get("teams") or [])): h.get("bv")
                     for h in hits if h.get("bv")}
@@ -177,6 +153,13 @@ async def discover(day: str) -> None:
             bv = by_teams.get(frozenset(t.lower() for t in m["teams"]))
             if bv:
                 m["bv"] = bv
+        # Riot 有时只列部分场次: 日期搜索里另有对阵的, 补进草稿, 否则永远少一场。
+        have = {frozenset(t.lower() for t in m["teams"]) for m in draft}
+        for h in hits:
+            key = frozenset(t.lower() for t in (h.get("teams") or []))
+            if key and key not in have:
+                draft.append(h)
+                have.add(key)
     result = {"created": 0, "added": 0, "backfilled": 0, "time_filled": 0}
 
     def _mut(matches):
@@ -257,8 +240,7 @@ async def tick(dry_run: bool, only_date: str = "") -> int:
         dirty = dirty_days()
         if not active and not dirty:
             print("没有正在采集的会话")
-        # 发现/校准只重试最近 RETRY_DAYS 天: 更早的日期若一直校准不了,
-        # 每小时重搜不会改变结果, 只会累积无谓的 B站请求。
+        # 只重试最近 RETRY_DAYS 天: 更早的日期再搜也不会变, 只会累积 B站请求。
         retry = [d for d in dirty if d in active or not _too_old(d)]
         stale = [d for d in dirty if d not in retry]
         if stale:
@@ -329,8 +311,7 @@ def _run_once(args) -> int:
         failed = asyncio.run(tick(args.dry_run, args.date))
     finally:
         lock.release()
-    # --date 是控制台「校准并提交」按钮的入口: 没校准成功或没提交成功都算失败,
-    # 不能退出码 0 让控制台误报成功。常驻循环不带 --date, 不受这里影响。
+    # --date 是控制台「校准并提交」的入口: 没校准或没提交都算失败, 不能退出 0。
     if args.date and not args.dry_run:
         if failed:
             print(f"{args.date}: 发布失败, 本轮未提交")
@@ -353,23 +334,34 @@ def main() -> int:
         print(f"日期格式不对: {args.date}")
         return 2
     if args.discover_only:
-        asyncio.run(discover_days([args.date] if args.date else running_days()))
+        # 与常驻巡检共用单轮锁: 两边同时 read-modify-write matches.json 会丢记录
+        lock = pipelinelock.FileLock(pipelinelock.TICK_LOCK)
+        if not lock.acquire(wait_sec=90):
+            print("另一轮巡检正在执行(单轮锁被占用), 本次跳过")
+            return 3
+        try:
+            asyncio.run(discover_days([args.date] if args.date else running_days()))
+        finally:
+            lock.release()
         return 0
     if not args.loop:
         return _run_once(args)
 
-    # 常驻模式: 全机只允许一个。第二个进程直接退出, 而不是两边一起 commit。
     loop_lock = pipelinelock.FileLock(pipelinelock.LOOP_LOCK)
     if not loop_lock.acquire():
-        alive = pipelinelock.is_alive()
-        print(f"已有发布进程在运行(PID {alive.get('pid', '?')}), 本进程退出")
+        pid = pipelinelock.is_alive().get("pid", "?")
+        print(f"已有发布进程在运行(PID {pid}), 本进程退出")
         return 3
     interval = max(60, args.interval)
     pipelinelock.clear_stop()
     try:
         while True:
             pipelinelock.beat(interval)
-            rc = _run_once(args)
+            try:
+                rc = _run_once(args)
+            except Exception as e:       # 单轮异常不能让常驻进程直接退出
+                print(f"本轮巡检异常: {e}")
+                rc = 1
             if rc == 3:
                 print("跳过本轮(另一轮正在执行)")
             # 停止请求由控制台写文件, 这里自己退 —— 不强杀, 免得停在 commit 中间

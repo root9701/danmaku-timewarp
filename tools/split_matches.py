@@ -137,7 +137,7 @@ def main() -> int:
         if swap_keys:
             for k in swap_keys:
                 print(f"  保留在本地层: {k} (换源记录, 不分发)")
-                body["align"].pop(k)
+                unassigned["align"][k] = body["align"].pop(k)
         p = day_dir / ALIGN_NAME
         if p.is_file():
             # 已存在: 合并(以新拆出来的为准, 但保留文件里已有的其他记录)

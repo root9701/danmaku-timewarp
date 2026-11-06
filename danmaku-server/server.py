@@ -198,6 +198,13 @@ AUTO_MIN_MATCH_SEC = 20.0
 # 后向按"整场时长 + 30 分钟收尾"算, 不需要额外放宽。
 AUTO_SCHEDULE_LEAD_SEC = 5400      # 允许比赛程提前 90 分钟开播
 AUTO_SCHEDULE_TAIL_SEC = 1800      # 整场时长之后再多给 30 分钟(赛后采访/抽签等)
+# 用**采集会话区间**做窗口时的前后余量。比 Riot 那条窄得多, 因为会话区间本身就是
+# "我们真的在录"的那一段, 不需要为赛程改期/提前开播留大余量:
+#   - 前: 官方回放的开场白可能比弹幕首条早几秒到几分钟(直播刚开播时弹幕还没热)
+#   - 后: 赛后采访/抽签常落在收尾前, 收尾后一般不再有内容
+# 早上的重播必然在采集结束之后, 所以这条约束天然挡掉重播伪峰。
+AUTO_SESSION_LEAD_SEC = 900        # 15 分钟
+AUTO_SESSION_TAIL_SEC = 900        # 15 分钟
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")        # 日期目录名(同时杜绝 ../ 越界)
 FILE_RE = re.compile(r"^[0-9A-Za-z_-]+$")           # 弹幕文件名(不含扩展名)
@@ -3278,11 +3285,39 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
         tolerance_sec=AUTO_VOTE_TOLERANCE_SEC)
 
 
+def _session_window_for_bv(date: str, file: str, bv: str, pages_meta: list):
+    """用**采集会话自身的录制区间**算出该场次允许落在哪个墙钟区间。
+
+    为什么不用 Riot 赛程做唯一基准:
+      - Riot 会漏场。2026-11-07 的 T1 vs KC 在 getSchedule 与官网页里都没有
+        (UTC 11-06 22:00 -> 北京 11-07 06:00 整段空缺), 那天只剩 B 站兜底;
+      - `lists[].start_ms` 里还混进过**投稿时间**(11-06 存 06:57, 真实开赛 06:00),
+        用错误基准算窗口 = 在错误的位置设防。
+
+    本质事实: **算出来的时刻如果落在我们根本没录的那段时间, 那它一定错**。
+    「录了哪一段」来自会话 manifest(采集端记录的实际录制区间), 每场都有、不依赖
+    第三方, 且早上重播必然在录制结束之后 —— 这条约束天然挡掉重播伪峰。
+
+    返回 (lo_ms, hi_ms, 说明); 拿不到会话区间时返回 (None, None, 原因)。
+    """
+    t0, t1 = _session_time_range(date, file, resolve_session_dir(date, file))
+    if not t0 or not t1:
+        return None, None, "无采集会话时间范围"
+    # 前后各放开一点: 对齐落点按分P 起点算, 而分P 起点可能略早于弹幕首条
+    # (官方回放的开场白在直播开始前几秒就录到了), 也可能是赛后采访这类收尾内容。
+    lo = t0 - AUTO_SESSION_LEAD_SEC * 1000
+    hi = t1 + AUTO_SESSION_TAIL_SEC * 1000
+    return lo, hi, f"采集会话 {_fmt_wall(t0)} ~ {_fmt_wall(t1)}"
+
+
 def _schedule_window_for_bv(date: str, bv: str):
     """取该场比赛的赛程开始时间(毫秒), 用于给对齐加时间窗约束。
 
     数据来源: matches.json 的 lists[比赛日][].start_ms(采集端 nightly.discover 从 Riot 赛程落盘)。
     匹配方式: 该 BV 所在列表条目的 start_ms; 没有 bv 时按 bv 反查不到, 返回 None。
+
+    **注意: 这是 Riot 侧的"加强约束", 不是唯一基准。** Riot 漏场时它返回 None,
+    此时由 `_session_window_for_bv` 用采集会话区间兜底 —— 见 run_autocalign。
 
     返回 (start_ms|None, 说明)。
     """
@@ -3365,20 +3400,44 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
     if not targets:
         raise ApiError(f"{bv} 没有可用的分P 信息")
 
-    # b2) 由赛程开始时间算出"该分P 允许落在哪个墙钟区间"。
-    # 没有赛程时间(旧数据/尚未写入赛程)时 window 为 None -> 不做约束, 行为与旧版一致。
-    # 有了它才能挡住"早上重播"这类伪峰(见 _align_one_page 里的说明)。
-    win_lo = win_hi = None
+    # b2) 算出"该分P 允许落在哪个墙钟区间"。
+    #
+    # 两级基准, 以**会话区间为主**:
+    #   ① 会话区间(采集端 manifest 的 start_ms/end_ms): 每场都有, 不依赖第三方,
+    #      "算出来的时刻不在我们录过的时段里 -> 一定错"。
+    #   ② Riot 赛程(若当天有): 在会话区间之上再收紧到"这场比赛应该在的那一段",
+    #      用来区分同一晚的多场比赛 —— 只靠会话区间无法区分 4 场比赛各属哪一段。
+    #
+    # 两者取**交集**: 有 Riot 就更准(能把 4 场分开), 没 Riot 也有底线(挡重播)。
+    # 旧实现只有 ②: Riot 漏场(2026-11-07 T1 vs KC)时窗口为 None, 防线完全失效。
+    sess_lo, sess_hi, sess_reason = _session_window_for_bv(date, file, bv, pages_meta)
     sched_ms, win_reason = _schedule_window_for_bv(date, bv)
+    win_lo = win_hi = None
+    if sess_lo is not None:
+        win_lo, win_hi = sess_lo, sess_hi
+        print(f"[autocalign] 会话窗口: {_fmt_wall(win_lo)} ~ {_fmt_wall(win_hi)} "
+              f"({sess_reason})", flush=True)
     if sched_ms:
         total_dur_sec = sum(int(p.get("duration") or 0) for p in pages_meta)
-        win_lo = sched_ms - AUTO_SCHEDULE_LEAD_SEC * 1000
-        win_hi = sched_ms + (total_dur_sec + AUTO_SCHEDULE_TAIL_SEC) * 1000
-        print(f"[autocalign] 赛程窗口: {_fmt_wall(win_lo)} ~ {_fmt_wall(win_hi)} "
+        sched_lo = sched_ms - AUTO_SCHEDULE_LEAD_SEC * 1000
+        sched_hi = sched_ms + (total_dur_sec + AUTO_SCHEDULE_TAIL_SEC) * 1000
+        print(f"[autocalign] 赛程窗口: {_fmt_wall(sched_lo)} ~ {_fmt_wall(sched_hi)} "
               f"({win_reason})", flush=True)
-    else:
-        print("[autocalign] 无赛程开始时间, 不做窗口约束"
-              "(等采集端下一轮发现补齐, 能挡掉早上重播的误匹配)", flush=True)
+        if win_lo is None:
+            win_lo, win_hi = sched_lo, sched_hi
+        else:
+            # 交集: 两个约束都要满足。交集为空说明数据自相矛盾(赛程与录制区间不重叠,
+            # 多半是赛程日期错或采集跑错天), 此时**保留会话区间**而不是取空 ——
+            # 取空会让所有分P 都被判"窗口外", 等于整场对齐不了。
+            lo, hi = max(win_lo, sched_lo), min(win_hi, sched_hi)
+            if lo < hi:
+                win_lo, win_hi = lo, hi
+            else:
+                print("[autocalign] 赛程窗口与会话区间不重叠, 只用会话区间"
+                      "(赛程日期可能记错, 以实际录制为准)", flush=True)
+    if win_lo is None:
+        print("[autocalign] 无会话区间也无赛程时间, 不做窗口约束"
+              "(仅当会话 manifest 缺失时才会出现)", flush=True)
     window_ms = (win_lo, win_hi) if win_lo is not None else None
 
     # c) 逐分P 独立对齐。每个分P 各自投票定位, 互不影响。

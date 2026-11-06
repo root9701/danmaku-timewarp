@@ -13,6 +13,7 @@
 这些用例用合成数据, 不依赖真实采集产物, 因此任何机器可跑。
 """
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -594,6 +595,65 @@ def test_ffmpeg_headers_option() -> None:
           "-headers" not in local_cmd, str(local_cmd[:8]))
 
 
+def test_session_window_guards_replay() -> None:
+    """时间窗必须能只用**采集会话区间**就挡住早上重播。
+
+    2026-11-07 的 T1 vs KC 在 Riot getSchedule 与官网页里都没有(UTC 11-06 22:00 ->
+    北京 11-07 06:00 整段空缺), 旧实现只有 Riot 一个基准 -> 窗口为 None -> 防线失效。
+    而且 Riot 漏场那天 B 站搜索又被 412 打, 整晚"发现 0 场", 数据永久卡在本地。
+
+    会话 manifest 的 start_ms/end_ms 是采集端记录的**实际录制区间**: 每场都有,
+    不依赖第三方。早上的重播必然在录制结束之后 -> 天然挡掉。
+    """
+    import server
+
+    t0 = int(datetime.strptime("2026-11-07 06:00:00", "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+    t1 = int(datetime.strptime("2026-11-07 06:59:00", "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+    old = server._session_time_range
+    server._session_time_range = lambda d, f, s=None: (t0, t1)
+    try:
+        lo, hi, why = server._session_window_for_bv("2026-11-07", "7734200", "BV1X", [])
+    finally:
+        server._session_time_range = old
+
+    check("会话区间能算出窗口", lo is not None and hi is not None, why)
+
+    def at(hms: str) -> int:
+        return int(datetime.strptime(f"2026-11-07 {hms}", "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+
+    cases = [("真实落点 06:00:48", at("06:00:48"), True),
+             ("早上重播 12:00:48", at("12:00:48"), False),
+             ("比赛前 1 小时 05:00", at("05:00:00"), False),
+             ("收尾后 2 小时 09:00", at("09:00:00"), False)]
+    for name, ms, want in cases:
+        got = lo <= ms <= hi
+        check(f"{name} -> {'窗内' if want else '窗外'}", got == want,
+              f"窗口 {server._fmt_wall(lo)}~{server._fmt_wall(hi)}")
+
+
+def test_session_window_intersects_schedule() -> None:
+    """有 Riot 赛程时取**交集**, 才能把同一晚的多场比赛分开。
+
+    只用会话区间的话, 一晚 4 场都在同一个 9 小时窗口里, 无法区分哪场在哪一段。
+    Riot 给了就收紧, 这是加强而不是替代。
+    """
+    import server
+
+    t0 = int(datetime.strptime("2026-10-26 23:33:00", "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+    t1 = int(datetime.strptime("2026-10-27 08:59:00", "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+    old = server._session_time_range
+    server._session_time_range = lambda d, f, s=None: (t0, t1)
+    try:
+        lo, hi, _ = server._session_window_for_bv("2026-10-26", "7734200", "BV1X", [])
+    finally:
+        server._session_time_range = old
+
+    # 会话窗口 ~9.4 小时; Riot 赛程窗口(01:00 开赛 + 90 分钟前置)约 2 小时
+    sess_width = (hi - lo) / 3600000
+    check("会话窗口覆盖整晚(约 9 小时)", 9.0 <= sess_width <= 10.0,
+          f"宽度 {sess_width:.1f} 小时")
+
+
 def main() -> int:
     print("对齐算法回归")
     for fn in (test_align_recovers_offset,
@@ -609,7 +669,9 @@ def main() -> int:
                test_ffmpeg_timeout_guard,
                test_anchored_cluster_rejects_chain_votes,
                test_mp4_fallback_headless,
-               test_ffmpeg_headers_option):
+               test_ffmpeg_headers_option,
+               test_session_window_guards_replay,
+               test_session_window_intersects_schedule):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

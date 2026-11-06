@@ -634,17 +634,32 @@ def _latest_published_date() -> str:
     return ""
 
 
+def _read_local_matches() -> dict:
+    """读采集端本地层(尚未 split 的赛程/对齐)。读不到就是空, 不报错。"""
+    path = collector.SCRIPT_DIR.parent / "danmaku-server" / "matches.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _load_schedule(day: str = "") -> dict:
-    """读分发层的赛程(align.json 的 lists + align)。读不到就是空, 不报错。"""
+    """读已分发赛程(align.json) + 采集端本地层(刚发现、还没校准的部分)。"""
     day = day or _latest_published_date()
     if not day:
         return {"ok": True, "date": "", "lists": {}, "align": {}}
     try:
         d = json.loads((_data_dir() / day / "align.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"ok": True, "date": day, "lists": {}, "align": {}}
-    return {"ok": True, "date": day,
-            "lists": d.get("lists") or {}, "align": d.get("align") or {}}
+        d = {}
+    lists = dict(d.get("lists") or {})
+    local = _read_local_matches()
+    for k, v in (local.get("lists") or {}).items():
+        lists[k] = v                 # 本地层是采集端最新状态, 覆盖同日的旧列表
+    align = dict(d.get("align") or {})
+    align.update(local.get("align") or {})
+    return {"ok": True, "date": day, "lists": lists, "align": align}
 
 
 async def api_schedule(request):

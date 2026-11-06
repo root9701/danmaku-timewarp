@@ -3,16 +3,17 @@
 
 用法:
     python tools/build_release.py --slim          # 不含 numpy + ffmpeg(约 63MB)
-    python tools/build_release.py --full          # 含自动校准(约 150MB+), 不发 Release
+    python tools/build_release.py --full          # 含校准依赖(约 150MB+), 仅供命令行校准, 不发 Release
     python tools/build_release.py --slim --zip    # 额外打 zip
 
 为什么只发轻量版:
-  完整版多带 numpy(51MB) + imageio-ffmpeg(84MB), 而**校准结果已由作者算好并随
-  数据下发**(data/{日期}/align.json)。对普通玩家, 这部分体积换不到任何东西;
-  真需要重算的人本来就有开发环境, 从源码跑更合适。少一份附件, 用户少一次选择。
+  完整版多带 numpy(51MB) + imageio-ffmpeg(84MB), 而**校准结果已由采集端算好并随
+  数据下发**(data/{日期}/align.json), 播放端也没有校准入口。对普通玩家, 这部分
+  体积换不到任何东西; 真需要重算的人本来就有开发环境, 从源码跑更合适。少一份附件,
+  用户少一次选择。
 
 为什么是"两个包一份代码":
-  自动校准要 numpy(51MB) + imageio-ffmpeg(84MB), 而播放、弹幕、手动微调 offset
+  音频对齐要 numpy(51MB) + imageio-ffmpeg(84MB), 而播放、弹幕、手动微调 offset
   **一个都不需要**。代码里本来就有 try/except ImportError 降级(HAS_AUDIOFP),
   所以"轻量版"只是打包时少放两个目录 —— 不是两套代码, 维护成本接近零。
 
@@ -334,7 +335,8 @@ data/ 里的比赛数据、音频指纹、你自己调过的对齐参数不会�
 
 def write_notice(dst: Path, full: bool) -> None:
     """包内说明。用户解压后第一眼看到的就是它。"""
-    calib = "含自动校准" if full else "本版不含（校准结果随数据下发，直接观看）"
+    calib = ("含校准依赖，仅供命令行校准；播放页面没有入口。"
+             if full else "校准由采集端算好并随数据下发；播放端没有校准入口。")
     title = f"弹幕时光机 {VERSION}" + ("（完整版）" if full else "")
     text = f"""{title}
 ==============================================
@@ -353,8 +355,8 @@ def write_notice(dst: Path, full: bool) -> None:
 双击 Start-LAN.bat，终端显示二维码，需与电脑同一 WiFi。
 
 {_notice_features()}
-自动校准
---------
+校准
+----
 {calib}
 
 常见问题
@@ -415,8 +417,8 @@ def verify(dst: Path, full: bool) -> bool:
     必须实测而不是"看起来对": 便携 Python 少一个 dll、site-packages 少一个包,
     症状都是用户双击后窗口一闪而过 —— 在作者机器上不易复现, 因为作者有系统 Python。
 
-    还要断言 **HAS_AUDIOFP 与包类型一致**: 完整版若漏了 numpy, 用户点了自动校准
-    才报错(而那时已经在看比赛了); 轻量版若多带了 numpy, 包白白大 51MB。
+    还要断言 **HAS_AUDIOFP 与包类型一致**: 完整版若漏了 numpy, 命令行校准会直接失败;
+    轻量版若多带了 numpy, 包白白大 51MB。
     这两种"打包漏了/多了"都不会让服务起不来, 只能靠这里拦。
     """
     problems = _check_deps(dst, full)
@@ -509,8 +511,8 @@ def build(full: bool, do_zip: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--slim", action="store_true", help="轻量版(不含自动校准)")
-    g.add_argument("--full", action="store_true", help="完整版(含自动校准)")
+    g.add_argument("--slim", action="store_true", help="轻量版(不含校准依赖)")
+    g.add_argument("--full", action="store_true", help="完整版(含校准依赖, 仅供命令行校准)")
     ap.add_argument("--zip", action="store_true", help="额外打 zip")
     args = ap.parse_args()
     DIST.mkdir(exist_ok=True)

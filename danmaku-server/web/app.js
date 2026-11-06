@@ -31,7 +31,6 @@
   var volNum = $('vol-num');
   var btnRate = $('btn-rate'), speedBadge = $('speed-badge'), btnSkip = $('btn-skip');
   var btnAutoAdvance = $('btn-auto-advance');
-  var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
   var btnUpdate = $('btn-update'), updateStatus = $('update-status');
   var elAppVersion = $('app-version');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
@@ -140,7 +139,7 @@
       var pm = pms[k];
       var off = pageOffsetOf(pm.page);
       if (off == null) {
-        // 该分P 没有对齐结果(自动校准失败/被时间窗拒绝)。
+        // 该分P 没有对齐结果(采集端校准失败/被时间窗拒绝)。
         // 不能"接在上一页末尾"猜一个位置: page_marks 来自 B站接口(回放真实有哪几个
         // 分P), 而 offset 来自我们的对齐结果, 两者**不是同一个集合**。猜出来的位置会
         // 把它之后的分P 一起带偏, 表现为"点 BLG 的块却显示 T1 的赛前评论"。
@@ -592,7 +591,7 @@
     return out;
   }
 
-  // 应用一批分P offset(自动校准返回后用), 并保持当前播放位置不变地重算弹幕.
+  // 应用一批分P offset(换源映射用), 并保持当前播放位置不变地重算弹幕.
   function applyPageOffsets(newOffsets) {
     if (!newOffsets) { return; }
     Object.keys(newOffsets).forEach(function (k) {
@@ -699,7 +698,7 @@
     dmList.innerHTML = ''; hideSc();
     syncTitleForPlayback();
     // 校准区一直显示当前生效的 offset。初始加载也要刷新, 否则停在占位符「offset: --」,
-    // 用户看不到任何对齐值(要等点一次自动校准或微调才出现)。
+    // 用户看不到任何对齐值(要等对齐记录加载或微调才出现)。
     var elOff0 = document.getElementById('align-cur');
     if (elOff0) { elOff0.textContent = 'offset: ' + describePageOffsets(); }
 
@@ -2364,18 +2363,6 @@
   }
 
 
-  // 自动校准失败时把「更多」展开, 让手动微调这个兜底入口可见。
-  // 原来这里操作的是 <details>.open, 现在手动微调在「更多」里, 语义改成展开 More。
-  function updateManualCalibOpen() {
-    if (!moreBox || !btnMore) { return; }
-    var autoFailed = alignStatus && !alignStatus.hidden &&
-                     /失败|不可用|错误/.test(alignStatus.textContent || '');
-    if (autoFailed && moreBox.hidden) {
-      moreBox.hidden = false;
-      btnMore.textContent = '收起 ▴';
-    }
-  }
-
   // 手动微调: 对所有分P 施加同一个平移量(delta), 然后重算弹幕映射并保存。
   // 为什么不直接改 state.offsetSec: 有分P 对齐数据时, offset 是"每页一个"的字典,
   // 改单个标量会出现"第一局对上了、第二局还错着"。用 delta 整体平移语义才一致。
@@ -2387,8 +2374,8 @@
     recomputeRels();
     resetDanmakuIndex();
     drawOverview();
-    // manual 标记: 手动微调要让服务端清掉旧的 auto(自动校准置信度)记录,
-    // 避免条目里挂着"高置信度自动校准"的假象。自动校准写回时不需要(它自己写 auto)。
+    // manual 标记: 手动微调要让服务端清掉旧的 auto(采集端校准置信度)记录,
+    // 避免条目里挂着"高置信度自动校准"的假象。采集端写回时不需要(它自己写 auto)。
     fetch('/api/match', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: state.curDate, file: state.curFile,
         bv: (inpBv.value || '').trim() || state.curBv, offset_sec: state.offsetSec,
@@ -2420,16 +2407,6 @@
   document.querySelectorAll('.nbtn[data-d]').forEach(function (b) {
     b.addEventListener('click', function () { adjustOffset(parseInt(b.getAttribute('data-d'), 10) || 0); });
   });
-
-  /* ---------------- 自动校准(音频指纹对齐) ---------------- */
-  var autoAlignBusy = false;
-  function setAlignStatus(msg, cls) {
-    alignStatus.hidden = !msg;
-    alignStatus.textContent = msg || '';
-    alignStatus.className = 'align-status' + (cls ? ' ' + cls : '');
-    // 自动校准失败时把"手动校准"折叠面板铺开, 让兜底入口直接可见
-    if (cls === 'err') { updateManualCalibOpen(); }
-  }
 
   /* ---------------- 拉取弹幕: 从 GitHub 增量下载作者新采集的日期 ---------------- */
 
@@ -2592,83 +2569,6 @@
     });
   });
 
-  // 自动校准: 对齐**这场比赛的全部分P**(page=0)。
-  // 历史缺陷: 这里硬编码 page:1, 只对齐第一局; 且只读顶层 offset_sec —— 而后端对多分P
-  // 只能返回 pages 字典, 于是 `j.ok && typeof j.offset_sec==='number'` 恒为假,
-  // 后端明明算成功, 界面一律显示「自动校准失败: 未知错误」(实测每一天每一场都这样)。
-  // 现在: 传 0(后端按 bili_view 返回的 pages 动态决定对齐哪些分P, 支持 Bo1/Bo3/Bo5 任意页数),
-  // 并优先读 pages 字典, 顶层字段仅作单分P 兼容。
-  btnAutoAlign.addEventListener('click', function () {
-    if (autoAlignBusy) { return; }
-    if (!state.applied) {
-      setAlignStatus('请先「开始播放」加载弹幕与回放，再点自动校准。', 'err');
-      return;
-    }
-    var bv = (inpBv.value || '').trim() || state.curBv;
-    if (!bv) {
-      setAlignStatus('缺少回放 BV 号，无法自动校准。', 'err');
-      return;
-    }
-    autoAlignBusy = true;
-    btnAutoAlign.disabled = true;
-    btnAutoAlign.textContent = '自动校准中…';
-    setAlignStatus('自动校准进行中：正在拉取回放各分P 的音频并与整晚直播指纹比对（首次约半分钟到一分钟）…', '');
-    fetch('/api/autocalign', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: state.curDate, file: state.curFile, bv: bv, page: 0 })
-    }).then(function (r) { return r.json(); }).then(function (j) {
-      if (!j || !j.ok) {
-        setAlignStatus('自动校准失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
-        return;
-      }
-      applyAutocalignResult(j, bv);
-    }).catch(function (e) {
-      setAlignStatus('自动校准失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
-    }).finally(function () {
-      autoAlignBusy = false;
-      btnAutoAlign.disabled = false;
-      btnAutoAlign.textContent = '自动校准';
-    });
-  });
-
-  // 处理自动校准返回: 吸收每分P 的 offset, 重建分段映射, 并按"全成功/部分成功"分别提示。
-  // 部分成功也是有效结果(某局直播侧确实缺音频), 必须如实显示哪几页没对齐及原因,
-  // 而不是笼统一句"失败"让用户以为是功能坏了。
-  function applyAutocalignResult(j, bv) {
-    var pages = (j && j.pages && typeof j.pages === 'object') ? j.pages : {};
-    var okPages = Object.keys(pages);
-    var errs = (j && j.errors && typeof j.errors === 'object') ? j.errors : {};
-    var errKeys = Object.keys(errs);
-    if (!okPages.length && typeof j.offset_sec !== 'number') {
-      setAlignStatus('自动校准失败: ' + (j.message || '没有分P 对齐成功'), 'err');
-      return;
-    }
-    // 吸收到当前场次(只有 BV 一致才采纳, 避免把别的场的 offset 套到正在播的场)
-    if (bv && state.curBv && state.curBv !== bv) { return; }
-    // 后端 pages 的 key 就是分P 号
-    var newOffsets = {};
-    okPages.forEach(function (k) {
-      var pv = pages[k];
-      if (pv && typeof pv.offset_sec === 'number') { newOffsets[k] = pv.offset_sec; }
-    });
-    applyPageOffsets(newOffsets);
-
-    var msg = '自动校准完成：' + okPages.length + '/' + (j.total_pages || okPages.length) +
-              ' 个分P 对齐成功';
-    var det = okPages.map(function (k) {
-      var pv = pages[k];
-      return 'P' + k + ' ' + (pv.part || '') + '=' + pv.offset_sec.toFixed(1) + 's' +
-             (pv.confidence != null ? '(置信度' + pv.confidence.toFixed(1) + ')' : '') +
-             (pv.suspect ? '(疑似重播,已忽略)' : '');
-    }).join(', ');
-    if (det) { msg += ' — ' + det; }
-    if (errKeys.length) {
-      msg += '；未对齐: ' + errKeys.map(function (k) { return 'P' + k + '(' + errs[k] + ')'; }).join('; ');
-    }
-    setAlignStatus(msg, errKeys.length ? 'warn' : 'ok');
-  }
-
   /* ---------------- 换源: 把弹幕挂到另一条同场比赛的视频 ----------------
      场景: 同一场比赛有多个解说版(官方 / 台湾解说 / 英文流…)。弹幕只对官方源算过对齐,
      用户想看别的解说版时要把弹幕挂过去。
@@ -2794,7 +2694,7 @@
 
   // 换源打开且正在播新源时, 用「官方基准 + 逐局 N」覆盖 pageOffsets。
   // 注意: 只有播新源时才覆盖 —— 播官方源时 pageOffsets 必须是官方自己的值,
-  // 否则官方源的自动校准/手动微调会作用到一套假 offset 上。
+  // 否则官方源的采集端对齐结果/手动微调会作用到一套假 offset 上。
   function applySrcOffsets() {
     if (!state.applied || !srcPlaying) { return; }
     var offs = buildSrcOffsets();
@@ -3124,7 +3024,7 @@
         part: (np && np.part) || '',
         duration: (np && np.duration) || 0,
         offset_sec: Math.round(offs[k] * 1000) / 1000,
-        source_swap: true,                    // 标记: 换源人工对齐, 不是音频自动校准
+        source_swap: true,                    // 标记: 换源人工对齐, 不是音频自动对齐
         from_page: srcRows[k].fromPage,
         align_sec: Math.round((srcRows[k].alignSec || 0) * 1000) / 1000,
         anchor_sec: srcAnchorOf(k)              // 该局锚点(官方那一帧在换源视频里的秒数), 没填是 0

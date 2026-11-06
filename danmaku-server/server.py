@@ -1,7 +1,7 @@
 """弹幕时光机 · 本地回放服务器 (danmaku-server/server.py)
 
 托管前端静态页 web/; 弹幕回放 API: /api/days /api/danmaku /api/match(GET/POST);
-B站视频对接: /api/playurl(取 mp4 直链) /api/stream(反代 B站 CDN, 给自动校准的
+B站视频对接: /api/playurl(取 mp4 直链) /api/stream(反代 B站 CDN, 给音频对齐的
 ffmpeg 喂流用 —— **播放不再走它**, 直链失效时前端会重新调 /api/playurl 取新签名)。
 
 数据源(只读): ../data/{YYYY-MM-DD}/
@@ -73,7 +73,7 @@ except ImportError:             # 理论上不会发生(它只用标准库)
     srcfetch = None             # type: ignore[assignment]
     HAS_SRCFETCH = False
 
-# 音频指纹自动对齐依赖(缺库不致命, /api/autocalign 会返回明确错误)
+# 音频指纹自动对齐依赖(缺库不致命, 采集端 nightly/命令行校准会报明确错误)
 try:
     import numpy as np          # noqa: F401
     import audiofp              # 本目录 audiofp.py
@@ -83,23 +83,24 @@ except ImportError as e:        # numpy/audiofp 任一缺失
     HAS_AUDIOFP = False
     _AFP_IMPORT_ERR = str(e)
 try:
-    import imageio_ffmpeg       # /api/autocalign 用它自带的可执行 ffmpeg
+    import imageio_ffmpeg       # 采集端校准用它自带的可执行 ffmpeg
 except ImportError:
     imageio_ffmpeg = None       # type: ignore
 
 
 def _no_audiofp_msg() -> str:
-    """自动校准不可用时给用户看的话。
+    """音频对齐不可用时给调用方看的话。
 
     为什么不用 `No module named 'numpy'`: 目标用户是普通玩家, 看到这个只会以为
-    程序坏了。真实原因是**这个包本来就不带校准能力**(轻量版省掉 numpy 51MB +
-    ffmpeg 84MB), 而数据已由作者校准好 —— 用户不需要它, 也不该被判成故障。
+    程序坏了。真实原因是**当前环境没装校准依赖**(numpy + ffmpeg), 而数据已由
+    采集端校准好 —— 播放用户不需要它, 也不该被判成故障。
     所以文案要点明"这是正常的", 并给出唯一有价值的补救路径(手动微调)。
     """
     tech = _AFP_IMPORT_ERR or "numpy/audiofp 未安装"
-    return ("这个版本不含自动校准（数据已由作者校准好，直接播放即可）。"
+    return ("当前环境没有音频对齐依赖（数据已由采集端校准好，直接播放即可）。"
             "只想微调几秒的话，用下面的「手动微调」更快；"
-            "确实需要整段重算，请从源码运行（仓库 README 有说明）。"
+            "确实需要整段重算，请先在采集端环境装好 numpy + imageio-ffmpeg，"
+            "再运行 tools/calibrate.py。"
             f"（技术细节：{tech}）")
 
 # ---- 常量 ----
@@ -155,7 +156,7 @@ _env = os.environ.get("DANMAKU_DATA", "").strip()
 DATA_DIR = (Path(_env).resolve() if _env
             else BASE_DIR.parent / "data")
 
-# 是否下载音频指纹(afp)。afp 只服务于 /api/autocalign, 而那条链路需要 numpy
+# 是否下载音频指纹(afp)。afp 供采集端 nightly / tools/calibrate 做对齐, 需要 numpy
 # 与 imageio-ffmpeg —— 便携包两者都不带(见 _no_audiofp_msg), 于是 afp 下下来
 # 只会被当成"不是弹幕"过滤掉, 却占了数据体积的一半以上。
 # 默认跟随本机能力: 能校准就下, 不能就不下。config.json 的 download.afp 可覆盖 ——
@@ -170,7 +171,7 @@ BILI_REFERER = "https://www.bilibili.com/"
 BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-# ---- 自动对齐(/api/autocalign) ----
+# ---- 音频对齐(采集端 nightly / tools/calibrate 调用) ----
 # 回放音频指纹缓存目录(可用环境变量 AFP_CACHE 覆盖; 默认放在本机临时目录,
 # 不写死绝对路径, 换机器也能跑, 也避免缓存随仓库/备份被带走)
 AFP_CACHE_DIR = Path(os.environ.get("AFP_CACHE", "").strip()
@@ -265,14 +266,12 @@ def load_cookie_header() -> str:
 
 
 # matches.json 的读-改-写全程串行化。
-# 原实现用**固定** tmp 名("matches.json.tmp")且无锁, 而写入点有两处
-# (POST /api/match、/api/autocalign)。日常操作就能撞车:
-# 「自动校准」成功后前端 applyOffsetValue 会紧接着 POST 一次 /api/match,
+# 原实现用**固定** tmp 名("matches.json.tmp")且无锁, 而写入点有多处
+# (POST /api/match、采集端 nightly 的校准与赛程写回)。日常操作就能撞车:
+# 校准写回后前端 applyOffsetValue 会紧接着 POST 一次 /api/match,
 # 两个请求同时 read-modify-write → tmp 互相覆盖 → replace 出交错 JSON,
 # 而 load_matches 对解析失败是**静默返回空表**, 表现为"全部对齐记录凭空消失"。
 _MATCHES_LOCK = threading.Lock()
-# 自动校准的全局互斥(asyncio 侧): 见 handle_autocalign。
-_AUTOCALIGN_LOCK = asyncio.Lock()
 
 
 # ============================================================================
@@ -1315,9 +1314,9 @@ async def handle_match_post(request: web.Request) -> web.Response:
     lt = str(body.get("list_title") or "").strip()
     new_title = body.get("title")
     # manual=true 表示这是用户手动微调(±5/10/30 或"对齐到此刻")产生的 offset。
-    # 此时必须清掉旧的 auto 记录(自动校准置信度), 否则条目里会长期挂着一个
+    # 此时必须清掉旧的 auto 记录(采集端校准置信度), 否则条目里会长期挂着一个
     # "高置信度自动校准"的假象, 让人以为当前 offset 是算法给出的。
-    # 自动校准自身写回(order 见 run_autocalign)不走 manual, 所以不会误删。
+    # 采集端校准自身写回(order 见 run_autocalign)不走 manual, 所以不会误删。
     is_manual = bool(body.get("manual"))
 
     def _mut(matches):
@@ -2018,8 +2017,10 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
     lst = matches["lists"].get(date)
     if not lst:
         if draft:
+            # 草稿可能还没搜到 BV(回放未上传): 这里必须容忍缺键, 否则一次
+            # KeyError 会让整天的赛程发现失败, 连"有哪些场次"都落不了盘。
             matches["lists"][date] = [
-                {"title": m["title"], "bv": m["bv"], "offset_sec": 0,
+                {"title": m["title"], "bv": m.get("bv") or "", "offset_sec": 0,
                  "start_ms": stamp(m)} for m in draft]
             result["created"] = len(draft)
         return
@@ -2027,7 +2028,7 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
     for m in draft:
         if any(_same_match(e, m) for e in lst):
             continue
-        lst.append({"title": m["title"], "bv": m["bv"], "offset_sec": 0,
+        lst.append({"title": m["title"], "bv": m.get("bv") or "", "offset_sec": 0,
                     "start_ms": stamp(m)})
         result["added"] += 1
 
@@ -2053,7 +2054,7 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
         if not want:
             continue
         for m in draft:
-            if frozenset(t.lower() for t in m["teams"]) == want and m["bv"]:
+            if frozenset(t.lower() for t in m["teams"]) == want and m.get("bv"):
                 entry["bv"] = m["bv"]
                 result["backfilled"] += 1
                 break
@@ -2834,7 +2835,7 @@ async def handle_stream(request: web.Request) -> web.StreamResponse:
         raise ApiError("连接上游超时")
 
 
-# ---- /api/autocalign: 音频指纹自动对齐 ----
+# ---- 音频指纹对齐(采集端 nightly / tools/calibrate 调用) ----
 def _afp_in_dir(day_dir: Path, file: str) -> list:
     """某日期目录里的 afp 文件: 主 {file}.afp.jsonl[.gz] + {file}_runN 归档。"""
     paths = []
@@ -3602,41 +3603,6 @@ async def handle_update_pull(request: web.Request) -> web.Response:
     return api_ok(**res)
 
 
-async def handle_autocalign(request: web.Request) -> web.Response:
-    try:
-        body = await request.json()
-    except ValueError:
-        raise ApiError("请求体不是有效的 JSON")
-    if not isinstance(body, dict):
-        raise ApiError("请求体应为 JSON 对象")
-    date = str(body.get("date") or "").strip()
-    file = str(body.get("file") or "").strip()
-    bv = str(body.get("bv") or "").strip()
-    if not date or not file:
-        raise ApiError("缺少字段 date 或 file")
-    if not DATE_RE.fullmatch(date):
-        raise ApiError("字段 date 非法(应为 YYYY-MM-DD)")
-    if not FILE_RE.fullmatch(file):
-        raise ApiError("字段 file 非法(只允许字母/数字/下划线/连字符)")
-    if not BV_RE.fullmatch(bv):
-        raise ApiError("字段 bv 非法(应形如 BV1xx411c7mD)")
-    try:
-        # page=0(默认) 表示"这场比赛的所有分P 各对齐一遍"; page>=1 只对齐指定分P
-        page = int(body.get("page") or 0)
-    except (TypeError, ValueError):
-        raise ApiError("字段 page 应为整数")
-    if page < 0:
-        raise ApiError("字段 page 应 >= 0 (0=全部分P)")
-    # 同一时刻只允许一次自动校准: 它会拉多段音轨 + 写 matches.json,
-    # 两个请求并发会重复下载并互相覆盖写回结果(前端按钮有 busy 锁, 但那只是
-    # 客户端约束 —— 换个标签页或直接 curl 就绕过了)。
-    if _AUTOCALIGN_LOCK.locked():
-        raise ApiError("已有一次自动校准在进行中, 请等它结束")
-    async with _AUTOCALIGN_LOCK:
-        result = await run_autocalign(date, file, bv, page, request.app["http"])
-    return api_ok(**result)
-
-
 # ---- 静态托管 web/ ----
 def resolve_web_file(rel: str):
     """把 URL 相对路径安全映射到 web/ 内的文件, 越界或不存在返回 None。"""
@@ -3737,7 +3703,6 @@ def build_app() -> web.Application:
     r.add_get("/api/sources", handle_sources)
     r.add_get("/api/markers", handle_markers)
     r.add_get("/api/stream", handle_stream)
-    r.add_post("/api/autocalign", handle_autocalign)
     r.add_get("/api/update/check", handle_update_check)
     r.add_get("/api/update/progress", handle_update_progress)
     r.add_post("/api/update/pull", handle_update_pull)

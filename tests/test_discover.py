@@ -67,6 +67,35 @@ def t_append():
           m["lists"]["2026-10-30"][0]["offset_sec"] == 43.1)
 
 
+def t_draft_without_bv():
+    """回放还没上传时, 草稿里根本没有 bv 键 —— 不能因此崩掉整天的发现。
+
+    2026-11-06 前的实现给每条草稿都赋了 bv(即使是空串); 改成"搜到才赋值"
+    后, 空结果就意味着缺键, `_apply_discover` 里 m["bv"] 直接 KeyError。
+    后果不是少一个 BV, 而是场次列表根本建不出来, 推送闸门永远不放行。
+    """
+    print("\n[合并] 草稿缺 bv 键时不崩")
+    draft = [{"title": "DK vs BLG", "teams": ["DK", "BLG"],
+              "start": datetime(2026, 11, 6, 6, 0)}]
+    m = {"lists": {}, "align": {}}
+    r = _result()
+    server._apply_discover(m, "2026-11-06", draft, r)
+    lst = m["lists"].get("2026-11-06") or []
+    check("场次建出来了", len(lst) == 1, str(lst))
+    check("bv 落成空串", bool(lst) and lst[0].get("bv") == "", str(lst))
+    check("start_ms 有值", bool(lst) and "start_ms" in lst[0], str(lst))
+
+    # 已有列表里追加一场"还没有 BV"的比赛, 同样不能崩
+    m2 = {"lists": {"2026-11-06": [dict(lst[0])]}, "align": {}}
+    r2 = _result()
+    draft2 = [{"title": "GEN vs LYON", "teams": ["GEN", "LYON"],
+               "start": datetime(2026, 11, 6, 8, 0)}]
+    server._apply_discover(m2, "2026-11-06", draft2, r2)
+    got = m2["lists"]["2026-11-06"]
+    check("追加了第二场", len(got) == 2, str(got))
+    check("第二场 bv 为空", got[1].get("bv") == "", str(got))
+
+
 def t_no_clobber():
     print("\n[合并] 不覆盖已有值")
     m = {"lists": {"2026-10-30": [{"title": "KC vs CFO", "bv": "BV_MANUAL",
@@ -282,6 +311,7 @@ def t_search_order():
 
 def main() -> int:
     t_append()
+    t_draft_without_bv()
     t_no_clobber()
     t_team_order()
     t_fill()

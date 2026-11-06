@@ -10,8 +10,9 @@
   开关控制(边界见 AGENTS.md「夜间流水线的自动推送」)。混入代码/文档的提交
   停下等人工推送。
 - **校准成功才发布**: 当天场次里至少一个分P 有对齐结果, 才 split/commit/push。
-  未校准的数据留在本地, 下一轮继续发现+校准, 直到成功。这样用户拉到的每一天
-  都自带场次(align.json) —— 播放端不做赛程发现, 只负责播放。
+  未校准的数据留在本地, 下一轮继续发现+校准; 超过 RETRY_DAYS 天仍校准不了则
+  不再自动重搜(避免每小时对同一天无休止请求 B站), 需要时手动跑 --date。
+  这样用户拉到的每一天都自带场次(align.json) —— 播放端不做赛程发现, 只负责播放。
 - 有新增内容才提交, 没有就静默退出, 不产生空提交。
 - 回放未上传/分P 取不到音频时跳过, 下一轮再试; 不写失败标记。
 - 采集端负责写 manifest 快照; 本脚本不重新解释"哪些片已封口"。
@@ -37,6 +38,7 @@ import server  # noqa: E402
 import calibrate  # noqa: E402
 import pipelinelock  # noqa: E402
 import pushctl  # noqa: E402
+from daygate import RETRY_DAYS, calibrated, too_old as _too_old  # noqa: E402
 
 DATA = server.DATA_DIR
 
@@ -157,6 +159,7 @@ async def discover(day: str) -> None:
         print(f"{day}: 赛程里没有可识别的场次")
         return
     for m in draft:
+        m.setdefault("bv", "")           # 草稿默认没有 bv, 后面统一按"可能为空"处理
         if m.get("bv"):
             continue                     # 日期兜底已经带 BV, 不要用搜不到的结果覆盖它
         bv = await asyncio.to_thread(
@@ -182,7 +185,7 @@ async def discover(day: str) -> None:
     if not await asyncio.to_thread(server.update_matches, _mut):
         print(f"{day}: 赛程写入本地层失败")
         return
-    print(f"{day}: 赛程 {len(draft)} 场, 新回放 {sum(1 for m in draft if m['bv'])} 个")
+    print(f"{day}: 赛程 {len(draft)} 场, 新回放 {sum(1 for m in draft if m.get('bv'))} 个")
 
 
 def dirty_days() -> list:
@@ -244,36 +247,25 @@ def _auto_push(dry_run: bool) -> None:
         print(r["detail"])
 
 
-def calibrated(day: str) -> bool:
-    """当天是否已有可播放的对齐结果(至少一个分P)。
-
-    推送闸门: 没有场次、或场次一个分P 都没对齐的原始数据不发布。
-    用户拉到的每一天都必须自带赛程 —— 否则播放端只有一堆弹幕, 不知道播哪场。
-    2026-11-06 的事故就是校准还没成, 数据先推上去了。
-
-    数据不会丢: 未过闸门的日子留在本地工作区, 下一轮巡检继续重试。
-    """
-    try:
-        match_date = server._session_match_date(day)
-        lists = (server.load_matches() or {}).get("lists") or {}
-    except Exception:
-        return False
-    for m in lists.get(match_date) or []:
-        if not isinstance(m, dict) or not str(m.get("bv") or "").strip():
-            continue
-        if isinstance(m.get("pages"), dict) and m["pages"]:
-            return True
-    return False
-
-
-async def tick(dry_run: bool, only_date: str = "") -> None:
+async def tick(dry_run: bool, only_date: str = "") -> int:
+    """跑一轮巡检。返回值 = 发布失败的日期数(0 = 没有失败)。"""
     if only_date:
         days = [only_date]          # --date 只处理这一天, 不捎带其它脏日期
+        publish_days = days
     else:
         active = running_days()
-        if not active:
+        dirty = dirty_days()
+        if not active and not dirty:
             print("没有正在采集的会话")
-        days = sorted(set(active) | set(dirty_days()))
+        # 发现/校准只重试最近 RETRY_DAYS 天: 更早的日期若一直校准不了,
+        # 每小时重搜不会改变结果, 只会累积无谓的 B站请求。
+        retry = [d for d in dirty if d in active or not _too_old(d)]
+        stale = [d for d in dirty if d not in retry]
+        if stale:
+            print(f"超过 {RETRY_DAYS} 天仍未校准, 不再自动重试: {', '.join(stale)}")
+        days = sorted(set(active) | set(retry))
+        # 发布仍覆盖所有脏日期: 旧日期只要已校准, 新数据就该照常提交。
+        publish_days = sorted(set(active) | set(dirty))
     if dry_run:
         # 真 dry-run: 不联网、不校准、不写本地层, 只打印将要发布的日期
         print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
@@ -283,7 +275,7 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
                 continue
             publish(day, dry_run=True)
         _auto_push(dry_run=True)
-        return
+        return 0
     async with aiohttp.ClientSession() as session:
         # 发现与校准都覆盖 days 而不只是 active: 回放常在采集结束后才上传,
         # 只给正在采集的日期重试, 已封口但还没校准的夜晚就永远等不到 BV,
@@ -293,9 +285,13 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
                 await discover(day)
             except Exception as e:          # 网络/赛程失败不阻断校准
                 print(f"{day}: 刷新赛程失败({e})")
-            await calibrate_day(day, session)
+            try:
+                await calibrate_day(day, session)
+            except Exception as e:          # 某一天坏数据不能拖住其它日期的发布
+                print(f"{day}: 校准失败({e})")
     # 收尾后的数据不在 running_days 里, 但 afp/meta 还没提交 —— 一并发布
-    for day in days:
+    failed = 0
+    for day in publish_days:
         if not calibrated(day):
             print(f"{day}: 尚未校准成功, 暂不推送(数据保留在本地, 下一轮重试)")
             continue
@@ -303,8 +299,10 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
             publish(day, dry_run=False)
         except Exception as e:
             print(f"{day}: 发布失败({e})")
+            failed += 1
     # 即使今天没有新日期, 也要试一次: 上一轮可能提交成功但推送失败。
     _auto_push(dry_run=False)
+    return failed
 
 
 async def discover_days(days: list) -> None:
@@ -328,14 +326,18 @@ def _run_once(args) -> int:
         print("另一轮巡检正在执行(单轮锁被占用), 本次跳过")
         return 3
     try:
-        asyncio.run(tick(args.dry_run, args.date))
+        failed = asyncio.run(tick(args.dry_run, args.date))
     finally:
         lock.release()
-    # --date 是控制台「校准并提交」按钮的入口: 没校准成功就是失败, 不能退出码 0
-    # 让控制台误报成功。常驻循环不带 --date, 不受这里影响。
-    if args.date and not args.dry_run and not calibrated(args.date):
-        print(f"{args.date}: 本轮尚未校准成功, 未发布")
-        return 4
+    # --date 是控制台「校准并提交」按钮的入口: 没校准成功或没提交成功都算失败,
+    # 不能退出码 0 让控制台误报成功。常驻循环不带 --date, 不受这里影响。
+    if args.date and not args.dry_run:
+        if failed:
+            print(f"{args.date}: 发布失败, 本轮未提交")
+            return 5
+        if not calibrated(args.date):
+            print(f"{args.date}: 本轮尚未校准成功, 未发布")
+            return 4
     return 0
 
 

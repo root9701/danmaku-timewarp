@@ -222,6 +222,85 @@ def test_discover_fills_bv_from_date_search():
     check("日期搜索补上了 BV", bool(lst) and lst[0]["bv"] == "BV_DATE", str(lst))
 
 
+def test_discover_without_bv():
+    """两个搜索都没有结果时, 仍要建出场次列表(只是 BV 为空)。
+
+    覆盖真实路径: nightly.discover -> _apply_discover 的完整调用链。
+    旧实现草稿缺 bv 键, 这里会直接 KeyError, 整天赛程落不了盘。
+    """
+    print("\n[兜底] 搜不到 BV 也要建出场次")
+    seen = {}
+
+    def fake_draft(date):
+        return [{"title": "DK vs BLG", "teams": ["DK", "BLG"],
+                 "start": datetime(2026, 11, 6, 6, 0)}]
+
+    def fake_update(mut):
+        m = {"lists": {}, "align": {}}
+        mut(m)
+        seen["lists"] = m["lists"]
+        return True
+
+    old = (nightly.server.discover_draft, nightly.server._session_match_date,
+           nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+           nightly.server.update_matches)
+    try:
+        nightly.server.discover_draft = fake_draft
+        nightly.server._session_match_date = lambda d: d
+        nightly.server.bili_search_replay = lambda a, b, c: ""
+        nightly.server.bili_discover_date = lambda d: []
+        nightly.server.update_matches = fake_update
+        asyncio.run(nightly.discover("2026-11-06"))
+    finally:
+        (nightly.server.discover_draft, nightly.server._session_match_date,
+         nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+         nightly.server.update_matches) = old
+    lst = seen.get("lists", {}).get("2026-11-06") or []
+    check("场次建出来了", len(lst) == 1, str(lst))
+    check("BV 为空而不是崩掉", bool(lst) and lst[0].get("bv") == "", str(lst))
+
+
+def test_retry_window():
+    print("\n[重试窗口] 太老的脏日期不再每小时重搜")
+    today = datetime.now().strftime("%Y-%m-%d")
+    check("今天不算过期", not nightly._too_old(today))
+    check("很久以前算过期", nightly._too_old("2000-01-01"))
+    check("非法日期不过期", not nightly._too_old("_test"))
+
+
+def test_tick_retry_window():
+    print("\n[重试窗口] 超期日期只发布, 不再发现+校准")
+    discovered, calls = [], []
+
+    async def fake_discover(day):
+        discovered.append(day)
+
+    async def fake_cal(day, session):
+        return 0
+
+    old = (nightly.running_days, nightly.dirty_days, nightly._too_old,
+           nightly.discover, nightly.calibrate_day, nightly.calibrated,
+           nightly.publish, nightly._auto_push)
+    nightly.running_days = lambda: ["2026-11-06"]
+    nightly.dirty_days = lambda: ["2026-11-04", "2026-11-05"]
+    nightly._too_old = lambda d: d == "2026-11-04"
+    nightly.discover = fake_discover
+    nightly.calibrate_day = fake_cal
+    nightly.calibrated = lambda d: True
+    nightly.publish = lambda day, dry_run=False: calls.append(day)
+    nightly._auto_push = lambda dry_run: None
+    try:
+        asyncio.run(nightly.tick(False))
+    finally:
+        (nightly.running_days, nightly.dirty_days, nightly._too_old,
+         nightly.discover, nightly.calibrate_day, nightly.calibrated,
+         nightly.publish, nightly._auto_push) = old
+    check("过期的日期不再重搜", discovered == ["2026-11-05", "2026-11-06"],
+          str(discovered))
+    check("已校准的过期日期仍发布",
+          calls == ["2026-11-04", "2026-11-05", "2026-11-06"], str(calls))
+
+
 def test_publish_collects_align_after_split():
     """split 会写出 align.json, 文件列表必须在它之后收集。
 
@@ -293,12 +372,13 @@ def test_tick_skips_uncalibrated():
     async def fake_cal(day, session):
         return 0
 
-    old = (nightly.running_days, nightly.dirty_days, nightly.discover,
-           nightly.calibrate_day, nightly.calibrated, nightly.publish,
-           nightly._auto_push)
+    old = (nightly.running_days, nightly.dirty_days, nightly._too_old,
+           nightly.discover, nightly.calibrate_day, nightly.calibrated,
+           nightly.publish, nightly._auto_push)
     # 11-06 还在采集; 11-05 已收尾但数据没提交(脏), 也必须继续重试发现
     nightly.running_days = lambda: ["2026-11-06"]
     nightly.dirty_days = lambda: ["2026-11-05"]
+    nightly._too_old = lambda day: False       # 这些是回归样本日期, 不随运行日期过期
     nightly.discover = fake_discover
     nightly.calibrate_day = fake_cal
     nightly.publish = lambda day, dry_run=False: calls.append(day)
@@ -321,9 +401,9 @@ def test_tick_skips_uncalibrated():
               discovered == ["2026-11-06"], str(discovered))
         check("--date 不发布别的日期", calls == [], str(calls))
     finally:
-        (nightly.running_days, nightly.dirty_days, nightly.discover,
-         nightly.calibrate_day, nightly.calibrated, nightly.publish,
-         nightly._auto_push) = old
+        (nightly.running_days, nightly.dirty_days, nightly._too_old,
+         nightly.discover, nightly.calibrate_day, nightly.calibrated,
+         nightly.publish, nightly._auto_push) = old
 
 
 def test_date_run_reports_uncalibrated():
@@ -346,6 +426,15 @@ def test_date_run_reports_uncalibrated():
         check("未校准返回 4", rc == 4, str(rc))
         nightly.calibrated = lambda day: True
         check("已校准返回 0", nightly._run_once(args) == 0)
+
+        async def failing_tick(dry_run, only_date=""):
+            return 1
+
+        nightly.tick = failing_tick
+        rc = nightly._run_once(args)
+        check("发布失败返回 5", rc == 5, str(rc))
+        nightly.tick = fake_tick
+
         nightly.calibrated = lambda day: False
         args.dry_run = True
         check("dry-run 不报失败", nightly._run_once(args) == 0)
@@ -366,6 +455,9 @@ def main() -> int:
     test_discover_uses_fallback()
     test_discover_keeps_fallback_bv()
     test_discover_fills_bv_from_date_search()
+    test_discover_without_bv()
+    test_retry_window()
+    test_tick_retry_window()
     test_publish_collects_align_after_split()
     test_calibrated_gate()
     test_tick_skips_uncalibrated()

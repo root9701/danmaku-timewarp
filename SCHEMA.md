@@ -165,7 +165,7 @@ UTF-8 JSONL，四种行：
 
 | 字段 | 含义 |
 |---|---|
-| `source_swap` | `true` 表示这条记录来自换源人工标定，**不是**音频自动校准的结果。分P 级是给前端读的判据（`setup` 用它决定「别把这份 offset 当成官方基准」），记录级标的是整条记录的来历 |
+| `source_swap` | `true` 表示这条记录来自换源人工标定，**不是**音频自动对齐的结果。分P 级是给前端读的判据（`setup` 用它决定「别把这份 offset 当成官方基准」），记录级标的是整条记录的来历 |
 | `from_page` | 对应官方源的第几个分P（两源分P 数量/顺序不一定一致，`0` 表示这一局不挂弹幕） |
 | `align_sec` | 用户标的 **N**：官方那一局内的参照秒数（播官方源、拖到位置点「对齐」得到） |
 | `anchor_sec` | 用户标的 **A**：用户在换源视频里**挑的那一帧**是第几秒，默认 `0`（= 第一帧）。任意一帧都行 —— A 只是两源对号的参照物，不必是这一局的开头。老记录没这个字段，读出来按 0 处理 |
@@ -250,7 +250,6 @@ UTF-8 JSONL，四种行：
 | `GET /api/playurl?bv=&page=&qn=` | mp4 直链（多段时由前端拼接）；`qn` 是画质码，缺省 720P |
 | `GET /api/markers?bv=` | B站 看点（一血/大龙/推塔…）换算到整条虚拟时间轴 |
 | `GET /api/stream?url=` | 反代 B站 CDN（白名单域名 + 解析后 IP 校验） |
-| `POST /api/autocalign` | 自动校准，`page=0` 表示全部分P |
 | `GET /api/version` | 当前程序版本（只读本地 `VERSION` 文件，**不联网**） |
 | `GET /api/update/check` | 拉远端 `data-index.json`，比对本地，返回待下载清单（不落盘）。含 `want_afp`、`afp_fix_days`（补指纹）与 `align_fix_days`（补作者重算的校准） |
 | `GET /api/update/progress` | 当前下载进度（只读，不触发任何动作） |
@@ -282,13 +281,10 @@ UTF-8 JSONL，四种行：
 **`/api/overview`** 的 `tracks[].parts` 已按 `offset_sec` 升序（= 真实时间顺序）。
 前端应优先用它绘制，而不是按分P 序号累加 `page_marks`。
 
-**`/api/autocalign`** 返回 `{ok, bv, total_pages, aligned_pages, all_ok, pages:{分P号:{part,
-offset_sec, confidence, votes, total_segments, picked_by, suspect}}, errors, elapsed_sec}`。
-顶层 `offset_sec`/`confidence` 取**第一分P**，仅供兼容；读多分P 结果**必须用 `pages`**。
-部分分P 失败时 `ok` 仍为 `true`，原因在 `errors`，例如 `{"2": "该分P 只在窗口外找到位置
-(10-27 07:44, 距赛程窗口 +405 分钟), 判为早上重播/回顾, 未采纳"}`。
-
-**并发**：`/api/autocalign` 进程内互斥，同时只允许一次（它会拉多段音轨并写 matches.json）。
+**对齐结果**由采集端写入 `lists[].pages`（逐分P）：`{分P号:{part, offset_sec,
+confidence, votes, total_segments, picked_by, suspect}}`。顶层 `offset_sec`/`confidence`
+取**第一分P**，仅供兼容；读多分P 结果**必须用 `pages`**。校准过程内部的 `errors`
+（哪个分P 没对上及原因）不落盘，只写日志。
 
 ## 6. 版本演进规则
 

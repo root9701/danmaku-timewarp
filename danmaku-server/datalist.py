@@ -11,7 +11,7 @@
 from pathlib import Path
 
 # 音频指纹文件的后缀(主文件与 _runN 归档都是这两种)。
-# 它只服务于 /api/autocalign, 那条链路要 numpy 与 ffmpeg; 便携包两者都不带,
+# 它只服务于采集端/命令行的音频对齐, 那条链路要 numpy 与 ffmpeg; 便携包两者都不带,
 # 下下来只会被当成"不是弹幕"过滤掉 —— 而它占了数据体积的一半以上。
 # 要不要下由调用方决定(见 dataupdate.download_day 的 want_afp)。
 AFP_SUFFIXES = (".afp.jsonl", ".afp.jsonl.gz")

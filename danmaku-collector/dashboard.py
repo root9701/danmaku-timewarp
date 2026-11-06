@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiohttp import web
@@ -735,23 +735,37 @@ def _push_scope() -> dict:
 
 
 def _calibration_info(date: str) -> dict:
-    path = ROOT / "data" / date / "align.json"
-    if not path.is_file():
-        return {"ok": False, "message": "还没有对齐记录"}
+    """该数据日的对齐进度摘要(给推送卡片显示「已对齐 N/M P」)。
+
+    读的是**合并后的视图**(已分发 align.json + 采集端本地层), 因为手动校准先写本地层,
+    split 之后才进 align.json —— 只看 align.json 会让刚校准完的那天仍显示「未对齐」。
+
+    列表按**比赛日**分组, 而 date 是**数据目录日**, 凌晨场次两者差一天。所以先看
+    date 与 date+1 两组, 都没有时才退回全部 —— 直接遍历全部分组会把**别的晚上**
+    的场次也算进来, 推送卡片上就会显示不属于这天的比赛。
+    """
+    sch = _load_schedule(date)
+    groups = sch.get("lists") or {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"ok": False, "message": "align.json 读取失败"}
+        nxt = (datetime.strptime(date, "%Y-%m-%d").date()
+               + timedelta(days=1)).isoformat()
+    except ValueError:
+        nxt = date
+    picked = [groups[k] for k in (date, nxt) if isinstance(groups.get(k), list)]
+    if not picked:
+        picked = [v for v in groups.values() if isinstance(v, list)]
     items = []
-    for entry in (data.get("lists") or {}).get(date) or []:
-        if not isinstance(entry, dict):
-            continue
-        pages = entry.get("pages") or {}
-        total = entry.get("total_pages")
-        if not isinstance(total, int):
-            total = len(pages)
-        items.append({"title": str(entry.get("title") or ""),
-                      "aligned": len(pages), "total": total})
+    for lst in picked:
+        for entry in lst:
+            if not isinstance(entry, dict):
+                continue
+            pages = entry.get("pages") or {}
+            total = entry.get("total_pages")
+            if not isinstance(total, int):
+                total = len(pages) if isinstance(pages, dict) else 0
+            items.append({"title": str(entry.get("title") or ""),
+                          "aligned": len(pages) if isinstance(pages, dict) else 0,
+                          "total": total})
     if not items:
         return {"ok": False, "message": "还没有对齐记录"}
     return {"ok": True, "items": items}

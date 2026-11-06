@@ -77,14 +77,30 @@ function renderCalState(sch) {
 }
 
 function findAlign(align, date, bv) {
-  const exact = align[date + '|' + bv] || align[date + '|7734200|' + bv];
-  if (exact && typeof exact === 'object') { return exact; }
-  let hit = null;
-  Object.keys(align).forEach((k) => {
-    const v = align[k];
-    if (v && typeof v === 'object' && String(v.bv || '') === bv) { hit = hit || v; }
-  });
-  return hit;
+  // 精确 key 是 `{日期}|{会话}|{BV}`(会话名要到 /api/days 之后才定, 这里不知道),
+  // 所以按 "日期前缀 + BV 后缀" 扫, 取分P 最多的那条 —— 与播放端
+  // server._pick_exact_align_rec 同一判据。
+  //
+  // 旧实现先试 `date|bv` 与写死的 `date|7734200|bv`(两个都不是真实 key 形状),
+  // 再"遍历取第一条 bv 命中" —— 同一 BV 在别的日期还留着失败标记时, 会把这一场
+  // 显示成「对齐失败」; 多条残留时也可能先撞上分P 更少的那条。
+  //
+  // 先按比赛日找, 找不到再放宽到任意日期: align 的 key 前缀是**数据目录日**,
+  // 而 lists 的键是**比赛日**, 凌晨场次两者差一天(旧布局就是这样)。
+  const pick = (prefix) => {
+    let best = null;
+    let bestN = -1;
+    Object.keys(align).forEach((k) => {
+      if (prefix && !k.startsWith(prefix + '|')) { return; }
+      if (!k.endsWith('|' + bv)) { return; }
+      const v = align[k];
+      if (!v || typeof v !== 'object') { return; }
+      const n = v.pages && typeof v.pages === 'object' ? Object.keys(v.pages).length : 0;
+      if (n > bestN) { best = v; bestN = n; }
+    });
+    return best;
+  };
+  return pick(date) || pick('');
 }
 
 async function loadCalibration() {

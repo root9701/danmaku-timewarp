@@ -498,6 +498,102 @@ def test_anchored_cluster_rejects_chain_votes() -> None:
     check("全部票指向同一处时正常采纳(防过拒)", ok, why)
 
 
+def test_mp4_fallback_headless() -> None:
+    """mp4 兜底必须直连 CDN, 不能依赖本机播放服务的 /api/stream。
+
+    踩过的坑: `get_replay_fingerprint` 的兜底地址写死 `127.0.0.1:{PORT}`。
+    播放端里点校准能跑, 但 nightly / tools/calibrate 是无头进程, 端口上没有服务,
+    回放又只有 mp4 可下时, 校准必然 "connection refused" 且每一轮都失败。
+    """
+    import asyncio
+    import tempfile
+
+    import server
+
+    calls = {}
+
+    async def fake_view(session, bv):
+        return {"cid": 11, "pages": [{"page": 1, "cid": 11, "duration": 10}]}
+
+    async def no_dash(session, bv, cid=None):
+        return None
+
+    async def fake_playurl(session, bv, page=0):
+        return {"urls": ["https://cdn.example/a.m4s"], "seg_lengths": [10]}
+
+    def fake_fp(src, hop, win=0.4, timeout=None, headers=None):
+        calls.update(src=src, headers=headers)
+        return np.zeros((10, 33), dtype=np.float32)
+
+    old = (server.bili_view, server.bili_dash_audio_url, server.bili_playurl_mp4,
+           server.ffmpeg_audio_fp, server._afp_cache_file, server._save_fp_cache)
+    with tempfile.TemporaryDirectory(prefix="dmk_mp4_") as td:
+        server.bili_view = fake_view
+        server.bili_dash_audio_url = no_dash
+        server.bili_playurl_mp4 = fake_playurl
+        server.ffmpeg_audio_fp = fake_fp
+        server._afp_cache_file = lambda bv, cid: Path(td) / "x.npz"
+        server._save_fp_cache = lambda *a, **k: None
+        try:
+            fp, desc = asyncio.run(server.get_replay_fingerprint(
+                object(), "BV1TEST", 1, 0.4, 0.4))
+        finally:
+            (server.bili_view, server.bili_dash_audio_url, server.bili_playurl_mp4,
+             server.ffmpeg_audio_fp, server._afp_cache_file,
+             server._save_fp_cache) = old
+    check("mp4 兜底直连 CDN(不再拼 127.0.0.1 /api/stream)",
+          calls.get("src") == "https://cdn.example/a.m4s", str(calls.get("src")))
+    check("直连时带 Referer(B站 CDN 的硬要求)",
+          (calls.get("headers") or {}).get("Referer") == server.BILI_REFERER,
+          str(calls.get("headers")))
+    check("返回指纹与来源说明", fp.shape == (10, 33) and "mp4" in desc, desc)
+
+
+def test_ffmpeg_headers_option() -> None:
+    """`-headers` 必须作为输入选项出现在 `-i` 之前, 且每行以 CRLF 结尾。
+
+    同时验证**本地文件不加 -headers**: 那是 http 协议私有选项, 对本地文件 ffmpeg
+    会报 `Option headers not found` 直接退出 —— 本地音频调试路径会全部失败。
+    """
+    import server
+
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = np.zeros(32000, dtype="<i2").tobytes()
+        stderr = b""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return FakeProc()
+
+    old = server.subprocess.run
+    try:
+        server.subprocess.run = fake_run
+        fp = server.ffmpeg_audio_fp(
+            "https://cdn.example/a.m4s", 0.4,
+            headers={"User-Agent": "UA", "Referer": "https://bilibili.com/"})
+        url_cmd = seen.get("cmd") or []
+        server.ffmpeg_audio_fp("C:/tmp/a.wav", 0.4,
+                               headers={"Referer": "https://bilibili.com/"})
+        local_cmd = seen.get("cmd") or []
+    finally:
+        server.subprocess.run = old
+
+    cmd = url_cmd
+    hdr_at = cmd.index("-headers") if "-headers" in cmd else -1
+    in_at = cmd.index("-i") if "-i" in cmd else -1
+    text = cmd[hdr_at + 1] if hdr_at >= 0 else ""
+    check("命令行含 -headers 且位于 -i 之前", 0 <= hdr_at < in_at, str(cmd[:8]))
+    check("请求头以 CRLF 结尾(ffmpeg 要求)",
+          text.endswith("\r\n") and "Referer: https://bilibili.com/\r\n" in text,
+          repr(text))
+    check("带请求头时照常返回指纹", fp.shape[1] == 33, str(fp.shape))
+    check("本地文件不加 -headers(否则 ffmpeg 报 Option not found)",
+          "-headers" not in local_cmd, str(local_cmd[:8]))
+
+
 def main() -> int:
     print("对齐算法回归")
     for fn in (test_align_recovers_offset,
@@ -511,7 +607,9 @@ def main() -> int:
                test_hop_change_contract,
                test_afp_written_ts_matches_hop,
                test_ffmpeg_timeout_guard,
-               test_anchored_cluster_rejects_chain_votes):
+               test_anchored_cluster_rejects_chain_votes,
+               test_mp4_fallback_headless,
+               test_ffmpeg_headers_option):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

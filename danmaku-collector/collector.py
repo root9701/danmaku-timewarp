@@ -1054,14 +1054,23 @@ class Recorder:
 
     @staticmethod
     def _gzip_file(src, dst):
-        """gz 写完整后才删 raw; 失败保留 raw 原地并返回 False。"""
+        """gz 写完整后才删 raw; 失败保留 raw 原地并返回 False。
+
+        **先写同目录 .tmp 再原子替换**: 直接 `gzip.open(dst, "wb")` 写到一半被杀会留下
+        一个截断的 .gz —— 它在目录里看着像正常产物(下一轮会把它当"上一场的账本"归档),
+        却解不开。raw 还在, 数据没丢, 但脏文件会一直留在会话目录里。
+        """
+        tmp = dst.with_name(dst.name + ".tmp")
         try:
-            with open(src, "rb") as src_f, gzip.open(dst, "wb") as dst_f:
+            with open(src, "rb") as src_f, gzip.open(tmp, "wb") as dst_f:
                 shutil.copyfileobj(src_f, dst_f)
+            tmp.replace(dst)
             src.unlink()
             return True
         except Exception as e:
             log.error("生成 %s 失败: %s", dst, e)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
             return False
 
     async def finalize(self, ended_hint=None):

@@ -279,6 +279,82 @@ def test_stream_redirect_is_rechecked() -> None:
         check(f"拒绝 {bad_url}", rejected, "竟然放行了")
 
 
+def test_legacy_alias_only_for_dead_session() -> None:
+    """精确 key 缺失时, 只能借用"目录已不存在"的旧记录。
+
+    同一天两个会话各有自己的 anchor。A 没对齐 P2、B 对齐了, 播 A 时若借用 B 的
+    pages, 弹幕会整体平移到错误时刻, 界面却仍显示"已对齐"。只有目录改名/合并后
+    旧 key 的会话名已从磁盘消失, 才能把它当作当前会话的旧名字。
+    """
+    sb = Sandbox()
+    try:
+        day = "2026-10-26"
+        (sb.data / day / "7734200").mkdir(parents=True)
+        (sb.data / day / "7734201").mkdir(parents=True)
+        bv_live, bv_old = "BV1LIVE000001", "BV1OLD0000001"
+        sb.write_day(day, {
+            "align": {
+                f"{day}|7734201|{bv_live}": {
+                    "bv": bv_live, "file": "7734201", "date": day,
+                    "pages": {"1": {"offset_sec": 100.0}},
+                },
+                f"{day}|renamed_room|{bv_old}": {
+                    "bv": bv_old, "file": "renamed_room", "date": day,
+                    "pages": {"1": {"offset_sec": 200.0}},
+                },
+            },
+            "lists": {day: [{"title": "HLE vs IG", "bv": bv_live},
+                            {"title": "G2 vs TES", "bv": bv_old}]},
+        })
+        align = server.load_matches()["align"]
+        check("不借用另一个仍在用会话的 pages",
+              server._legacy_align_alias(align, day, "7734200", bv_live) is None)
+        got = server._legacy_align_alias(align, day, "7734200", bv_old)
+        check("会话目录已不存在时兼容旧记录",
+              isinstance(got, dict) and got.get("pages", {}).get("1", {}).get("offset_sec") == 200.0,
+              str(got))
+        check("不跨日期借用旧记录",
+              server._legacy_align_alias(align, "2026-10-27", "7734200", bv_old) is None)
+    finally:
+        sb.close()
+
+
+def test_manual_offset_only_touches_its_own_day() -> None:
+    """手动 offset 只改本会话所属比赛日的场次, 不能把另一天的同名声改掉。
+
+    列表按**比赛日**分组, 而数据目录日可能早一天(凌晨场次)。旧实现遍历所有日期,
+    只要标题相同就写 —— 系列赛里两天出现同一对阵时, 改 A 天会连 B 天一起改,
+    而 B 天的播放参数随之错位, 用户在两天的界面里都看不出是谁动的。
+    """
+    import asyncio
+
+    class FakeReq:
+        async def json(self):
+            return {"date": "2026-10-25", "file": "7734200",
+                    "bv": "BV1D1", "offset_sec": 42.0,
+                    "list_title": "HLE vs IG"}
+
+    sb = Sandbox()
+    try:
+        (sb.data / "2026-10-25" / "7734200").mkdir(parents=True)
+        # 比赛日 10-26(凌晨场次)与另一天的同名对阵各有一条
+        sb.write_day("2026-10-25", {
+            "align": {}, "lists": {
+                "2026-10-26": [{"title": "HLE vs IG", "bv": "BV1D1", "offset_sec": 10.0}],
+                "2026-10-27": [{"title": "HLE vs IG", "bv": "BV1D1", "offset_sec": 20.0}],
+            }})
+        asyncio.run(server.handle_match_post(FakeReq()))
+        m = server.load_matches()
+        check("本场比赛日的条目被更新",
+              m["lists"]["2026-10-26"][0]["offset_sec"] == 42.0,
+              str(m["lists"]["2026-10-26"]))
+        check("另一天的同名条目保持原值",
+              m["lists"]["2026-10-27"][0]["offset_sec"] == 20.0,
+              str(m["lists"]["2026-10-27"]))
+    finally:
+        sb.close()
+
+
 def main() -> int:
     print("分层与分发契约")
     for fn in (test_upstream_read,
@@ -289,7 +365,9 @@ def main() -> int:
                test_check_align_ignores_pageless,
                test_check_align_flags_missing_window,
                test_manifest_afp_stripped_shape,
-               test_stream_redirect_is_rechecked):
+               test_stream_redirect_is_rechecked,
+               test_legacy_alias_only_for_dead_session,
+               test_manual_offset_only_touches_its_own_day):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

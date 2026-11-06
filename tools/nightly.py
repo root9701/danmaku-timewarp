@@ -40,6 +40,7 @@ import pipelinelock  # noqa: E402
 import pushctl  # noqa: E402
 from daygate import RETRY_DAYS, calibrated, too_old as _too_old  # noqa: E402
 from datapaths import publish_paths  # noqa: E402
+from split_matches import pending_days  # noqa: E402
 
 DATA = server.DATA_DIR
 
@@ -172,17 +173,25 @@ async def discover(day: str) -> None:
 
 
 def dirty_days() -> list:
-    """有未提交改动的日期(收尾后 afp/meta/manifest 会出现在这里)。"""
+    """有未发布改动的日期。
+
+    两个来源缺一不可:
+      - `data/` 下未提交的文件(收尾后 afp/meta/manifest 会出现在这里);
+      - 本地层 `danmaku-server/matches.json` 里待分发的对齐记录。手动跑
+        `tools/calibrate.py` 只写本地层; 若那天 data/ 已经提交干净, 只看
+        git status 会永远认为"没有新数据", 重算的校准结果就永远发不出去。
+    """
+    days = set()
     try:
         text = _git("status", "--porcelain", "--", "data")
     except RuntimeError:
-        return []
-    days = set()
+        text = ""
     for line in text.splitlines():
         rel = line[3:].strip().strip('"')
         parts = rel.replace("\\", "/").split("/")
         if len(parts) >= 2 and _valid_day(parts[1]):
             days.add(parts[1])
+    days.update(pending_days())
     return sorted(days)
 
 

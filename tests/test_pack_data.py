@@ -90,6 +90,31 @@ def test_missing_manifest():
         check("缺 manifest -> 拦", any("缺 manifest" in p for p in got), str(got))
 
 
+def test_index_mode_also_checks_align():
+    print("\n[发布] --index 也必须校验 align(不能只查会话)")
+    with tempfile.TemporaryDirectory(prefix="dmk_pd_") as td:
+        base = Path(td)
+        data = base / "data"
+        (data / "2026-11-06").mkdir(parents=True)
+        # 有分P 对齐但 BV 不在 lists: 重算时拿不到赛程时间窗
+        (data / "2026-11-06" / "align.json").write_text(json.dumps({
+            "align": {"2026-11-06|7734200|BV1BAD": {
+                "bv": "BV1BAD", "pages": {"1": {"offset_sec": 1.0, "duration": 2}}}},
+            "lists": {},
+        }), encoding="utf-8")
+        old_data, old_argv, old_write = pack_data.DATA, sys.argv, pack_data.write_index
+        wrote = []
+        pack_data.DATA = data
+        pack_data.write_index = lambda staged=False: wrote.append(staged) or 0
+        sys.argv = ["pack_data.py", "--index"]
+        try:
+            rc = pack_data.main()
+        finally:
+            pack_data.DATA, sys.argv, pack_data.write_index = old_data, old_argv, old_write
+        check("拒绝生成清单", rc == 1, str(rc))
+        check("没有写 data-index.json", wrote == [], str(wrote))
+
+
 def main() -> int:
     print("pack_data 校验回归")
     test_live_empty_snapshot()
@@ -97,6 +122,7 @@ def main() -> int:
     test_normal_session()
     test_missing_slice()
     test_missing_manifest()
+    test_index_mode_also_checks_align()
     print()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项未过")

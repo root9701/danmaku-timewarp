@@ -17,7 +17,9 @@
 校准"就变成"必须发一版程序"; 而对齐参数只有几 KB, 用户完全不该为此更新程序。
 """
 import argparse
+import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +36,111 @@ def key_date(key: str):
     if len(head) == 10 and head[4] == "-" and head[7] == "-":
         return head
     return None
+
+
+def _valid_day(day: str) -> bool:
+    return len(day) == 10 and day[4] == "-" and day[7] == "-"
+
+
+def _load_local_layer():
+    """读本地覆盖层的 (align, lists); 文件不存在/坏掉时返回空, 不抛。"""
+    if not MATCHES.is_file():
+        return {}, {}
+    try:
+        data = json.loads(MATCHES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    if not isinstance(data, dict):
+        return {}, {}
+    if "align" in data or "lists" in data:
+        align = data.get("align") or {}
+        lists = data.get("lists") or {}
+    else:                       # 兼容旧格式(顶层平铺 align 条目)
+        align, lists = data, {}
+    return (align if isinstance(align, dict) else {},
+            lists if isinstance(lists, dict) else {})
+
+
+def _record_day(key, value):
+    """一条本地对齐记录归属的日期; 无法判定返回 None。"""
+    d = key_date(key)
+    if d:
+        return d
+    if isinstance(value, dict):
+        d = str(value.get("date") or "").strip()
+        if _valid_day(d):
+            return d
+    return None
+
+
+def pending_days() -> list:
+    """本地层里还有待分发记录、且 `data/{日期}/` 存在的日期。
+
+    夜间流水线用它在 "data/ 没有未提交文件" 时也能发现"手动校准完还没 split"
+    的日期。换源记录只属于本机(见 --check 的说明), 不算待分发。
+    """
+    align, lists = _load_local_layer()
+    days = set()
+    for k, v in align.items():
+        if isinstance(v, dict) and v.get("source_swap"):
+            continue
+        d = _record_day(k, v)
+        if d and (DATA / d).is_dir():
+            days.add(d)
+    for d in lists:
+        dd = str(d or "").strip()
+        if _valid_day(dd) and (DATA / dd).is_dir():
+            days.add(dd)
+    return sorted(days)
+
+
+def _write_json_atomic(path: Path, body) -> None:
+    """同目录唯一临时名 + 替换: 半途被杀不会留下半截 align.json/matches.json。"""
+    tmp = path.with_name("%s.%d.tmp" % (path.name, os.getpid()))
+    try:
+        tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True)
+                       + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_day_align(day: str, body: dict, unassigned: dict) -> None:
+    """把一个日期的记录写进 data/{日期}/align.json(已有则合并)。
+
+    换源记录只保留在本地层: 它是某个人对着某条解说视频人工标出来的, 写进分发层
+    等于把所有用户的换源界面都填上别人的参数。
+    """
+    day_dir = DATA / day
+    if not day_dir.is_dir():
+        # 没有数据目录就不该造出来: align.json 的归属前提是"这一天有数据",
+        # 凭空建目录会让清单里出现空日期, 用户拉到一个没有弹幕的天。
+        # 但记录必须留在本地层 —— 直接丢会让用户的手动校准凭空消失
+        # (例如数据目录被改名/尚未 pull 下来时)。
+        print(f"跳过 {day}: data/{day}/ 不存在(记录保留在本地层)")
+        unassigned["align"].update(body["align"])
+        unassigned["lists"].update(body["lists"])
+        return
+    for k in [k for k, v in body["align"].items()
+              if isinstance(v, dict) and v.get("source_swap")]:
+        print(f"  保留在本地层: {k} (换源记录, 不分发)")
+        unassigned["align"][k] = body["align"].pop(k)
+    p = day_dir / ALIGN_NAME
+    if p.is_file():
+        # 已存在: 合并(以新拆出来的为准, 但保留文件里已有的其他记录)
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        merged = {"align": dict((old.get("align") or {})),
+                  "lists": dict((old.get("lists") or {}))}
+        merged["align"].update(body["align"])
+        merged["lists"].update(body["lists"])
+        body = merged
+    _write_json_atomic(p, body)
+    print(f"写入 {p.relative_to(ROOT)}")
 
 
 def main() -> int:
@@ -123,42 +230,11 @@ def main() -> int:
         return 0
 
     for d in sorted(per_day):
-        body = per_day[d]
-        day_dir = DATA / d
-        if not day_dir.is_dir():
-            # 没有数据目录就不该造出来: align.json 的归属前提是"这一天有数据",
-            # 凭空建目录会让清单里出现空日期, 用户拉到一个没有弹幕的天。
-            print(f"跳过 {d}: data/{d}/ 不存在(该日无数据, 不对齐也不分发)")
-            continue
-        # 换源记录与 --check 一样排除: 它是某个人对着某条解说视频人工标出来的,
-        # 写进分发层等于把所有用户的换源界面都填上别人的参数。
-        swap_keys = [k for k, v in body["align"].items()
-                     if isinstance(v, dict) and v.get("source_swap")]
-        if swap_keys:
-            for k in swap_keys:
-                print(f"  保留在本地层: {k} (换源记录, 不分发)")
-                unassigned["align"][k] = body["align"].pop(k)
-        p = day_dir / ALIGN_NAME
-        if p.is_file():
-            # 已存在: 合并(以新拆出来的为准, 但保留文件里已有的其他记录)
-            try:
-                old = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                old = {}
-            merged = {"align": dict((old.get("align") or {})),
-                      "lists": dict((old.get("lists") or {}))}
-            merged["align"].update(body["align"])
-            merged["lists"].update(body["lists"])
-            body = merged
-        p.write_text(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True)
-                     + "\n", encoding="utf-8")
-        print(f"写入 {p.relative_to(ROOT)}")
+        _write_day_align(d, per_day[d], unassigned)
 
     # 本地层只留无法归日的残留
     if unassigned["align"] or unassigned["lists"]:
-        MATCHES.write_text(
-            json.dumps(unassigned, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8")
+        _write_json_atomic(MATCHES, unassigned)
         print(f"本地层保留 {len(unassigned['align'])} 条记录")
     else:
         backup = MATCHES.with_suffix(".json.bak")

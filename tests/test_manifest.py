@@ -218,12 +218,41 @@ def test_initial_snapshot_without_slices() -> None:
               str(mf2["files"]))
 
 
+def test_gzip_is_atomic() -> None:
+    """gzip 必须写 .tmp 再原子替换: 半途被杀不能留下截断的 .gz。
+
+    截断的 .gz 在目录里看着像正常产物(下一轮会被当"上一场账本"归档), 却解不开;
+    而 raw 还在, 数据没丢 —— 但脏文件会一直留在会话目录里, 也会让 pack_data
+    的"切片存在"检查误通过。
+    """
+    import collector
+    with tempfile.TemporaryDirectory(prefix="dmk_mf_") as td:
+        src = Path(td) / "a.jsonl"
+        src.write_text('{"ts":1}\n', encoding="utf-8")
+        dst = Path(td) / "a.jsonl.gz"
+        ok = collector.Recorder._gzip_file(src, dst)
+        check("正常压缩成功", ok is True, str(ok))
+        check("gzip 内容可解", gzip.open(dst, "rt", encoding="utf-8").read()
+              .strip() == '{"ts":1}')
+        check("raw 已删除", not src.exists())
+        check("不留 .tmp 残留", not (Path(td) / "a.jsonl.gz.tmp").exists())
+
+        # 源文件不存在 -> 失败, 且不得留下半截 gz
+        missing = Path(td) / "b.jsonl"
+        dst2 = Path(td) / "b.jsonl.gz"
+        ok2 = collector.Recorder._gzip_file(missing, dst2)
+        check("源缺失时返回 False", ok2 is False, str(ok2))
+        check("失败不留半截 gz", not dst2.exists())
+        check("失败不留 .tmp", not (Path(td) / "b.jsonl.gz.tmp").exists())
+
+
 def main() -> int:
     print("manifest 权威性回归")
     for fn in (test_second_session_keeps_first,
                test_no_data_no_manifest,
                test_afp_not_counted_as_danmaku,
                test_live_snapshot_manifest,
+               test_gzip_is_atomic,
                test_initial_snapshot_without_slices):
         print(f"\n[{fn.__name__}]")
         fn()

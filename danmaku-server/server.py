@@ -1,8 +1,8 @@
 """弹幕时光机 · 本地回放服务器 (danmaku-server/server.py)
 
 托管前端静态页 web/; 弹幕回放 API: /api/days /api/danmaku /api/match(GET/POST);
-B站视频对接: /api/playurl(取 mp4 直链) /api/stream(反代 B站 CDN, 给音频对齐的
-ffmpeg 喂流用 —— **播放不再走它**, 直链失效时前端会重新调 /api/playurl 取新签名)。
+B站视频对接: /api/playurl(取 mp4 直链) /api/stream(反代 B站 CDN 字节流,
+给人工排查与第三方客户端用; 播放与校准都不走它)。
 
 数据源(只读): ../data/{YYYY-MM-DD}/
   正式 {room}.jsonl.gz(旧格式) / {room}_s{HHMM}.jsonl[.gz](小时滚动切片, 活动 raw 未压缩)
@@ -1204,15 +1204,11 @@ async def handle_match_get(request: web.Request) -> web.Response:
     if target_bv:
         rec = align.get(f"{date}|{file}|{target_bv}")
         if not (isinstance(rec, dict) and isinstance(rec.get("pages"), dict)):
-            rec = None
-            for k, v in align.items():
-                if (isinstance(v, dict) and str(v.get("bv") or "") == target_bv
-                        and isinstance(v.get("pages"), dict) and v["pages"]):
-                    if k.count("|") >= 2:
-                        rec = v
-                        break
-                    if rec is None:
-                        rec = v
+            # 精确 key 缺失时才找旧记录, 且只认"会话目录已不存在"的残留。
+            # 旧实现遍历取第一条 bv 命中的记录: 同一天有两个会话时, 会把另一个
+            # 会话的分P offset 套到当前弹幕文件上 —— 每个会话的 anchor 不同,
+            # 弹幕会整体平移到错误时刻, 界面上却仍显示"已对齐"。
+            rec = _legacy_align_alias(align, date, file, target_bv)
         if isinstance(rec, dict) and isinstance(rec.get("pages"), dict):
             pages_out = rec["pages"]
             pages_bv = target_bv
@@ -1293,6 +1289,48 @@ def _write_source_swap(matches, key, date, file, bv, raw, pages_in, title,
     matches["align"][key + "|" + bv] = detail
 
 
+def _sync_list_offset(matches, days: tuple, lt, bv, raw, is_manual) -> None:
+    """把手动 offset 同步到场次列表里对应条目(只在本次会话能看到的那个列表里改)。
+
+    列表按**比赛日**分组, 而数据目录日可能比比赛日早一天(凌晨场次)。旧实现遍历
+    所有日期, 只要标题相同就改 —— 同一对阵在两天里都出现时(系列赛/重赛), 会把另一天
+    的 offset 一起改掉, 那一天播放随之错位, 而用户在另一天看不出来是谁动的。
+    候选顺序(比赛日 / 目录日 / 次日)与 /api/matchlist 的回落顺序一致,
+    前端拿到的标题必然出自其中一处。
+
+    bv 也必须一致才写入: 防 applyOffsetValue 携带过期 bv/list_title 组合跨列表污染。
+    """
+    if not lt:
+        return
+    for day in days:
+        day_list = matches["lists"].get(day)
+        if not isinstance(day_list, list):
+            continue
+        for m in day_list:
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("title")) != lt:
+                continue
+            if m.get("bv") and str(m.get("bv")) != bv:
+                continue
+            m["offset_sec"] = raw
+            m["bv"] = bv
+            if is_manual:
+                m.pop("auto", None)
+            return
+
+
+def _list_candidate_days(date: str) -> tuple:
+    """该会话可能对应的场次列表日期, 顺序与 /api/matchlist 的回落一致。"""
+    try:
+        match_date = _session_match_date(date)
+        nxt = (datetime.strptime(date, "%Y-%m-%d").date()
+               + timedelta(days=1)).isoformat()
+    except ValueError:
+        return (date,)
+    return (match_date, date, nxt)
+
+
 async def handle_match_post(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -1318,6 +1356,9 @@ async def handle_match_post(request: web.Request) -> web.Response:
     # "高置信度自动校准"的假象, 让人以为当前 offset 是算法给出的。
     # 采集端校准自身写回(order 见 run_autocalign)不走 manual, 所以不会误删。
     is_manual = bool(body.get("manual"))
+    # 先算好候选日期: _mut 在 matches 锁内执行, 别在里面做读盘(_session_match_date
+    # 要读 manifest)。
+    list_days = _list_candidate_days(date)
 
     def _mut(matches):
         # 换源: 前端带 pages 时走独立写回, 完全不碰会话级记录与原场次数据。
@@ -1333,20 +1374,7 @@ async def handle_match_post(request: web.Request) -> web.Response:
         if is_manual:
             entry.pop("auto", None)
         matches["align"][key] = entry
-        # 若携带 list_title, 同步更新场次列表里对应条目的 offset/bv。
-        # 双保险: bv 也必须一致才写入(不同日期可能存在同名标题, 但防 applyOffsetValue
-        # 携带过期 bv/list_title 组合跨列表污染)。
-        if lt:
-            for day_list in matches["lists"].values():
-                if not isinstance(day_list, list):
-                    continue
-                for m in day_list:
-                    if str(m.get("title")) == lt and (not m.get("bv") or str(m.get("bv")) == bv):
-                        m["offset_sec"] = raw
-                        m["bv"] = bv
-                        if is_manual:
-                            m.pop("auto", None)
-                        break
+        _sync_list_offset(matches, list_days, lt, bv, raw, is_manual)
 
     if not update_matches(_mut):
         raise ApiError("matches.json 写入失败")
@@ -1406,6 +1434,55 @@ def _session_match_date(date: str) -> str:
 
 
 # ---- /api/matchlist: 场次列表(点选谁和谁) ----
+def _session_alive(date: str, file: str) -> bool:
+    """该 (date, file) 是否仍是磁盘上可读的会话(新会话目录或旧平铺层)。
+
+    旧记录里的 file 可能是改名前的会话目录名; 那种名字 resolve_session_dir 找不到、
+    日目录下也没有对应切片。判"死"要覆盖两种布局, 不能只看会话子目录 ——
+    v1 平铺数据的 file 本身就是散文件的主名, 从来不是目录。
+    """
+    if resolve_session_dir(date, file) is not None:
+        return True
+    day_dir = DATA_DIR / date
+    if not day_dir.is_dir():
+        return False
+    for pat in (f"{file}_s*.jsonl*", f"{file}.jsonl*", f"{file}.meta.json"):
+        if any(day_dir.glob(pat)):
+            return True
+    return False
+
+
+def _legacy_align_alias(align: dict, date: str, file: str, bv: str):
+    """精确 key `{date}|{file}|{bv}` 缺失时, 找该会话改名/合并前的旧记录。
+
+    只接受**同一日期**且 key 里的会话目录**已经不存在**的记录。另一个仍在使用的
+    会话有自己的 anchor 与逐分P offset, 借用它的 pages 等于把弹幕整体平移到错误
+    时刻, 而且界面上看起来"已对齐"——比直接没有对齐结果更难发现。
+    SCHEMA §4.1 也明确要求按精确 key 取, 不能遍历撞第一条。
+    """
+    prefix = f"{date}|"
+    suffix = f"|{bv}"
+    for key, rec in align.items():
+        key = str(key)
+        if not key.startswith(prefix) or not key.endswith(suffix):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        pages = rec.get("pages")
+        if not isinstance(pages, dict) or not pages:
+            continue
+        parts = key.split("|")
+        if len(parts) < 3:
+            continue
+        old_file = parts[1]
+        if not old_file or old_file == file:
+            continue
+        if _session_alive(date, old_file):
+            continue        # 另一个仍在用的会话, 它的 offset 不能借
+        return rec
+    return None
+
+
 def _pick_exact_align_rec(align: dict, date: str, bv: str):
     """取某场比赛的精确对齐记录(key = `{date}|{file}|{bv}`, 该日可能有多个 session)。
 
@@ -1431,6 +1508,53 @@ def _pick_exact_align_rec(align: dict, date: str, bv: str):
     return best
 
 
+def _attach_align_state(it: dict, align: dict, date: str) -> None:
+    """把该场次的对齐状态合并进列表条目(就地改 it)。
+
+    前端据此显示「已对齐 N 个分P / 未对齐」。**精确 key 优先**: {date}|{file}|{bv}。
+    旧实现直接遍历 align 字典取第一条 bv 命中的记录, 而同一 BV 可能残留多条(例如数据
+    目录被合并改名后, 旧目录名的记录还在), 字典顺序一旦先撞上残留记录就会读到错的
+    pages 数 —— 实测 TSW vs LOS 实际对齐了 2 个分P, 下拉框却显示「已对齐」(=1 个)。
+    """
+    bv = str(it.get("bv") or "")
+    rec = None
+    if bv:
+        rec = _pick_exact_align_rec(align, date, bv)
+        if rec is None:
+            # 回退: 先找带 bv 维度的记录, 再退回任意 bv 命中的旧记录。
+            # **必须限定同一天**: 同一 BV 可能在别的日期还留着失败标记,
+            # 跨日取到会把这一场误标成"未对齐·直播未转播"。
+            for k, v in align.items():
+                if not str(k).startswith(f"{date}|"):
+                    continue
+                if not isinstance(v, dict) or str(v.get("bv") or "") != bv:
+                    continue
+                if k.count("|") >= 2 and v.get("pages"):
+                    rec = v
+                    break
+                if rec is None:
+                    rec = v
+    if not rec:
+        return
+    if rec.get("pages"):
+        it["pages"] = rec["pages"]
+    if rec.get("page_errors"):
+        it["page_errors"] = rec["page_errors"]
+    # 对齐时 B 站实际有几个分P(用于显示"已对齐 1/2")。
+    # 不在这里实时请求 bili_view: matchlist 必须毫秒级返回(前端下拉框依赖它),
+    # 而分P 总数在对齐时就已经知道了, 直接落盘复用即可。
+    if isinstance(rec.get("total_pages"), int):
+        it["total_pages"] = rec["total_pages"]
+    elif it.get("pages"):
+        it["total_pages"] = len(it["pages"])
+    # 失败标记只在**完全没有对齐结果**时才对外报。
+    # 历史缺陷: 一旦某次全失败写过 align_failed, 之后即便对齐成功、pages 已有内容,
+    # 下拉框仍显示「未对齐·直播可能未转播」—— 用户会以为功能坏了。
+    if rec.get("align_failed") and not rec.get("pages"):
+        it["align_failed"] = True
+        it["align_error"] = rec.get("align_error") or ""
+
+
 async def handle_matchlist_get(request: web.Request) -> web.Response:
     date = (request.query.get("date") or "").strip()
     if not DATE_RE.fullmatch(date):
@@ -1447,45 +1571,7 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
             continue
         it = dict(it)
         it["title"] = _strip_game_prefix(it.get("title"))
-        # 合并该场自己的对齐状态: 前端据此显示「已对齐 N 个分P / 未对齐」。
-        # **精确 key 优先**: {date}|{file}|{bv}。旧实现直接遍历 align 字典取第一条
-        # bv 命中的记录, 而同一 BV 可能残留多条(例如数据目录被合并改名后, 旧目录名的
-        # 记录还在), 字典顺序一旦先撞上残留记录就会读到错的 pages 数 ——
-        # 实测 TSW vs LOS 实际对齐了 2 个分P, 下拉框却显示「已对齐」(=1 个)。
-        bv = str(it.get("bv") or "")
-        rec = None
-        if bv:
-            exact = _pick_exact_align_rec(align, date, bv)
-            if exact is not None:
-                rec = exact
-            if rec is None:
-                # 回退: 先找带 bv 维度的记录, 再退回任意 bv 命中的旧记录
-                for k, v in align.items():
-                    if not isinstance(v, dict) or str(v.get("bv") or "") != bv:
-                        continue
-                    if k.count("|") >= 2 and v.get("pages"):
-                        rec = v
-                        break
-                    if rec is None:
-                        rec = v
-        if rec:
-            if rec.get("pages"):
-                it["pages"] = rec["pages"]
-            if rec.get("page_errors"):
-                it["page_errors"] = rec["page_errors"]
-            # 对齐时 B 站实际有几个分P(用于显示"已对齐 1/2")。
-            # 不在这里实时请求 bili_view: matchlist 必须毫秒级返回(前端下拉框依赖它),
-            # 而分P 总数在对齐时就已经知道了, 直接落盘复用即可。
-            if isinstance(rec.get("total_pages"), int):
-                it["total_pages"] = rec["total_pages"]
-            elif it.get("pages"):
-                it["total_pages"] = len(it["pages"])
-            # 失败标记只在**完全没有对齐结果**时才对外报。
-            # 历史缺陷: 一旦某次全失败写过 align_failed, 之后即便对齐成功、pages 已有内容,
-            # 下拉框仍显示「未对齐·直播可能未转播」—— 用户会以为功能坏了。
-            if rec.get("align_failed") and not rec.get("pages"):
-                it["align_failed"] = True
-                it["align_error"] = rec.get("align_error") or ""
+        _attach_align_state(it, align, date)
         fixed.append(it)
     # match_date 一并返回: 前端据此显示"比赛日"
     return api_ok(matches=fixed, match_date=match_date)
@@ -2659,19 +2745,15 @@ async def handle_overview(request: web.Request) -> web.Response:
                 if isinstance(ao, (int, float)) and not isinstance(ao, bool):
                     offset = float(ao)
             else:
-                # 兼容旧记录: 会话级 key 里只存过一场, 或老格式没有 bv 维度
-                for aentry in align.values():
-                    if not isinstance(aentry, dict):
-                        continue
-                    if not bv or str(aentry.get("bv") or "") != bv:
-                        continue
-                    pg = aentry.get("pages")
-                    if isinstance(pg, dict) and pg:
-                        pages = pg
-                        ao = aentry.get("offset_sec")
-                        if isinstance(ao, (int, float)) and not isinstance(ao, bool):
-                            offset = float(ao)
-                    break
+                # 兼容旧记录: 只认目录已改名/合并的残留 key(见 _legacy_align_alias)。
+                # 遍历任意 bv 命中的记录会把另一个会话的 offset 摆到本会话的主轴上,
+                # 总览上的场次色块会整体错位, 但看不出是"借来的"。
+                old = _legacy_align_alias(align, raw_date, file, bv) if bv else None
+                if old is not None:
+                    pages = old["pages"]
+                    ao = old.get("offset_sec")
+                    if isinstance(ao, (int, float)) and not isinstance(ao, bool):
+                        offset = float(ao)
             # 分P 段: 每个分P 一个独立 offset(同一场次内各分P 落点不同)
             segs = []
             for pg_no, pv in sorted(pages.items(), key=lambda kv: int(kv[0])):
@@ -2716,9 +2798,11 @@ async def handle_overview(request: web.Request) -> web.Response:
 # ---- /api/stream: 反代B站 CDN 字节流 ----
 # **播放不用它**: 直链失效(过期/被拒)时前端重新调 /api/playurl 取新签名 ——
 # 反代改不了签名, 拿失效直链来反代必然还是 403, 所以它救不了过期链接。
-# 它现在的用途是**自动校准**: ffmpeg 需要一条能带 Referer 的稳定地址喂流
-# (见 get_replay_fingerprint 里 "ffmpeg 走本服务 /api/stream 反代")。
-# /api/stream 只用于反代 B 站 CDN。防护是"白名单域名 + 解析后 IP 校验"两道:
+# **自动校准也不用它了**: nightly / tools/calibrate 是无头进程, 端口上根本没有
+# 播放服务, 走反代必然 connection refused。校准改为 ffmpeg 直连 CDN 并自带
+# Referer/UA(见 get_replay_fingerprint)。这里保留的是"人工排查/第三方客户端"
+# 可用的只读代理, 不再承担任何内部链路。
+# 防护是"白名单域名 + 解析后 IP 校验"两道:
 # 域名必须在 ALLOWED_STREAM_SUFFIXES 里, 且解析出的 IP 不得是本机/内网。
 # 只做字面 IP 判断不够: 127.1 / 0x7f000001 / 2130706433 都指向回环但字面不同,
 # 域名解析到 127.0.0.1 同样可穿透。
@@ -2938,13 +3022,27 @@ def _ffmpeg_exe() -> str:
         raise ApiError(f"ffmpeg 不可用: {e}")
 
 
-def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4, timeout_sec=None):
+def _is_http_src(src) -> bool:
+    """该输入是不是 HTTP(S) 地址(ffmpeg 的 -headers 只对这类输入有效)。"""
+    return str(src).strip().lower().startswith(("http://", "https://"))
+
+
+def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4, timeout_sec=None,
+                    headers=None):
     """ffmpeg 把 src(本地文件或URL) 抽成 16k 单声道 s16le 原始流后直接算指纹。
 
     同步阻塞(CPU+子进程), 调用方需 asyncio.to_thread。返回 (N,33) float32。
 
+    `headers` 只对 **HTTP(S) 输入**生效(如 B站 CDN 必须带 Referer)。以前校准走本机
+    /api/stream 反代来补这两个头, 但无头 CLI / nightly 并不启动播放服务,
+    mp4 兜底那条路必然连不上; 现在直接把头交给 ffmpeg。
+
+    **对本地文件绝不能加 -headers**: 那是 http 协议私有选项, ffmpeg 会直接报
+    `Option headers not found` 并退出 —— 本地音频调试路径(get_replay_fingerprint
+    的 local_audio)会因此全部失败。故这里按输入协议决定是否加。
+
     **必须带超时。** 旧实现 `subprocess.run(cmd, capture_output=True)` 没有 timeout:
-    上游(尤其 /api/stream 反代的 B站 CDN)停流时会"连着但不吐数据", ffmpeg 永远等下去,
+    上游(尤其 B站 CDN)停流时会"连着但不吐数据", ffmpeg 永远等下去,
     而 autocalign 是**全局互斥**的 —— 一个 worker 挂死会挡住之后所有校准请求, 用户看到
     的是"自动校准一直转圈, 重启才好"。
     实测: 对端只 accept 不发送时, ffmpeg 会一直阻塞; 加 timeout 才能打断。
@@ -2954,9 +3052,12 @@ def ffmpeg_audio_fp(src, hop_sec: float, win_sec: float = 0.4, timeout_sec=None)
     """
     if timeout_sec is None:
         timeout_sec = FFMPEG_MIN_TIMEOUT
-    cmd = [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
-           "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
-           "-f", "s16le", "pipe:1"]
+    cmd = [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error"]
+    if headers and _is_http_src(src):
+        # ffmpeg 要求每行以 CRLF 结尾; 只加在 -i 之前(这是输入选项)
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    cmd += ["-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
+            "-f", "s16le", "pipe:1"]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
     except OSError as e:
@@ -3068,8 +3169,8 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
     取音轨。旧实现直接取第一分P 的 cid, 导致 P2/P3 指纹全是 P1 的(实测复现),
     且缓存键 {bv}_{page} 会把错误结果缓存下来反复复用。
 
-    优先级: local_audio 调试参数 > 磁盘缓存 > dash 纯音轨 > html5 mp4 整段(经
-    本服务 /api/stream 反代; 多段按顺序拼接指纹)。
+    优先级: local_audio 调试参数 > 磁盘缓存 > dash 纯音轨 > html5 mp4 整段(直连
+    CDN 并用 ffmpeg 带 Referer/UA; 多段按顺序拼接指纹)。
     返回 (fp (N,33) float32, 来源说明)。"""
     if not HAS_AUDIOFP:
         raise ApiError(_no_audiofp_msg())
@@ -3114,19 +3215,22 @@ async def get_replay_fingerprint(session, bv: str, page: int, hop_sec: float = 0
         except (ApiError, aiohttp.ClientError, asyncio.TimeoutError,
                 OSError, ValueError) as e:
             print(f"[autocalign] dash 音轨路线失败, 转入 mp4 兜底: {e}")
-    # ② 整段 mp4 兜底: html5 durl(可能多段), ffmpeg 走本服务 /api/stream 反代
+    # ② 整段 mp4 兜底: html5 durl(可能多段), ffmpeg 直连 CDN。
+    #    不能走本服务 /api/stream: nightly / tools/calibrate 是无头进程, 端口上
+    #    根本没有播放服务, 一走反代就必然 "connection refused"。
     play = await bili_playurl_mp4(session, bv, page)
     urls = play["urls"]
     # 超时按**该段时长**放大: 整段 mp4 可能是一整局(40~60 分钟), 抽音频虽快, 但
-    # 反代链路(本服务 -> B站 CDN)慢或半停时不能按本地文件的速度假定。乘 4 再给 120 秒
+    # 直连 CDN 慢或半停时不能按本地文件的速度假定。乘 4 再给 120 秒
     # 余量, 对一个只做音频解复用的 ffmpeg 来说已极宽松, 同时仍能打断真挂死。
     lens = play.get("seg_lengths") or []
+    hdrs = {"User-Agent": BILI_UA, "Referer": BILI_REFERER}
     fps = []
     for i, u in enumerate(urls):
         seg_sec = float(lens[i]) if i < len(lens) and lens[i] else 0.0
         budget = max(FFMPEG_MIN_TIMEOUT, seg_sec * FFMPEG_TIMEOUT_FACTOR + FFMPEG_MIN_TIMEOUT)
-        src = f"http://127.0.0.1:{PORT}/api/stream?url={quote(u, safe='')}"
-        fps.append(await asyncio.to_thread(ffmpeg_audio_fp, src, hop_sec, win_sec, budget))
+        fps.append(await asyncio.to_thread(
+            ffmpeg_audio_fp, str(u), hop_sec, win_sec, budget, headers=hdrs))
         print(f"[autocalign] 回放段 {i + 1}/{len(urls)} 指纹完成 "
               f"({fps[-1].shape[0]} 帧)")
     fp = np.concatenate(fps, axis=0)     # 段间相位差 < hop, 顺序拼接即可

@@ -319,6 +319,19 @@ def test_discover_without_bv():
     check("BV 为空而不是崩掉", bool(lst) and lst[0].get("bv") == "", str(lst))
 
 
+def test_dirty_days_includes_pending_local():
+    print("\n[日期] 本地层待分发的对齐记录也算脏日期")
+    old_git, old_pending = nightly._git, nightly.pending_days
+    nightly._git = lambda *a: "?? data/2026-11-06/7734200/manifest.json\n"
+    nightly.pending_days = lambda: ["2026-11-07"]
+    try:
+        got = nightly.dirty_days()
+    finally:
+        nightly._git, nightly.pending_days = old_git, old_pending
+    check("data 未提交文件与本地层待分发记录取并集",
+          got == ["2026-11-06", "2026-11-07"], str(got))
+
+
 def test_retry_window():
     print("\n[重试窗口] 太老的脏日期不再每小时重搜")
     today = datetime.now().strftime("%Y-%m-%d")
@@ -564,6 +577,7 @@ def main() -> int:
     test_discover_fills_bv_from_date_search()
     test_discover_merges_missing_match()
     test_discover_without_bv()
+    test_dirty_days_includes_pending_local()
     test_retry_window()
     test_tick_retry_window()
     test_publish_collects_align_after_split()

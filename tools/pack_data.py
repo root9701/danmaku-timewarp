@@ -133,6 +133,23 @@ def iter_align():
             yield day_dir.name, p
 
 
+def _known_bvs(lists) -> tuple:
+    """lists 里的 {(日期, BV)} 与 BV 全集。
+
+    两套判据都要: 对齐记录的 key 前缀是**数据目录日**, 而列表的键是**比赛日** ——
+    凌晨场次两者差一天(旧布局 data/2026-10-25/ 装的是 10-26 的比赛), 只按
+    (日期, BV) 严格配对会把这类老数据全判成问题; 而时间窗查询
+    `_schedule_window_for_bv` 本来就是跨日期按 BV 找的, 判据应与它一致。
+    """
+    pairs, all_bv = set(), set()
+    for day, lst in (lists or {}).items():
+        for it in (lst or []):
+            if isinstance(it, dict) and it.get("bv"):
+                pairs.add((str(day), str(it["bv"])))
+                all_bv.add(str(it["bv"]))
+    return pairs, all_bv
+
+
 def check_align() -> list:
     """对齐表的一致性检查(一天一份, 住在 data/{日期}/align.json)。
 
@@ -151,11 +168,7 @@ def check_align() -> list:
             problems.append(f"data/{day}/{ALIGN_NAME}: 顶层不是对象")
             continue
         lists = d.get("lists") or {}
-        pairs = set()
-        for d2, lst in lists.items():
-            for it in (lst or []):
-                if isinstance(it, dict) and it.get("bv"):
-                    pairs.add((d2, str(it["bv"])))
+        pairs, all_bv = _known_bvs(lists)
         for key, rec in (d.get("align") or {}).items():
             if not isinstance(rec, dict):
                 continue
@@ -166,7 +179,8 @@ def check_align() -> list:
             if not bv:
                 continue
             dkey = str(key).split("|")[0]
-            if (dkey, bv) not in pairs:
+            ok = ((dkey, bv) in pairs) if dkey in lists else (bv in all_bv)
+            if not ok:
                 problems.append(
                     f"data/{day}/{ALIGN_NAME}: {key} 有 {len(pages)} 页对齐结果, "
                     f"但 BV 在 lists 里查不到(重新校准时拿不到赛程时间窗)")
@@ -329,6 +343,22 @@ def write_index(staged: bool = False) -> int:
     return 0
 
 
+def _collect_problems() -> tuple:
+    """跑全部发布前校验, 返回 (会话数, 问题列表)。
+
+    会话校验与对齐表校验必须**一起**跑: `--index` 是发布路径(nightly 与 release
+    都走它), 只查会话等于让 check_align 永远跑不到 —— 它拦的是"有分P 对齐但 BV
+    不在 lists", 那种记录重算时拿不到赛程时间窗, 会落到早上重播的伪峰上,
+    而界面上看着一切正常。
+    """
+    problems, n = [], 0
+    for day, sess in iter_sessions():
+        n += 1
+        problems.extend(check_session(day, sess))
+    problems.extend(check_align())
+    return n, problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strip-afp", action="store_true",
@@ -340,35 +370,14 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    if args.index:
-        problems = []
-        for day, sess in iter_sessions():
-            problems.extend(check_session(day, sess))
+    n, problems = _collect_problems()
+    if args.index or args.strip_afp:
         if problems:
-            print("校验未通过, 拒绝生成清单:")
+            print(f"校验未通过, 拒绝{'生成清单' if args.index else '打包'}:")
             for p in problems:
                 print("  - " + p)
             return 1
-        return write_index(staged=args.staged)
-
-    if args.strip_afp:
-        problems = []
-        for day, sess in iter_sessions():
-            problems.extend(check_session(day, sess))
-        problems.extend(check_align())
-        if problems:
-            print("校验未通过, 拒绝打包:")
-            for p in problems:
-                print("  - " + p)
-            return 1
-        return strip_afp()
-
-    problems = []
-    n = 0
-    for day, sess in iter_sessions():
-        n += 1
-        problems.extend(check_session(day, sess))
-    problems.extend(check_align())
+        return write_index(staged=args.staged) if args.index else strip_afp()
 
     if args.json:
         print(json.dumps({"sessions": n, "problems": problems},

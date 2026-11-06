@@ -134,7 +134,7 @@
       if (pageOffsetOf(pms[i].page) != null) { hasAny = true; break; }
     }
     if (!hasAny) { return []; }        // 完全没有分P 对齐数据 -> 调用方退化到单 offset
-    var segs = [], prevEnd = null;
+    var segs = [];
     for (var k = 0; k < pms.length; k++) {
       var pm = pms[k];
       var off = pageOffsetOf(pm.page);
@@ -156,7 +156,6 @@
       segs.push({ page: pm.page, part: pm.part, w0: w0, w1: w0 + dur * 1000,
                   s0: (pm.start_sec || 0) * 1000, estimated: false,
                   locatable: true });
-      prevEnd = w0 + dur * 1000;
     }
     segs.sort(function (a, b) { return a.w0 - b.w0; });
     return segs;

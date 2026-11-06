@@ -163,6 +163,17 @@ async def discover(day: str) -> None:
             server.bili_search_replay, m["teams"][0], m["teams"][1], match_date)
         if bv:
             m["bv"] = bv
+    missing = [m for m in draft if not m.get("bv")]
+    if missing:
+        # 队名搜索仍可能被排序埋掉(2026-11-06 实测综合/最新前 20 都没有官方回放),
+        # 再用"按日期搜官方投稿"兜底; 一次覆盖当天所有缺 BV 的场次, 不逐场重复搜。
+        hits = await asyncio.to_thread(server.bili_discover_date, match_date)
+        by_teams = {frozenset(t.lower() for t in (h.get("teams") or [])): h.get("bv")
+                    for h in hits if h.get("bv")}
+        for m in missing:
+            bv = by_teams.get(frozenset(t.lower() for t in m["teams"]))
+            if bv:
+                m["bv"] = bv
     result = {"created": 0, "added": 0, "backfilled": 0, "time_filled": 0}
 
     def _mut(matches):
@@ -256,10 +267,13 @@ def calibrated(day: str) -> bool:
 
 
 async def tick(dry_run: bool, only_date: str = "") -> None:
-    active = [only_date] if only_date else running_days()
-    if not active:
-        print("没有正在采集的会话")
-    days = sorted(set(active) | set(dirty_days()))
+    if only_date:
+        days = [only_date]          # --date 只处理这一天, 不捎带其它脏日期
+    else:
+        active = running_days()
+        if not active:
+            print("没有正在采集的会话")
+        days = sorted(set(active) | set(dirty_days()))
     if dry_run:
         # 真 dry-run: 不联网、不校准、不写本地层, 只打印将要发布的日期
         print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
@@ -317,6 +331,11 @@ def _run_once(args) -> int:
         asyncio.run(tick(args.dry_run, args.date))
     finally:
         lock.release()
+    # --date 是控制台「校准并提交」按钮的入口: 没校准成功就是失败, 不能退出码 0
+    # 让控制台误报成功。常驻循环不带 --date, 不受这里影响。
+    if args.date and not args.dry_run and not calibrated(args.date):
+        print(f"{args.date}: 本轮尚未校准成功, 未发布")
+        return 4
     return 0
 
 

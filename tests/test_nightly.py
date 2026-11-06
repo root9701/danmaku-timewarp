@@ -161,6 +161,7 @@ def test_discover_keeps_fallback_bv():
         m = {"lists": {}, "align": {}}
         mut(m)
         seen["lists"] = m["lists"]
+        return True
 
     old = (nightly.server.discover_draft, nightly.server._session_match_date,
            nightly.server.bili_search_replay, nightly.server.update_matches)
@@ -176,6 +177,49 @@ def test_discover_keeps_fallback_bv():
     lst = seen.get("lists", {}).get("2026-11-06") or []
     check("场次建出来了", len(lst) == 1, str(lst))
     check("BV 没被清空", bool(lst) and lst[0]["bv"] == "BV_FALLBACK", str(lst))
+
+
+def test_discover_fills_bv_from_date_search():
+    """Riot 已列出场次、但队名搜索找不到 BV 时, 用日期搜索兜底。
+
+    2026-11-06 实测: 「全球总决赛 DK BLG」综合与最新排序前 20 条都没有官方
+    回放, 但按日期搜官方投稿第 3 条就是它。若只信队名搜索, 这一天永远没有 BV,
+    推送闸门会把数据永久卡在本地。
+    """
+    print("\n[兜底] 队名搜索失败后按日期补齐 BV")
+    seen = {}
+
+    def fake_draft(date):
+        return [{"title": "DK vs BLG", "teams": ["DK", "BLG"], "bv": "",
+                 "start": datetime(2026, 11, 6, 6, 0)}]
+
+    def fake_date_search(date):
+        return [{"title": "DK vs BLG", "teams": ["DK", "BLG"], "bv": "BV_DATE",
+                 "start": datetime(2026, 11, 6, 6, 0)}]
+
+    def fake_update(mut):
+        m = {"lists": {}, "align": {}}
+        mut(m)
+        seen["lists"] = m["lists"]
+        return True
+
+    old = (nightly.server.discover_draft, nightly.server._session_match_date,
+           nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+           nightly.server.update_matches)
+    try:
+        nightly.server.discover_draft = fake_draft
+        nightly.server._session_match_date = lambda d: d
+        nightly.server.bili_search_replay = lambda a, b, c: ""
+        nightly.server.bili_discover_date = fake_date_search
+        nightly.server.update_matches = fake_update
+        asyncio.run(nightly.discover("2026-11-06"))
+    finally:
+        (nightly.server.discover_draft, nightly.server._session_match_date,
+         nightly.server.bili_search_replay, nightly.server.bili_discover_date,
+         nightly.server.update_matches) = old
+    lst = seen.get("lists", {}).get("2026-11-06") or []
+    check("场次建出来了", len(lst) == 1, str(lst))
+    check("日期搜索补上了 BV", bool(lst) and lst[0]["bv"] == "BV_DATE", str(lst))
 
 
 def test_publish_collects_align_after_split():
@@ -268,10 +312,47 @@ def test_tick_skips_uncalibrated():
         nightly.calibrated = lambda day: True
         asyncio.run(nightly.tick(False))
         check("已校准 -> 发布", calls == ["2026-11-05", "2026-11-06"], str(calls))
+        # --date 是"只处理这一天", 不能顺手把别的脏日期也校准/发布
+        discovered.clear()
+        calls.clear()
+        nightly.calibrated = lambda day: False
+        asyncio.run(nightly.tick(False, only_date="2026-11-06"))
+        check("--date 只发现指定日期",
+              discovered == ["2026-11-06"], str(discovered))
+        check("--date 不发布别的日期", calls == [], str(calls))
     finally:
         (nightly.running_days, nightly.dirty_days, nightly.discover,
          nightly.calibrate_day, nightly.calibrated, nightly.publish,
          nightly._auto_push) = old
+
+
+def test_date_run_reports_uncalibrated():
+    print("\n[单轮] --date 未校准时用退出码告诉控制台")
+    import argparse
+    import shutil
+    tmp = Path(tempfile.mkdtemp(prefix="dmk_nl4_"))
+    old_lock = nightly.pipelinelock.TICK_LOCK
+    old_tick, old_cal = nightly.tick, nightly.calibrated
+
+    async def fake_tick(dry_run, only_date=""):
+        return None
+
+    nightly.pipelinelock.TICK_LOCK = tmp / "pipeline.tick.lock"
+    nightly.tick = fake_tick
+    args = argparse.Namespace(date="2026-11-06", dry_run=False)
+    try:
+        nightly.calibrated = lambda day: False
+        rc = nightly._run_once(args)
+        check("未校准返回 4", rc == 4, str(rc))
+        nightly.calibrated = lambda day: True
+        check("已校准返回 0", nightly._run_once(args) == 0)
+        nightly.calibrated = lambda day: False
+        args.dry_run = True
+        check("dry-run 不报失败", nightly._run_once(args) == 0)
+    finally:
+        nightly.pipelinelock.TICK_LOCK = old_lock
+        nightly.tick, nightly.calibrated = old_tick, old_cal
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_valid_day():
@@ -284,9 +365,11 @@ def main() -> int:
     test_running_days_and_publish_paths()
     test_discover_uses_fallback()
     test_discover_keeps_fallback_bv()
+    test_discover_fills_bv_from_date_search()
     test_publish_collects_align_after_split()
     test_calibrated_gate()
     test_tick_skips_uncalibrated()
+    test_date_run_reports_uncalibrated()
     test_loop_mode_single_instance()
     test_tick_lock_conflict()
     test_valid_day()

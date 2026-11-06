@@ -159,6 +159,33 @@ def t_bili_date_fallback():
               str(m["start"]))
 
 
+def t_replay_search_order():
+    """单场回放搜索也要查最新排序。
+
+    2026-11-06 实测: 官方 06:57 已上传 DK vs BLG, 但「全球总决赛 DK BLG」
+    综合排序前 20 条没有官方条目; nightly 对 Riot 已列出的场次走的正是这条
+    搜索路径, 只搜一种排序会让该场永远没有 BV、推送闸门永远不放行。
+    """
+    print("\n[兜底] 单场回放搜索也查最新排序")
+    official = {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+                "title": "【2026全球总决赛】11月6日 DK vs BLG",
+                "bvid": "BV_NEW"}
+    calls = []
+
+    def fake_search(kw, order=""):
+        calls.append(order)
+        return [official] if order == "pubdate" else []
+
+    old = server._bili_search_videos
+    server._bili_search_videos = fake_search
+    try:
+        got = server.bili_search_replay("DK", "BLG", "2026-11-06")
+    finally:
+        server._bili_search_videos = old
+    check("综合与最新都搜过", calls == ["", "pubdate"], str(calls))
+    check("找回了官方回放", got == "BV_NEW", got)
+
+
 def t_discover_fallback():
     print("\n[兜底] 只在 Riot 当天无场次时启用")
     old_riot, old_bili = server.discover_draft_for_date, server.bili_discover_date
@@ -262,6 +289,7 @@ def main() -> int:
     t_bili_date_fallback()
     t_bili_date_mismatch()
     t_search_order()
+    t_replay_search_order()
     t_discover_fallback()
     t_apply_fallback()
     print()

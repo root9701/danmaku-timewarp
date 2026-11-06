@@ -1794,25 +1794,28 @@ def _bili_search_headers() -> dict:
 
 def bili_search_replay(c1: str, c2: str, date: str) -> str:
     """搜官方账号单场回放, 返回 BV 号(搜不到/未上传/请求失败 -> "")。
+
     关键词 "全球总决赛 队1 队2"; 结果筛 mid=官方 且标题同时含两队(词边界+别名);
-    官方往届回放(如 2025 同对阵)可能排在前面, 故优先取标题含北京日期"M月D日"与年份者。"""
-    headers = _bili_search_headers()
-    url = ("https://api.bilibili.com/x/web-interface/search/type"
-           "?search_type=video&page=1&keyword=" + quote(f"全球总决赛 {c1} {c2}"))
-    try:
-        _, body = _http_get(url, headers)
-        data = json.loads(body)
-    except Exception as e:
-        print(f"[discover] B站搜索请求失败 {c1}/{c2}: {e.__class__.__name__}: {e}")
-        return ""
-    if not isinstance(data, dict) or data.get("code") != 0:
-        code = data.get("code") if isinstance(data, dict) else "?"
-        print(f"[discover] B站搜索返回异常 {c1}/{c2}: code={code}")
-        return ""
+    官方往届回放(如 2025 同对阵)可能排在前面, 故优先取标题含北京日期"M月D日"与年份者。
+
+    综合排序与最新排序都搜: 刚上传的回放可能被挤出综合排序第 1 页。2026-11-06
+    实测官方 06:57 已上传 DK vs BLG, 但综合排序前 20 条没有它 —— 只搜一种排序
+    会让推送闸门永远等不到可校准的 BV。
+    """
+    keyword = f"全球总决赛 {c1} {c2}"
+    results = _bili_search_videos(keyword)
+    seen = {str(r.get("bvid") or "") for r in results if isinstance(r, dict)}
+    for r in _bili_search_videos(keyword, "pubdate"):
+        if not isinstance(r, dict):
+            continue
+        bv = str(r.get("bvid") or "")
+        if bv and bv not in seen:
+            seen.add(bv)
+            results.append(r)
     y, m, d = (int(x) for x in date.split("-"))
     date_str, year_str = f"{m}月{d}日", str(y)
     best = None          # (无日期惩罚, 无年份惩罚, 结果序号) 元组最小者胜
-    for i, r in enumerate((data.get("data") or {}).get("result") or []):
+    for i, r in enumerate(results):
         if not isinstance(r, dict) or r.get("type") != "video":
             continue
         if r.get("mid") != BILI_OFFICIAL_MID:
@@ -1842,11 +1845,11 @@ def _bili_search_videos(keyword: str, order: str = "") -> list:
         _, body = _http_get(url, headers)
         data = json.loads(body)
     except Exception as e:
-        print(f"[discover] B站日期搜索失败 {keyword}: {e.__class__.__name__}: {e}")
+        print(f"[discover] B站搜索失败 {keyword}: {e.__class__.__name__}: {e}")
         return []
     if not isinstance(data, dict) or data.get("code") != 0:
         code = data.get("code") if isinstance(data, dict) else "?"
-        print(f"[discover] B站日期搜索返回异常 {keyword}: code={code}")
+        print(f"[discover] B站搜索返回异常 {keyword}: code={code}")
         return []
     return (data.get("data") or {}).get("result") or []
 

@@ -142,6 +142,79 @@ def test_tick_lock_conflict():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_discover_keeps_fallback_bv():
+    """兜底草稿自带 BV 时, 不能再被搜不到的 bili_search_replay 覆盖成空。
+
+    2026-11-06: Riot 赛程漏了 DK vs BLG, 日期兜底从官方投稿找到了 BV;
+    随后发现流程逐场重搜, 综合排序又搜不到, 把 BV 清空 —— 场次建出来了却
+    永远无法校准。已有 BV 必须直接跳过。
+    """
+    print("\n[兜底] 已有 BV 不被空搜索结果覆盖")
+    seen = {}
+
+    def fake_draft(date):
+        return [{"title": "DK vs BLG", "teams": ["DK", "BLG"], "bv": "BV_FALLBACK",
+                 "start": __import__("datetime").datetime(2026, 11, 6, 6, 0)}]
+
+    def fake_update(mut):
+        m = {"lists": {}, "align": {}}
+        mut(m)
+        seen["lists"] = m["lists"]
+
+    old = (nightly.server.discover_draft, nightly.server._session_match_date,
+           nightly.server.bili_search_replay, nightly.server.update_matches)
+    try:
+        nightly.server.discover_draft = fake_draft
+        nightly.server._session_match_date = lambda d: d
+        nightly.server.bili_search_replay = lambda a, b, c: ""
+        nightly.server.update_matches = fake_update
+        import asyncio
+        asyncio.run(nightly.discover("2026-11-06"))
+    finally:
+        (nightly.server.discover_draft, nightly.server._session_match_date,
+         nightly.server.bili_search_replay, nightly.server.update_matches) = old
+    lst = seen.get("lists", {}).get("2026-11-06") or []
+    check("场次建出来了", len(lst) == 1, str(lst))
+    check("BV 没被清空", bool(lst) and lst[0]["bv"] == "BV_FALLBACK", str(lst))
+
+
+def test_publish_collects_align_after_split():
+    """split 会写出 align.json, 文件列表必须在它之后收集。
+
+    历史缺陷: 先收集再 split, 校准当天第一次提交永远漏掉 align.json ——
+    本地看着已对齐, 远端却没有场次列表, 用户拉完数据仍然"没赛程"。
+    """
+    print("\n[发布] 文件列表在 split 之后收集")
+    order = []
+    seen = []
+    ready = {"v": False}
+
+    def fake_run_py(script, *args):
+        order.append(script)
+        if script.endswith("split_matches.py"):
+            ready["v"] = True           # 模拟 split 写出 data/{day}/align.json
+        return ""
+
+    def fake_git(*args):
+        return ""
+
+    def fake_paths(day, data_dir=None):
+        order.append("paths")
+        seen.append(ready["v"])
+        return []
+
+    old_run, old_git, old_paths = nightly._run_py, nightly._git, nightly.publish_paths
+    try:
+        nightly._run_py, nightly._git, nightly.publish_paths = fake_run_py, fake_git, fake_paths
+        nightly.publish("2026-11-06")
+    finally:
+        nightly._run_py, nightly._git, nightly.publish_paths = old_run, old_git, old_paths
+    split_name = "tools/split_matches.py"
+    check("先 split 再收集", order.index("paths") > order.index(split_name),
+          str(order))
+    check("收集时 align.json 已存在", seen == [True], str(seen))
+
+
 def test_valid_day():
     check("合法日期", nightly._valid_day("2026-10-31"))
     check("拒绝 _test", not nightly._valid_day("_test"))
@@ -151,6 +224,8 @@ def main() -> int:
     print("夜间流水线回归")
     test_running_days_and_publish_paths()
     test_discover_uses_fallback()
+    test_discover_keeps_fallback_bv()
+    test_publish_collects_align_after_split()
     test_loop_mode_single_instance()
     test_tick_lock_conflict()
     test_valid_day()

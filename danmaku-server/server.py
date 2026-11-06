@@ -1825,11 +1825,18 @@ def bili_search_replay(c1: str, c2: str, date: str) -> str:
     return best[1] if best else ""
 
 
-def _bili_search_videos(keyword: str) -> list:
-    """搜 B 站视频, 返回原始 result 列表(失败 -> [])。"""
+def _bili_search_videos(keyword: str, order: str = "") -> list:
+    """搜 B 站视频, 返回原始 result 列表(失败 -> [])。
+
+    order: "" 综合排序; "pubdate" 最新优先。两者都要 —— 官方刚上传的回放
+    在综合排序里可能被压到第 1 页之外(实测 2026-11-06 的 DK vs BLG 排在第 17 位,
+    日期关键词下前 20 条直接没有), 只按综合排序取就会漏掉当天场次。
+    """
     headers = _bili_search_headers()
     url = ("https://api.bilibili.com/x/web-interface/search/type"
            "?search_type=video&page=1&keyword=" + quote(keyword))
+    if order:
+        url += "&order=" + quote(order)
     try:
         _, body = _http_get(url, headers)
         data = json.loads(body)
@@ -1937,10 +1944,13 @@ def bili_discover_date(date: str) -> list:
     y, m, d = (int(x) for x in date.split("-"))
     seen = {}
     for kw in (f"{y}全球总决赛", f"{y}全球总决赛 {m}月{d}日"):
-        for r in _bili_search_videos(kw):
-            bv = str(r.get("bvid") or "").strip()
-            if bv and bv not in seen:
-                seen[bv] = r
+        # 综合排序与最新排序都取: 前者看相关度, 后者保证刚上传的官方回放
+        # 不会被挤出第 1 页(2026-11-06 就是这样漏掉 DK vs BLG 的)。
+        for order in ("pubdate", ""):
+            for r in _bili_search_videos(kw, order):
+                bv = str(r.get("bvid") or "").strip()
+                if bv and bv not in seen:
+                    seen[bv] = r
     return _parse_date_videos(list(seen.values()), date)
 
 

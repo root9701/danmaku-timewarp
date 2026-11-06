@@ -116,8 +116,8 @@ def _run_py(script: str, *args) -> str:
 
 def publish(day: str, dry_run: bool = False) -> bool:
     """把一天的新增内容分发并提交。返回 True = 产生了一笔提交。"""
-    paths = publish_paths(day)
     if dry_run:
+        paths = publish_paths(day)
         print(f"[dry-run] {day}: split --apply, git add {len(paths)} 个文件, "
               f"pack_data --index --staged, git commit")
         return False
@@ -125,6 +125,10 @@ def publish(day: str, dry_run: bool = False) -> bool:
     # split 成功后本地层已清空, 它留下的 .bak 不再需要(现场纪律: 不留 .bak)
     with contextlib.suppress(OSError):
         (ROOT / "danmaku-server" / "matches.json.bak").unlink()
+    # 必须在 split 之后收集: data/{day}/align.json 正是 split 写出来的。
+    # 历史缺陷: 之前先收集再 split, 校准当天第一次提交永远漏掉 align.json ——
+    # 本地看着已对齐, 远端却没有场次列表, 用户拉完仍然"没赛程"。
+    paths = publish_paths(day)
     rels = [p.relative_to(ROOT).as_posix() for p in paths]
     if rels:
         _git("add", "--", *rels)
@@ -150,8 +154,12 @@ async def discover(day: str) -> None:
         print(f"{day}: 赛程里没有可识别的场次")
         return
     for m in draft:
-        m["bv"] = await asyncio.to_thread(
+        if m.get("bv"):
+            continue                     # 日期兜底已经带 BV, 不要用搜不到的结果覆盖它
+        bv = await asyncio.to_thread(
             server.bili_search_replay, m["teams"][0], m["teams"][1], match_date)
+        if bv:
+            m["bv"] = bv
     result = {"created": 0, "added": 0, "backfilled": 0, "time_filled": 0}
 
     def _mut(matches):

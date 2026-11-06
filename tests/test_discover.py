@@ -240,6 +240,40 @@ def t_apply_fallback():
         check("带 start_ms", got[0]["start_ms"] == 1793746793000, str(got[0]))
 
 
+def t_search_order():
+    """官方回放刚上传时，综合排序前 20 条看不到，只有最新排序能找到。
+
+    2026-11-06 实测: 官方 06:57 已上传 DK vs BLG（BV1Zj4v6aEuj），但
+    "2026全球总决赛" 综合排序第 1 页没有它（最新排序在第 17 位），
+    日期关键词下前 20 条直接没有 —— 于是 nightly 连续两轮报"没有场次"。
+    """
+    print("\n[兜底] 综合排序漏掉的官方回放，用最新排序补上")
+    official = {"type": "video", "mid": server.BILI_OFFICIAL_MID,
+                "title": "【2026全球总决赛】11月6日 DK vs BLG",
+                "bvid": "BV_NEW", "duration": "1:56:54",
+                "pubdate": int(datetime(2026, 11, 6, 6, 57, tzinfo=TZ).timestamp())}
+    urls = []
+    old_get = server._http_get
+    old_cache = dict(server._BUVID3_CACHE)
+    server._BUVID3_CACHE.update(ts=time.monotonic(), value="test")
+
+    def fake_get(url, headers, timeout=8):
+        urls.append(url)
+        # 模拟线上: 综合排序没有官方这条, 最新排序才有
+        rs = [official] if "order=pubdate" in url else []
+        return 200, json.dumps({"code": 0, "data": {"result": rs}})
+
+    server._http_get = fake_get
+    try:
+        got = server.bili_discover_date("2026-11-06")
+    finally:
+        server._http_get = old_get
+        server._BUVID3_CACHE.clear()
+        server._BUVID3_CACHE.update(old_cache)
+    check("按最新排序查过", any("order=pubdate" in u for u in urls), str(len(urls)))
+    check("找回了官方回放", len(got) == 1 and got[0]["bv"] == "BV_NEW", str(got))
+
+
 def main() -> int:
     t_need()
     t_append()
@@ -249,6 +283,7 @@ def main() -> int:
     t_sort()
     t_bili_date_fallback()
     t_bili_date_mismatch()
+    t_search_order()
     t_discover_fallback()
     t_apply_fallback()
     print()

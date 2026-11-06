@@ -265,8 +265,8 @@ def load_cookie_header() -> str:
 
 
 # matches.json 的读-改-写全程串行化。
-# 原实现用**固定** tmp 名("matches.json.tmp")且无锁, 而写入点有三处
-# (POST /api/match、/api/discover、/api/autocalign)。日常操作就能撞车:
+# 原实现用**固定** tmp 名("matches.json.tmp")且无锁, 而写入点有两处
+# (POST /api/match、/api/autocalign)。日常操作就能撞车:
 # 「自动校准」成功后前端 applyOffsetValue 会紧接着 POST 一次 /api/match,
 # 两个请求同时 read-modify-write → tmp 互相覆盖 → replace 出交错 JSON,
 # 而 load_matches 对解析失败是**静默返回空表**, 表现为"全部对齐记录凭空消失"。
@@ -1488,7 +1488,7 @@ async def handle_matchlist_get(request: web.Request) -> web.Response:
                 it["align_failed"] = True
                 it["align_error"] = rec.get("align_error") or ""
         fixed.append(it)
-    # match_date 一并返回: 前端据此显示"比赛日", 并作为 /api/discover 的日期
+    # match_date 一并返回: 前端据此显示"比赛日"
     return api_ok(matches=fixed, match_date=match_date)
 
 
@@ -1504,12 +1504,14 @@ def _matchlist_for_session(date: str, lists: dict):
     return lists.get(date) or lists.get(next_key)
 
 
-# ---- /api/discover: 当天赛程自动发现 + 官方回放BV自动搜索 ----
+# ---- 赛程发现: 采集端 nightly 写本地层, 播放端只读分发后的 align.json ----
 # 数据链: ① Riot getSchedule(Worlds) 取"北京时间 date 当天 01:00-09:00"的比赛块生成
 # 场次草稿(队名顺序按 Riot 返回顺序) -> ② B站 web 搜索(带 buvid3 预热+浏览器UA)
 # 官方账号 哔哩哔哩英雄联盟赛事(mid=50329118) 的单场回放, 标题同时含两队名(词边界+
 # 大小写/英文别名不敏感)取 BV -> ③ 写回 matches.json: 列表缺失/为空整体写入草稿;
 # 已存在则回填空 bv/缺失 start_ms, 并把列表尚未收录的场次追加进去, 绝不覆盖已有 bv/offset_sec/title。
+# 写入点只有 tools/nightly.py 的 discover(); 播放端不再提供发现接口 ——
+# 用户拉到的 data/{日期}/align.json 必须自带场次, 否则播放端无从知道该播哪场。
 # 全部网络请求走阻塞 urllib + asyncio.to_thread, 8 秒超时, 不堵事件循环。
 # Riot API key: 优先取环境变量 RIOT_API_KEY; 未设置时回落到下面这个公开社区 key
 # (vickz84259 社区文档里公开的 key, 非私密凭据, 调研时实测可用)。
@@ -1522,7 +1524,6 @@ RIOT_API_KEY = (os.environ.get("RIOT_API_KEY", "").strip() or _DEFAULT_RIOT_API_
 RIOT_LEAGUE_ID = str(_cfg("discover", "league_id", default="98767975604431411"))
 RIOT_SCHEDULE_URL = ("https://esports-api.lolesports.com/persisted/gw/getSchedule"
                      f"?hl=en-US&leagueId={RIOT_LEAGUE_ID}")
-DISCOVER_ENABLED = bool(_cfg("discover", "enabled", default=True))
 BILI_OFFICIAL_MID = int(_cfg("bili", "official_mid", default=50329118))
 NET_TIMEOUT = 8                       # 秒, 对 Riot/B站 的单次请求超时
 
@@ -1935,7 +1936,7 @@ def bili_discover_date(date: str) -> list:
 
     2026-11-04 实测: Riot getSchedule 与 lolesports 官网页都没有当天这场
     (淘汰赛首日/表演赛), 但官方账号 06:59 已上传 "【2026全球总决赛】11月4日
-    TES vs IG", 于是「刷新赛程」发现 0 场, 用户拿不到 BV。只信 Riot 不够。
+    TES vs IG", 于是赛程发现 0 场, 用户拿不到 BV。只信 Riot 不够。
 
     2026-11-05 又踩了一次: 官方把当天的 GEN vs LYON 标成"11月4日", 按标题
     搜"11月5日"永远找不到。所以先按**不带日期**的关键词取全量官方投稿, 再由
@@ -2001,23 +2002,6 @@ def _same_match(entry: dict, m: dict) -> bool:
             and int(sm) == int(m["start"].timestamp() * 1000))
 
 
-def _discover_need(lst: list, draft: list) -> bool:
-    """要不要落盘: 有空 bv/缺 start_ms 的可识别条目, 或 draft 里有列表尚未收录的场次。
-
-    最后一条是必须的 —— 旧实现只问"有没有要回填的", 于是当天第二场回放上线后,
-    列表里第一场已经完整, 判据恒为 False, 新场次永远刷不进来。
-    """
-    if not lst:
-        return bool(draft)
-    for e in lst:
-        if not _teams_key(e.get("title")):
-            continue
-        if (not str(e.get("bv") or "").strip()
-                or not isinstance(e.get("start_ms"), (int, float))):
-            return True
-    return any(not any(_same_match(e, m) for e in lst) for m in draft)
-
-
 def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None:
     """把 Riot 草稿合进 matches["lists"][date]。
 
@@ -2070,45 +2054,6 @@ def _apply_discover(matches: dict, date: str, draft: list, result: dict) -> None
                 entry["bv"] = m["bv"]
                 result["backfilled"] += 1
                 break
-
-
-async def handle_discover(request: web.Request) -> web.Response:
-    raw_date = (request.query.get("date") or "").strip()
-    if not DATE_RE.fullmatch(raw_date):
-        raise ApiError("参数 date 非法(应为 YYYY-MM-DD)")
-    if not DISCOVER_ENABLED:
-        raise ApiError("赛程自动发现已关闭(config.json 的 discover.enabled = false)")
-    # 前端传的是**数据目录日**(取文件要用它), 但赛程/Riot 窗口是按**比赛日**组织的。
-    # 直接用目录日会去抓前一天的对阵: 例如目录 2026-10-25 装的是 10-26 凌晨的比赛,
-    # 若按 10-25 去 discover, 拿到的是"TES vs AL"那一晚的场次, 与正在看的比赛完全不符,
-    # 且因为 lists["2026-10-25"] 已存在(只回填空 bv), 真正的次日场次永远补不上 BV。
-    date = await asyncio.to_thread(_session_match_date, raw_date)
-    # a) Riot 赛程 -> 草稿; Riot 当天没有场次时退回官方账号回放标题(兜底)。
-    #    阻塞网络全部在 worker 线程, 8s 超时, 带内存缓存。
-    draft = await asyncio.to_thread(discover_draft, date)
-    # b) 逐场搜B站官方回放(顺序请求, 避免并发触发风控); 失败按 found=false 降级不炸整体
-    for m in draft:
-        if m.get("bv"):
-            continue                     # 日期兜底已经带 BV, 不再多搜一次
-        m["bv"] = await asyncio.to_thread(
-            bili_search_replay, m["teams"][0], m["teams"][1], date)
-    # c) 写回: 已有条目只补空 bv/缺失 start_ms, 草稿里列表还没有的场次追加进去
-    result = {"created": 0, "added": 0, "backfilled": 0, "time_filled": 0}
-
-    def _mut(matches):
-        _apply_discover(matches, date, draft, result)
-
-    if draft:
-        # 无变更就不落盘(省一次写); 有变更走锁内 read-modify-write
-        probe = await asyncio.to_thread(load_matches)
-        if _discover_need(probe["lists"].get(date) or [], draft):
-            if not await asyncio.to_thread(update_matches, _mut):
-                raise ApiError("matches.json 写入失败")
-    out = [{"idx": i, "title": m["title"], "bv": m["bv"], "found": bool(m["bv"])}
-           for i, m in enumerate(draft)]
-    return api_ok(matches=out, riot_count=len(draft), date=date, data_date=raw_date,
-                  created=result["created"], added=result["added"],
-                  backfilled=result["backfilled"], time_filled=result["time_filled"])
 
 
 # ---- /api/playurl: 通过B站网页接口取 mp4 直链 ----
@@ -3190,7 +3135,7 @@ def _align_one_page(fp_replay, conns, hop, min_conf, min_match_sec,
 def _schedule_window_for_bv(date: str, bv: str):
     """取该场比赛的赛程开始时间(毫秒), 用于给对齐加时间窗约束。
 
-    数据来源: matches.json 的 lists[比赛日][].start_ms(由 /api/discover 从 Riot 赛程落盘)。
+    数据来源: matches.json 的 lists[比赛日][].start_ms(采集端 nightly.discover 从 Riot 赛程落盘)。
     匹配方式: 该 BV 所在列表条目的 start_ms; 没有 bv 时按 bv 反查不到, 返回 None。
 
     返回 (start_ms|None, 说明)。
@@ -3275,7 +3220,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
         raise ApiError(f"{bv} 没有可用的分P 信息")
 
     # b2) 由赛程开始时间算出"该分P 允许落在哪个墙钟区间"。
-    # 没有赛程时间(旧数据/未刷新赛程)时 window 为 None -> 不做约束, 行为与旧版一致。
+    # 没有赛程时间(旧数据/尚未写入赛程)时 window 为 None -> 不做约束, 行为与旧版一致。
     # 有了它才能挡住"早上重播"这类伪峰(见 _align_one_page 里的说明)。
     win_lo = win_hi = None
     sched_ms, win_reason = _schedule_window_for_bv(date, bv)
@@ -3287,7 +3232,7 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
               f"({win_reason})", flush=True)
     else:
         print("[autocalign] 无赛程开始时间, 不做窗口约束"
-              "(点「刷新赛程」可补全, 能挡掉早上重播的误匹配)", flush=True)
+              "(等采集端下一轮发现补齐, 能挡掉早上重播的误匹配)", flush=True)
     window_ms = (win_lo, win_hi) if win_lo is not None else None
 
     # c) 逐分P 独立对齐。每个分P 各自投票定位, 互不影响。
@@ -3785,7 +3730,6 @@ def build_app() -> web.Application:
     r.add_post("/api/match", handle_match_post)
     r.add_get("/api/matchlist", handle_matchlist_get)
     r.add_get("/api/overview", handle_overview)
-    r.add_get("/api/discover", handle_discover)
     r.add_get("/api/playurl", handle_playurl)
     r.add_get("/api/sources", handle_sources)
     r.add_get("/api/markers", handle_markers)

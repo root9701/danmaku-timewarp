@@ -196,7 +196,7 @@ UTF-8 JSONL，四种行：
 字典顺序先撞上残留就会显示错的分P 数。
 
 `lists` 的键是**赛事日**（不是数据目录日）。`lists[]` 字段：`title` / `bv` / `offset_sec`（兼容，取第一分P）/
-`pages`（对齐后回写）/ `start_ms`（**官方赛程开始时间**，由 `/api/discover` 落盘，是时间窗约束的依据）。
+`pages`（对齐后回写）/ `start_ms`（**官方赛程开始时间**，由采集端 `nightly.discover` 落盘，是时间窗约束的依据）。
 
 `/api/matchlist` 另返回三个派生字段（不落盘）：`total_pages`（B站实际分P 数）、
 `page_errors`（`{分P号: 原因}`）、`align_failed`（**仅完全没有分P 成功**时为 true）。
@@ -247,7 +247,6 @@ UTF-8 JSONL，四种行：
 | `POST /api/match` | 保存手动 offset（`manual=true` 会清掉旧的 auto 记录） |
 | `GET /api/matchlist?date=` | 场次列表 + 各自对齐状态 |
 | `GET /api/overview?date=` | 一晚总览：密度直方图 + 各场分P 轨道 |
-| `GET /api/discover?date=` | Riot 赛程 → B站搜索回放 BV → 只回填空位 |
 | `GET /api/playurl?bv=&page=&qn=` | mp4 直链（多段时由前端拼接）；`qn` 是画质码，缺省 720P |
 | `GET /api/markers?bv=` | B站 看点（一血/大龙/推塔…）换算到整条虚拟时间轴 |
 | `GET /api/stream?url=` | 反代 B站 CDN（白名单域名 + 解析后 IP 校验） |

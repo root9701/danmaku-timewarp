@@ -104,7 +104,7 @@ def main() -> int:
     lists = (server.load_matches() or {}).get("lists") or {}
     targets = targets_from_lists(lists, match_date, args.bv)
     if not targets:
-        print(f"{match_date} 的赛程里没有可校准的 BV; 先刷新赛程或手动填 BV")
+        print(f"{match_date} 的赛程里没有可校准的 BV; 先跑 nightly --discover-only 补齐(或等下一轮巡检)")
         return 2
     files = [args.file] if args.file else session_files(args.date)
     if not files:

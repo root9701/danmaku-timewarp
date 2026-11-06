@@ -32,7 +32,6 @@
   var btnRate = $('btn-rate'), speedBadge = $('speed-badge'), btnSkip = $('btn-skip');
   var btnAutoAdvance = $('btn-auto-advance');
   var btnAutoAlign = $('btn-auto-align'), alignStatus = $('align-status');
-  var btnDiscover = $('btn-discover');
   var btnUpdate = $('btn-update'), updateStatus = $('update-status');
   var elAppVersion = $('app-version');
   var ovCanvas = $('ov-canvas'), ovSummary = $('ov-summary'), ovLegend = $('ov-legend');
@@ -2315,7 +2314,7 @@
   function playFromOverview(tr, block, opts) {
     opts = opts || {};
     if (!tr.bv) {
-      ovSummary.textContent = tr.title + ' 没有配置回放 BV，无法播放（点「刷新赛程」可补全）';
+      ovSummary.textContent = tr.title + ' 还没有回放 BV（采集端尚未校准完成，稍后拉取一次数据）';
       return;
     }
     // 已经是当前场次: 直接定位, 不重新加载(不打断播放)
@@ -2335,7 +2334,7 @@
       if (selMatch.options[i].value === tr.title) { selMatch.selectedIndex = i; found = true; break; }
     }
     if (!found) {
-      ovSummary.textContent = '该场次不在当前列表里，请先「刷新赛程」';
+      ovSummary.textContent = '该场次不在当前列表里，请拉取最新数据';
       return;
     }
     applyMatchToInputs();
@@ -3270,42 +3269,6 @@
     } else {
       setSrcStatus('换源已打开：填换源视频 BV 后点「识别分P」。', '');
     }
-  });
-
-  /* ---------------- 刷新赛程(自动发现当天场次 + 搜索官方回放BV) ---------------- */
-  var discoverBusy = false;
-  btnDiscover.addEventListener('click', function () {
-    if (discoverBusy) { return; }
-    var date = selDate.value;
-    if (!date) {
-      setAlignStatus('请先选择日期，再刷新赛程。', 'err');
-      return;
-    }
-    discoverBusy = true;
-    btnDiscover.disabled = true;
-    btnDiscover.textContent = '刷新中…';
-    setAlignStatus('正在获取 Riot 赛程并搜索B站官方回放（约数秒到十几秒）…', '');
-    getJson('/api/discover?date=' + enc(date)).then(function (j) {
-      if (j && j.ok && Array.isArray(j.matches)) {
-        var matched = 0, missing = 0;
-        j.matches.forEach(function (m) {
-          if (m && m.found) { matched++; } else { missing++; }
-        });
-        var added = j.added || 0;
-        setAlignStatus('发现 ' + (j.riot_count || 0) + ' 场, 已匹配 ' + matched +
-          ' 个回放BV' + (added > 0 ? '，新增 ' + added + ' 场到列表' : '') +
-          (missing > 0 ? '（' + missing + ' 场回放未上传或未搜到，稍后可再点刷新回填）' : ''), 'ok');
-        loadMatchList(date);   // 重载场次下拉
-      } else {
-        setAlignStatus('赛程刷新失败: ' + (j && j.error ? j.error : '未知错误'), 'err');
-      }
-    }).catch(function (e) {
-      setAlignStatus('赛程刷新失败: ' + (e && e.message ? e.message : '网络错误'), 'err');
-    }).finally(function () {
-      discoverBusy = false;
-      btnDiscover.disabled = false;
-      btnDiscover.textContent = '刷新赛程';
-    });
   });
 
   /* ---------------- 右侧栏 ---------------- */

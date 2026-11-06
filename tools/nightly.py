@@ -1,4 +1,4 @@
-"""夜间流水线: 每小时巡检 -> 校准 -> 分发 -> 提交。
+"""夜间流水线: 每小时巡检 -> 发现赛程 -> 校准 -> 分发 -> 提交。
 
 用法:
     python tools/nightly.py                # 跑一轮(适合交给计划任务)
@@ -9,6 +9,9 @@
 - 只写本地层与 `data/`; 只自动推送**仅含数据**的提交, 且受控制台「自动推送」
   开关控制(边界见 AGENTS.md「夜间流水线的自动推送」)。混入代码/文档的提交
   停下等人工推送。
+- **校准成功才发布**: 当天场次里至少一个分P 有对齐结果, 才 split/commit/push。
+  未校准的数据留在本地, 下一轮继续发现+校准, 直到成功。这样用户拉到的每一天
+  都自带场次(align.json) —— 播放端不做赛程发现, 只负责播放。
 - 有新增内容才提交, 没有就静默退出, 不产生空提交。
 - 回放未上传/分P 取不到音频时跳过, 下一轮再试; 不写失败标记。
 - 采集端负责写 manifest 快照; 本脚本不重新解释"哪些片已封口"。
@@ -230,6 +233,28 @@ def _auto_push(dry_run: bool) -> None:
         print(r["detail"])
 
 
+def calibrated(day: str) -> bool:
+    """当天是否已有可播放的对齐结果(至少一个分P)。
+
+    推送闸门: 没有场次、或场次一个分P 都没对齐的原始数据不发布。
+    用户拉到的每一天都必须自带赛程 —— 否则播放端只有一堆弹幕, 不知道播哪场。
+    2026-11-06 的事故就是校准还没成, 数据先推上去了。
+
+    数据不会丢: 未过闸门的日子留在本地工作区, 下一轮巡检继续重试。
+    """
+    try:
+        match_date = server._session_match_date(day)
+        lists = (server.load_matches() or {}).get("lists") or {}
+    except Exception:
+        return False
+    for m in lists.get(match_date) or []:
+        if not isinstance(m, dict) or not str(m.get("bv") or "").strip():
+            continue
+        if isinstance(m.get("pages"), dict) and m["pages"]:
+            return True
+    return False
+
+
 async def tick(dry_run: bool, only_date: str = "") -> None:
     active = [only_date] if only_date else running_days()
     if not active:
@@ -239,11 +264,17 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
         # 真 dry-run: 不联网、不校准、不写本地层, 只打印将要发布的日期
         print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
         for day in days:
+            if not calibrated(day):
+                print(f"[dry-run] {day}: 尚未校准成功, 不会推送")
+                continue
             publish(day, dry_run=True)
         _auto_push(dry_run=True)
         return
     async with aiohttp.ClientSession() as session:
-        for day in active:
+        # 发现与校准都覆盖 days 而不只是 active: 回放常在采集结束后才上传,
+        # 只给正在采集的日期重试, 已封口但还没校准的夜晚就永远等不到 BV,
+        # 而推送闸门又不允许未校准的数据出去 —— 数据会永久卡在本地。
+        for day in days:
             try:
                 await discover(day)
             except Exception as e:          # 网络/赛程失败不阻断校准
@@ -251,6 +282,9 @@ async def tick(dry_run: bool, only_date: str = "") -> None:
             await calibrate_day(day, session)
     # 收尾后的数据不在 running_days 里, 但 afp/meta 还没提交 —— 一并发布
     for day in days:
+        if not calibrated(day):
+            print(f"{day}: 尚未校准成功, 暂不推送(数据保留在本地, 下一轮重试)")
+            continue
         try:
             publish(day, dry_run=False)
         except Exception as e:

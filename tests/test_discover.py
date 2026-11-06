@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""test_discover.py — 「刷新赛程」把 Riot 草稿合进场次列表的规则。
+"""test_discover.py — 采集端把 Riot 草稿合进场次列表的规则。
 
 用法: python tests/test_discover.py     (退出码 0 = 全过)
 
+赛程发现是采集端 `tools/nightly.py` 的职责, 播放端只读分发下来的 `align.json`,
+不再提供「刷新赛程」。这里覆盖 nightly 依赖的合并/兜底/搜索排序规则。
+
 背景(实测缺陷): 2026-10-30 当晚先上线 KC vs CFO, 列表里就一条; 几小时后
-BLG vs TES 的回放也上线了, 但点「刷新赛程」刷不出来 —— 旧判据只问
-"有没有要回填空 bv 的条目", 列表里那一条已经完整, 判据恒为 False, 新场次
-永远进不去。这里把判据与合并都作为纯函数覆盖。
+BLG vs TES 的回放也上线了, 但新场次进不去 —— 旧判据只问"有没有要回填空 bv
+的条目", 列表里那一条已经完整, 判据恒为 False。这里把合并规则作为纯函数覆盖。
 
 不联网: draft 由 _mk 造, 只测写回规则。
 """
@@ -48,29 +50,6 @@ D_BLGTES = _mk("BLG vs TES", 7, "BV17XxP6CE7n")
 
 OLD_ONLY_KC = [{"title": "KC vs CFO", "bv": "BV148xw6DEKP", "offset_sec": 43.1,
                 "start_ms": 1793304000000}]
-
-
-def t_need():
-    print("\n[判据] 该不该落盘")
-    check("列表为空 + 有草稿 -> 落盘", server._discover_need([], [D_KCCFO]))
-    check("列表为空 + 无草稿 -> 不落盘", not server._discover_need([], []))
-    check("已有条目完整, 草稿无新场 -> 不落盘",
-          not server._discover_need(OLD_ONLY_KC, [D_KCCFO]))
-    # 这就是线上那个 bug: 第一场完整, 第二场还没进列表
-    check("已有条目完整, 草稿多一场 -> 落盘",
-          server._discover_need(OLD_ONLY_KC, [D_KCCFO, D_BLGTES]))
-    check("已有条目缺 bv -> 落盘",
-          server._discover_need([{"title": "KC vs CFO", "bv": "",
-                                  "start_ms": 1793304000000}], [D_KCCFO]))
-    check("已有条目缺 start_ms -> 落盘",
-          server._discover_need([{"title": "KC vs CFO", "bv": "BV148xw6DEKP"}],
-                                [D_KCCFO]))
-    # 解析不出对阵的占位条目不算"这场已经有了", 草稿里的场次仍需追加
-    check("占位条目 + 草稿有对阵 -> 落盘",
-          server._discover_need([{"title": "待定", "bv": ""}], [D_KCCFO]))
-    # 占位条目 + 草稿为空: 没有可追加的, 也不该为了它写盘
-    check("占位条目 + 草稿为空 -> 不落盘",
-          not server._discover_need([{"title": "待定", "bv": ""}], []))
 
 
 def t_append():
@@ -275,7 +254,6 @@ def t_search_order():
 
 
 def main() -> int:
-    t_need()
     t_append()
     t_no_clobber()
     t_team_order()

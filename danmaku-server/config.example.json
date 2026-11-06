@@ -4,8 +4,7 @@
   "port": 8789,
 
   "discover": {
-    "_comment": "赛程自动发现。league_id 决定抓哪个赛事：Worlds=98767975604431411, LPL=98767991299243165, LCK=98767991310872058, LEC=98767991302996019, LCS=98767991299243165。时区用 IANA 名称。",
-    "enabled": true,
+    "_comment": "赛程自动发现（采集端 nightly 读取）。league_id 决定抓哪个赛事：Worlds=98767975604431411, LPL=98767991299243165, LCK=98767991310872058, LEC=98767991302996019, LCS=98767991299243165。时区用 IANA 名称。",
     "league_id": "98767975604431411",
     "timezone": "Asia/Shanghai",
     "window_start": "01:00",

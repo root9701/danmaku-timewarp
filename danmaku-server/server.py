@@ -1830,19 +1830,45 @@ def _strip_game_prefix(title: str) -> str:
 
 
 def _bili_buvid3() -> str:
-    """访问B站首页预热拿 buvid3(Set-Cookie), 1 小时内存缓存; 拿不到返回旧值/空串。"""
+    """拿 buvid3(搜索接口的风控凭据), 1 小时内存缓存; 拿不到返回旧值/空串。
+
+    **优先走 /x/frontend/finger/spi**: 首页 https://www.bilibili.com/ 已经不再下发
+    buvid3 的 Set-Cookie(实测 2026-11-07 返回 200 但 Set-Cookie 为 0 条), 只靠首页
+    预热会让 buvid3 永远为空, 于是搜索接口一律 412 Precondition Failed ——
+    表现是"赛程能建出来但永远拿不到 BV", 发布闸门因此过不去。
+    spi 接口直接返回 b_3(即 buvid3), 是官方给前端生成指纹用的入口。
+
+    首页兜底仍保留: spi 也可能改版或临时失败。
+    """
     now = time.monotonic()
     if _BUVID3_CACHE["value"] and now - _BUVID3_CACHE["ts"] < 3600:
         return _BUVID3_CACHE["value"]
+
+    def _cache(val: str) -> str:
+        _BUVID3_CACHE.update(ts=now, value=val)
+        return val
+
+    # ① 官方指纹接口
+    try:
+        req = urllib.request.Request(
+            "https://api.bilibili.com/x/frontend/finger/spi",
+            headers={"User-Agent": BILI_UA, "Referer": BILI_REFERER})
+        with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        val = str(((data or {}).get("data") or {}).get("b_3") or "").strip()
+        if val:
+            return _cache(val)
+    except Exception as e:
+        print(f"[discover] buvid3 取 spi 失败(试首页兜底): {e.__class__.__name__}: {e}")
+
+    # ② 首页 Set-Cookie 兜底(历史上一直是这样拿的)
     try:
         req = urllib.request.Request("https://www.bilibili.com/",
                                      headers={"User-Agent": BILI_UA})
         with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as r:
             for sc in r.headers.get_all("Set-Cookie") or []:
                 if sc.startswith("buvid3="):
-                    val = sc.split(";", 1)[0].split("=", 1)[1]
-                    _BUVID3_CACHE.update(ts=now, value=val)
-                    return val
+                    return _cache(sc.split(";", 1)[0].split("=", 1)[1])
     except Exception as e:
         print(f"[discover] buvid3 预热失败(沿用旧值): {e.__class__.__name__}: {e}")
     _BUVID3_CACHE["ts"] = now

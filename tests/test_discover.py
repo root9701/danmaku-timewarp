@@ -338,6 +338,68 @@ def t_search_order():
     check("找回了官方回放", len(got) == 1 and got[0]["bv"] == "BV_NEW", str(got))
 
 
+def t_buvid3_from_spi():
+    """buvid3 必须能从官方指纹接口拿到 —— 首页已不再下发这条 Cookie。
+
+    2026-11-07 实测: https://www.bilibili.com/ 返回 200 但 Set-Cookie 是 0 条,
+    于是 buvid3 永远为空 -> 搜索接口一律 412 Precondition Failed -> 赛程能建出来
+    但永远拿不到 BV -> 发布闸门永远不放行(当天数据卡在本地)。
+    /x/frontend/finger/spi 的 data.b_3 就是 buvid3。
+    """
+    print("\n[buvid3] 从官方指纹接口取, 不依赖首页 Set-Cookie")
+
+    class FakeResp:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def get_all(self, _name):
+            return []            # 首页已不下发 buvid3
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        u = req.full_url if hasattr(req, "full_url") else str(req)
+        if "finger/spi" in u:
+            return FakeResp(json.dumps({"code": 0,
+                                        "data": {"b_3": "BVUID3-FROM-SPI",
+                                                 "b_4": "x"}}).encode())
+        return FakeResp(b"<html></html>")
+
+    old_open = server.urllib.request.urlopen
+    old_cache = dict(server._BUVID3_CACHE)
+    server._BUVID3_CACHE.update(ts=0, value="")
+    server.urllib.request.urlopen = fake_urlopen
+    try:
+        got = server._bili_buvid3()
+    finally:
+        server.urllib.request.urlopen = old_open
+        server._BUVID3_CACHE.clear()
+        server._BUVID3_CACHE.update(old_cache)
+    check("从 spi 拿到 buvid3", got == "BVUID3-FROM-SPI", repr(got))
+
+
+def t_search_headers_carry_buvid3():
+    """搜索请求头必须带上 buvid3 —— 缺它就是 412。"""
+    print("\n[buvid3] 搜索请求头带 Cookie")
+    old = server._bili_buvid3
+    server._bili_buvid3 = lambda: "BVUID3-X"
+    try:
+        h = server._bili_search_headers()
+    finally:
+        server._bili_buvid3 = old
+    cookie = h.get("Cookie") or ""
+    check("Cookie 里有 buvid3", "buvid3=BVUID3-X" in cookie, cookie)
+
+
 def main() -> int:
     t_append()
     t_draft_without_bv()
@@ -352,6 +414,8 @@ def main() -> int:
     t_replay_rejects_clips()
     t_discover_fallback()
     t_apply_fallback()
+    t_buvid3_from_spi()
+    t_search_headers_carry_buvid3()
     print()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项未过")

@@ -4,15 +4,20 @@
   "match_date": "2026-11-06",
   "is_test": false,
   "start_ms": 1793916002419,
-  "end_ms": 1793923200136,
-  "dm_count": 95568,
-  "sc_count": 93,
+  "end_ms": 1793925465465,
+  "dm_count": 136381,
+  "sc_count": 149,
   "files": [
     "7734200_s0600.jsonl.gz",
-    "7734200_s0700.jsonl.gz"
+    "7734200_s0700.jsonl.gz",
+    "7734200_s0800.jsonl.gz"
   ],
-  "afp": null,
-  "meta": null,
+  "afp": {
+    "file": "7734200.afp.jsonl.gz",
+    "hop": 0.4,
+    "win": 0.4
+  },
+  "meta": "7734200.meta.json",
   "collector_version": "1.4.2",
-  "ended_by": "running"
+  "ended_by": "interrupt"
 }

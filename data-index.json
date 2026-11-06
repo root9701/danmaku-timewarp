@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-06T00:32:56Z",
+  "generated_at": "2026-11-06T00:38:42Z",
   "latest": "2026-11-06",
   "days": {
     "2026-10-26": {
@@ -572,12 +572,25 @@
     },
     "2026-11-06": {
       "files": [
+        "data/2026-11-06/7734200/7734200.afp.jsonl.gz",
+        "data/2026-11-06/7734200/7734200.meta.json",
         "data/2026-11-06/7734200/7734200_s0600.jsonl.gz",
         "data/2026-11-06/7734200/7734200_s0700.jsonl.gz",
+        "data/2026-11-06/7734200/7734200_s0800.jsonl.gz",
         "data/2026-11-06/7734200/manifest.json",
         "data/2026-11-06/align.json"
       ],
       "file_sizes": [
+        {
+          "name": "data/2026-11-06/7734200/7734200.afp.jsonl.gz",
+          "bytes": 578411,
+          "sha256": "a9d088b4beb783c667b1b5ba0bd8a563d47b12a90015227c862575d2908123b2"
+        },
+        {
+          "name": "data/2026-11-06/7734200/7734200.meta.json",
+          "bytes": 95964,
+          "sha256": "2b38975f95721f66b6c4c9f4d99eef6efc5ffff81ba7e06318e665b100cedcde"
+        },
         {
           "name": "data/2026-11-06/7734200/7734200_s0600.jsonl.gz",
           "bytes": 916661,
@@ -589,20 +602,25 @@
           "sha256": "f1204828dab14ffbf2887bcc63aaaab4bda00807750e8282289533fdb944dd8a"
         },
         {
+          "name": "data/2026-11-06/7734200/7734200_s0800.jsonl.gz",
+          "bytes": 899836,
+          "sha256": "671968dd73e59c88e108f48ae3c271a77dc1ab7b3e51534ca2204e8e0ccf056f"
+        },
+        {
           "name": "data/2026-11-06/7734200/manifest.json",
-          "bytes": 371,
-          "sha256": "409266a681f498da6c520e4509986d1797e547b297a9c81c980dd179b4f7b26b"
+          "bytes": 493,
+          "sha256": "2f322b4f470cdb2c24f1dc6e4a1a9b4028de09884803127065c07bde94daf402"
         },
         {
           "name": "data/2026-11-06/align.json",
           "bytes": 2040,
-          "sha256": "e07b25026a706c4308d22d85cc5aa922ac41f48172b771c15b643fddf2c47961"
+          "sha256": "bdb1d061cf4a7cafdb2e44ffa75eab1de3ad1517ecabf2837174d22c6d6dc1c9"
         }
       ],
       "sessions": [
         "data/2026-11-06/7734200"
       ],
-      "bytes": 2098765
+      "bytes": 3673098
     }
   }
 }

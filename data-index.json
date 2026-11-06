@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-06T23:14:26Z",
+  "generated_at": "2026-11-06T23:28:50Z",
   "latest": "2026-11-07",
   "days": {
     "2026-10-26": {
@@ -642,7 +642,7 @@
         {
           "name": "data/2026-11-07/align.json",
           "bytes": 1400,
-          "sha256": "ad850800dd0781e6e6dcc6e6098f6b86a8582225d5f082212bfec73f60533c68"
+          "sha256": "74b82321ef5e2085ce115ed5d81e9b2d3384753b1d6ef3fa16c716339ba9c285"
         }
       ],
       "sessions": [

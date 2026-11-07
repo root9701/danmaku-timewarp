@@ -10,9 +10,9 @@
     },
     "2026-11-07|7734200|BV1Dd4L6PE21": {
       "auto": {
-        "confidence": 8.52,
+        "confidence": 7.249,
         "method": "audiofp",
-        "ts": "2026-11-07T07:28:45"
+        "ts": "2026-11-07T08:01:58"
       },
       "bv": "BV1Dd4L6PE21",
       "date": "2026-11-07",
@@ -21,20 +21,33 @@
       "pages": {
         "1": {
           "candidates": 1,
-          "confidence": 8.52,
+          "confidence": 7.249,
           "duration": 3271,
           "matched_seconds": 1440.0,
           "method": "audiofp",
           "offset_sec": 46.271,
           "part": "第一局",
-          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-07T07:28:45",
+          "ts": "2026-11-07T08:01:58",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 7.95,
+          "duration": 3185,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3522.27,
+          "part": "第二局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-07T08:01:58",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月7日 T1 vs KC",
-      "total_pages": 2
+      "total_pages": 3
     }
   },
   "lists": {
@@ -44,13 +57,18 @@
         "offset_sec": 46.271,
         "pages": {
           "1": {
-            "confidence": 8.52,
+            "confidence": 7.249,
             "offset_sec": 46.271,
             "part": "第一局"
+          },
+          "2": {
+            "confidence": 7.95,
+            "offset_sec": 3522.27,
+            "part": "第二局"
           }
         },
         "title": "T1 vs KC",
-        "total_pages": 2
+        "total_pages": 3
       }
     ]
   }

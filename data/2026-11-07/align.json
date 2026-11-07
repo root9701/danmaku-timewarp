@@ -1,18 +1,20 @@
 {
   "align": {
     "2026-11-07|7734200": {
+      "bv": "BV1Dd4L6PE21",
       "bvs": [
         "BV1Dd4L6PE21"
       ],
       "date": "2026-11-07",
       "file": "7734200",
-      "offset_sec": 46.271
+      "offset_sec": 46.271,
+      "title": "T1 vs KC"
     },
     "2026-11-07|7734200|BV1Dd4L6PE21": {
       "auto": {
         "confidence": 7.196,
         "method": "audiofp",
-        "ts": "2026-11-07T09:46:57"
+        "ts": "2026-11-07T22:27:56"
       },
       "bv": "BV1Dd4L6PE21",
       "date": "2026-11-07",
@@ -29,7 +31,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-07T09:46:57",
+          "ts": "2026-11-07T22:27:56",
           "votes": 8
         },
         "2": {
@@ -42,7 +44,7 @@
           "part": "第二局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-07T09:46:57",
+          "ts": "2026-11-07T22:27:56",
           "votes": 8
         },
         "3": {
@@ -55,12 +57,25 @@
           "part": "第三局",
           "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-07T09:46:57",
+          "ts": "2026-11-07T22:27:56",
           "votes": 8
+        },
+        "4": {
+          "candidates": 1,
+          "confidence": 5.25,
+          "duration": 3126,
+          "matched_seconds": 1260.0,
+          "method": "audiofp",
+          "offset_sec": 10589.883,
+          "part": "第四局",
+          "picked_by": "多段投票 7/8 段一致(多段一致、6 张强票、强票+同向)",
+          "total_segments": 8,
+          "ts": "2026-11-07T22:27:56",
+          "votes": 7
         }
       },
       "title": "【2026全球总决赛】11月7日 T1 vs KC",
-      "total_pages": 4
+      "total_pages": 8
     }
   },
   "lists": {
@@ -83,10 +98,16 @@
             "confidence": 8.293,
             "offset_sec": 7036.271,
             "part": "第三局"
+          },
+          "4": {
+            "confidence": 5.25,
+            "offset_sec": 10589.883,
+            "part": "第四局"
           }
         },
+        "start_ms": 1794002400000,
         "title": "T1 vs KC",
-        "total_pages": 4
+        "total_pages": 8
       }
     ]
   }

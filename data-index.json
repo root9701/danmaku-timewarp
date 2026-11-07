@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-07T01:47:03Z",
+  "generated_at": "2026-11-07T02:03:52Z",
   "latest": "2026-11-07",
   "days": {
     "2026-10-26": {
@@ -624,13 +624,26 @@
     },
     "2026-11-07": {
       "files": [
+        "data/2026-11-07/7734200/7734200.afp.jsonl.gz",
+        "data/2026-11-07/7734200/7734200.meta.json",
         "data/2026-11-07/7734200/7734200_s0600.jsonl.gz",
         "data/2026-11-07/7734200/7734200_s0700.jsonl.gz",
         "data/2026-11-07/7734200/7734200_s0800.jsonl.gz",
+        "data/2026-11-07/7734200/7734200_s0900.jsonl.gz",
         "data/2026-11-07/7734200/manifest.json",
         "data/2026-11-07/align.json"
       ],
       "file_sizes": [
+        {
+          "name": "data/2026-11-07/7734200/7734200.afp.jsonl.gz",
+          "bytes": 869338,
+          "sha256": "20a620a6633ec1aaa5c5ae2af04d72b5af2ceb79a659c4390db370528022a7b8"
+        },
+        {
+          "name": "data/2026-11-07/7734200/7734200.meta.json",
+          "bytes": 122123,
+          "sha256": "fa7ac7e2d3e092ba667fe0d783ca3ca0c881cecdfd9207d66d8157b1e3931225"
+        },
         {
           "name": "data/2026-11-07/7734200/7734200_s0600.jsonl.gz",
           "bytes": 690637,
@@ -647,9 +660,14 @@
           "sha256": "7e894b8f44bd10506c69940ec5deaaed90fc3b375585fd540332a489dbe8dfb0"
         },
         {
+          "name": "data/2026-11-07/7734200/7734200_s0900.jsonl.gz",
+          "bytes": 948176,
+          "sha256": "43406e528e18085eaf3cbd6a0e9126d5092716a4d8a292e588b4fa92f51d4d21"
+        },
+        {
           "name": "data/2026-11-07/7734200/manifest.json",
-          "bytes": 404,
-          "sha256": "791de97af7da9e41aa658a95909db2d7d2f5d8ce76109406b1e9947eb5ad5fc4"
+          "bytes": 524,
+          "sha256": "836179eda18bf36011f1bc4b3fe04c7357bbbc8d6e9c3824f58b10e18ea377c4"
         },
         {
           "name": "data/2026-11-07/align.json",
@@ -660,7 +678,7 @@
       "sessions": [
         "data/2026-11-07/7734200"
       ],
-      "bytes": 2574734
+      "bytes": 4514491
     }
   }
 }

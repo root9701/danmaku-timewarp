@@ -41,6 +41,7 @@ import pushctl  # noqa: E402
 from daygate import RETRY_DAYS, calibrated, too_old as _too_old  # noqa: E402
 from datapaths import publish_paths  # noqa: E402
 from split_matches import pending_days  # noqa: E402
+import tickplan  # noqa: E402
 
 DATA = server.DATA_DIR
 
@@ -239,34 +240,8 @@ def _auto_push(dry_run: bool) -> None:
         print(r["detail"])
 
 
-async def tick(dry_run: bool, only_date: str = "") -> int:
-    """跑一轮巡检。返回值 = 发布失败的日期数(0 = 没有失败)。"""
-    if only_date:
-        days = [only_date]          # --date 只处理这一天, 不捎带其它脏日期
-        publish_days = days
-    else:
-        active = running_days()
-        dirty = dirty_days()
-        if not active and not dirty:
-            print("没有正在采集的会话")
-        # 只重试最近 RETRY_DAYS 天: 更早的日期再搜也不会变, 只会累积 B站请求。
-        retry = [d for d in dirty if d in active or not _too_old(d)]
-        stale = [d for d in dirty if d not in retry]
-        if stale:
-            print(f"超过 {RETRY_DAYS} 天仍未校准, 不再自动重试: {', '.join(stale)}")
-        days = sorted(set(active) | set(retry))
-        # 发布仍覆盖所有脏日期: 旧日期只要已校准, 新数据就该照常提交。
-        publish_days = sorted(set(active) | set(dirty))
-    if dry_run:
-        # 真 dry-run: 不联网、不校准、不写本地层, 只打印将要发布的日期
-        print("[dry-run] 处理日期: " + (", ".join(days) if days else "无"))
-        for day in days:
-            if not calibrated(day):
-                print(f"[dry-run] {day}: 尚未校准成功, 不会推送")
-                continue
-            publish(day, dry_run=True)
-        _auto_push(dry_run=True)
-        return 0
+async def _calibrate_days(days: list) -> None:
+    """发现赛程 + 逐分P 校准(只写本地层, 不碰 git)。"""
     async with aiohttp.ClientSession() as session:
         # 发现与校准都覆盖 days 而不只是 active: 回放常在采集结束后才上传,
         # 只给正在采集的日期重试, 已封口但还没校准的夜晚就永远等不到 BV,
@@ -280,7 +255,15 @@ async def tick(dry_run: bool, only_date: str = "") -> int:
                 await calibrate_day(day, session)
             except Exception as e:          # 某一天坏数据不能拖住其它日期的发布
                 print(f"{day}: 校准失败({e})")
-    # 收尾后的数据不在 running_days 里, 但 afp/meta 还没提交 —— 一并发布
+
+
+def _publish_days(publish_days: list, dry_run: bool = False) -> int:
+    """分发 + 提交 + 推送。返回失败天数。"""
+    if dry_run:
+        for day in publish_days:
+            if calibrated(day):
+                publish(day, dry_run=True)
+        return 0
     failed = 0
     for day in publish_days:
         if not calibrated(day):
@@ -291,9 +274,25 @@ async def tick(dry_run: bool, only_date: str = "") -> int:
         except Exception as e:
             print(f"{day}: 发布失败({e})")
             failed += 1
-    # 即使今天没有新日期, 也要试一次: 上一轮可能提交成功但推送失败。
-    _auto_push(dry_run=False)
     return failed
+
+
+async def tick(dry_run: bool, only_date: str = "", mode: str = "all") -> int:
+    """跑一轮巡检。返回值 = 发布失败的日期数(0 = 没有失败)。
+
+    mode 把**校准**与**发布**拆成两条独立路径(见 tools/tickplan.py 的说明):
+      all       发现 + 校准 + 分发提交推送(夜间常驻用)
+      calibrate 只发现 + 校准, 结果写本地层; 不 split、不 commit、不 push
+      publish   只分发 + 提交 + 推送(校准结果已就绪时用)
+    """
+    days, publish_days = tickplan.pick_days(
+        only_date, running_days=running_days, dirty_days=dirty_days,
+        too_old=_too_old, retry_days=RETRY_DAYS)
+    return await tickplan.run_tick(
+        mode=mode, days=days, publish_days=publish_days, dry_run=dry_run,
+        calibrate_days=_calibrate_days,
+        publish_days_fn=lambda ds: _publish_days(ds, dry_run),
+        auto_push=_auto_push, is_calibrated=calibrated)
 
 
 async def discover_days(days: list) -> None:
@@ -308,7 +307,7 @@ async def discover_days(days: list) -> None:
 def _run_once(args) -> int:
     """跑一轮(或指定日期), 全程持有单轮锁。
 
-    单轮锁的意义: 常驻进程正在 commit 时, 手动点「校准并提交」不能同时进来 ——
+    单轮锁的意义: 常驻进程正在 commit 时, 手动点「校准」或「发布」不能同时进来 ——
     两边各跑一次 split_matches/pack_data, 轻则重复提交, 重则撞 index.lock。
     手动那条会等最多 90 秒(一轮通常几十秒), 等不到就明确报"正在跑, 稍后再试"。
     """
@@ -316,29 +315,32 @@ def _run_once(args) -> int:
     if not lock.acquire(wait_sec=90):
         print("另一轮巡检正在执行(单轮锁被占用), 本次跳过")
         return 3
+    mode = getattr(args, "mode", "all") or "all"
     try:
-        failed = asyncio.run(tick(args.dry_run, args.date))
+        failed = asyncio.run(tick(args.dry_run, args.date, mode))
     finally:
         lock.release()
-    # --date 是控制台「校准并提交」的入口: 没校准或没提交都算失败, 不能退出 0。
+    # --date 是控制台手动按钮的入口: 没校准或没提交都算失败, 不能退出 0。
     if args.date and not args.dry_run:
-        if failed:
-            print(f"{args.date}: 发布失败, 本轮未提交")
-            return 5
-        if not calibrated(args.date):
-            print(f"{args.date}: 本轮尚未校准成功, 未发布")
-            return 4
+        return tickplan.manual_exit_code(args.date, mode, failed, calibrated)
     return 0
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """命令行参数。抽出来只为让 main 只剩"选哪条路径"这一件事。"""
     ap = argparse.ArgumentParser(description="夜间巡检: 校准 + 分发 + 提交/推送")
     ap.add_argument("--date", default="", help="只处理这一天(默认扫描正在采集的日期)")
     ap.add_argument("--loop", action="store_true", help="常驻, 按 --interval 循环")
     ap.add_argument("--interval", type=int, default=3600, help="巡检间隔(秒)")
     ap.add_argument("--dry-run", action="store_true", help="只打印动作, 不写不改不提交")
     ap.add_argument("--discover-only", action="store_true", help="只刷新赛程, 不校准/发布")
-    args = ap.parse_args()
+    ap.add_argument("--mode", choices=("all", "calibrate", "publish"), default="all",
+                    help="all=发现+校准+发布(默认); calibrate=只校准; publish=只发布")
+    return ap
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
     if args.date and not _valid_day(args.date):
         print(f"日期格式不对: {args.date}")
         return 2

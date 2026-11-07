@@ -37,7 +37,7 @@ STATE = {"task": None, "stop_event": None, "reason": None, "mode": None,
          "started_at": None, "queue_task": None, "queue_stop": None,
          "deadline": None, "current_task": None, "manual_stop": False,
          "pipeline": None, "pipeline_log": None, "push_running": False,
-         "calibrating": False}
+         "calibrating": False, "publishing": False}
 TASKS_PATH = collector.SCRIPT_DIR / "run" / "tasks.json"
 WEB_DIR = collector.SCRIPT_DIR / "web"
 ROOT = collector.SCRIPT_DIR.parent
@@ -547,12 +547,15 @@ async def api_pipeline(request):
 
 
 async def api_calibrate(request):
-    """手动跑一遍校准并提交: 提前结束采集后用的那条路。
+    """手动校准: 只做「发现赛程 -> 逐分P 对齐」, 结果写本地层。
 
-    走 nightly 的一次性模式(不加 --loop): 它会发现赛程 -> 逐分P 校准 ->
-    split_matches -> pack_data -> commit -> 按开关推送, 与常驻进程完全同一套代码。
-    为什么要子进程而不是在控制台里 import: 校准依赖 numpy/ffmpeg 等播放端依赖,
-    控制台的 venv 里不一定有; 子进程跑 tools/nightly.py 用的是它自己那套环境。
+    **不再顺手提交/推送** —— 校准和发布是两件事:
+      - 校准回答"这场回放对应直播哪一刻", 结果是 offset, 可以反复重算;
+      - 发布回答"这些结果该不该给用户", 要过推送闸门、要提交、要推远端。
+    混在一个按钮里, 用户点完不知道"到底算完了没有"和"到底提交了没有",
+    而且校准失败时也分不清是算法没对上还是提交出错。
+
+    走 nightly 的 --mode calibrate: 与常驻进程同一套代码, 只是不碰 git。
     """
     if STATE.get("calibrating"):
         return web.json_response({"ok": False, "error": "正在校准，请稍候"})
@@ -565,7 +568,7 @@ async def api_calibrate(request):
     def _run():
         # 常驻进程若在跑, 它会持有单轮锁; nightly 自己会等 90 秒再报冲突
         return subprocess.run(
-            [sys.executable, str(NIGHTLY), "--date", day],
+            [sys.executable, str(NIGHTLY), "--date", day, "--mode", "calibrate"],
             cwd=str(ROOT), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=1800)
 
@@ -580,6 +583,43 @@ async def api_calibrate(request):
     if r.returncode != 0:
         tail = "\n".join(lines[-6:])
         return web.json_response({"ok": False, "error": tail or "校准进程无输出",
+                                  "detail": out[-2000:]})
+    return web.json_response({"ok": True, "date": day, "output": out[-4000:],
+                              "lines": lines[-40:]})
+
+
+async def api_publish(request):
+    """手动发布: 只做「分发 -> 提交 -> 按开关推送」, 不含校准。
+
+    推送闸门仍在这里把关: 当天没有分P 对齐就不发布(calibrated 判据)。
+    先点「校准」再点「发布」是正常顺序; 只点发布也能用 —— 已有的校准结果
+    (可能来自夜间巡检)照样会被分发出去。
+    """
+    if STATE.get("publishing"):
+        return web.json_response({"ok": False, "error": "正在发布，请稍候"})
+    if not NIGHTLY.is_file():
+        return web.json_response(
+            {"ok": False, "error": "当前不是仓库布局，无法发布（缺 tools/nightly.py）"})
+    day = _latest_data_date() or datetime.now().strftime("%Y-%m-%d")
+    STATE["publishing"] = True
+
+    def _run():
+        return subprocess.run(
+            [sys.executable, str(NIGHTLY), "--date", day, "--mode", "publish"],
+            cwd=str(ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=1800)
+
+    try:
+        r = await asyncio.to_thread(_run)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return web.json_response({"ok": False, "error": f"发布失败: {e}"})
+    finally:
+        STATE["publishing"] = False
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    lines = out.splitlines()
+    if r.returncode != 0:
+        tail = "\n".join(lines[-6:])
+        return web.json_response({"ok": False, "error": tail or "发布进程无输出",
                                   "detail": out[-2000:]})
     return web.json_response({"ok": True, "date": day, "output": out[-4000:],
                               "lines": lines[-40:]})
@@ -821,6 +861,24 @@ async def api_push_status(request):
     return web.json_response(data)
 
 
+async def api_calibration(request):
+    """某数据日的校准状态(独立接口: 校准与推送是两件事, 各自一张卡片)。
+
+    参数 date 缺省取最近有采集产物的一天。返回与 datablocks.calibration 同形。
+    """
+    date = (request.query.get("date") or "").strip()
+    if not date:
+        date = _latest_data_date() or datetime.now().strftime("%Y-%m-%d")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return web.json_response({"ok": False, "error": "date 应为 YYYY-MM-DD"})
+    cal = await asyncio.to_thread(datablocks.calibration, ROOT, date)
+    return web.json_response({
+        "ok": True, "date": date, **cal,
+        "calibrating": bool(STATE.get("calibrating")),
+        "publishing": bool(STATE.get("publishing")),
+    })
+
+
 async def api_push_log(request):
     return web.json_response(await asyncio.to_thread(_run_pushctl, "log", timeout=60))
 
@@ -946,6 +1004,8 @@ def main():
     app.router.add_post("/api/queue/stop", api_queue_stop)
     app.router.add_route("*", "/api/pipeline", api_pipeline)
     app.router.add_post("/api/calibrate", api_calibrate)
+    app.router.add_get("/api/calibration", api_calibration)
+    app.router.add_post("/api/publish", api_publish)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/danmaku", api_danmaku)
     app.router.add_get("/api/schedule", api_schedule)

@@ -17,7 +17,7 @@ import gzip
 import json
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SLICE_RE = re.compile(
@@ -118,6 +118,76 @@ def _last_commit(root: Path, rev: str, rel: str) -> str:
     return _git(root, "log", "-1", "--format=%h %ci", rev, "--", rel).strip()
 
 
+def _load_layers(root: Path, date: str) -> dict:
+    """读「已分发 align.json」+「本地层 matches.json」的 lists 合并视图。
+
+    两处都要: 手动校准先落本地层, split 之后才进 align.json —— 只看前者会让
+    刚校准完的那天显示"未校准"。本地层优先(它是最新状态)。
+    """
+    lists = {}
+    for p in (root / "data" / date / "align.json",
+              root / "danmaku-server" / "matches.json"):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and isinstance(d.get("lists"), dict):
+            lists.update(d["lists"])
+    return lists
+
+
+def _match_items(groups: list) -> list:
+    """把场次条目收敛成校准摘要项(只留展示要用的字段)。"""
+    items = []
+    for lst in groups:
+        for it in lst:
+            if not isinstance(it, dict):
+                continue
+            pages = it.get("pages") if isinstance(it.get("pages"), dict) else {}
+            total = it.get("total_pages")
+            if not isinstance(total, int):
+                total = len(pages)
+            items.append({
+                "title": str(it.get("title") or ""),
+                "bv": str(it.get("bv") or ""),
+                "aligned": len(pages),
+                "total": total,
+                "failed": bool(it.get("align_failed")) and not pages,
+            })
+    return items
+
+
+def _calib_state_for_day(root: Path, date: str, room: str = "", now=None) -> dict:
+    """该数据日的**校准状态**摘要(给数据块表头/卡片用)。
+
+    为什么要单独一列: 数据块表原来只有"推送"状态(采集中/待提交/待推送/已推送),
+    那是**数据有没有出去**; 而"校准"回答的是**回放和直播对上了没有** —— 两件事
+    可以完全不同步: 数据早就推上去了, 校准却还没成(那时用户拉到的是没 offset
+    的弹幕, 播放器不知道往第几秒贴)。混在一列里, 用户只能看到"已推送"却不知道
+    "能不能播"。
+
+    判据与 tools/daygate.calibrated 一致: 至少一场有 BV 且有分P 对齐。
+    返回 {"state": 已校准/未校准/无场次, "aligned": n, "total": m, "items": [...]}。
+    """
+    lists = _load_layers(root, date)
+    # 列表按**比赛日**分组, 而 date 是**数据目录日**; 凌晨场次差一天。
+    try:
+        nxt = (datetime.strptime(date, "%Y-%m-%d").date()
+               + timedelta(days=1)).isoformat()
+    except ValueError:
+        nxt = date
+    groups = [lists[k] for k in (date, nxt) if isinstance(lists.get(k), list)]
+    if not groups:
+        groups = [v for v in lists.values() if isinstance(v, list)]
+    items = _match_items(groups)
+    if not items:
+        return {"state": "无场次", "aligned": 0, "total": 0, "items": []}
+    ok = any(i["bv"] and i["aligned"] for i in items)
+    return {"state": "已校准" if ok else "未校准",
+            "aligned": sum(i["aligned"] for i in items),
+            "total": sum(i["total"] for i in items), "items": items}
+
+
 def _block_state(rel: str, active: bool, dirty: set, head: dict,
                  origin: dict, root: Path, path: Path, push_failed: bool) -> str:
     if active:
@@ -179,7 +249,11 @@ def _room_blocks(root: Path, date: str, room: str, now: datetime,
 
 def scan(root, date: str, rooms=None, now=None, push_failed: bool = False,
          running: bool = False) -> list:
-    """扫某天的全部房间, 返回小时块列表(按房间、时间排序)。"""
+    """扫某天的全部房间, 返回小时块列表(按房间、时间排序)。
+
+    校准状态**不在这里返回**: 它是按天按场次的, 与小时块不是同一维度
+    (一天之内每小时的"有没有对齐"没有意义)。要它请调 calibration(date)。
+    """
     root = Path(root)
     now = now or datetime.now()
     if not DATE_RE.fullmatch(str(date or "")):
@@ -197,3 +271,8 @@ def scan(root, date: str, rooms=None, now=None, push_failed: bool = False,
         out.extend(_room_blocks(root, date, str(room), now, head, origin,
                                 dirty, push_failed, running))
     return out
+
+
+def calibration(root, date: str) -> dict:
+    """该数据日的校准状态(公开入口, 供控制台单独展示)。"""
+    return _calib_state_for_day(Path(root), date, "", None)

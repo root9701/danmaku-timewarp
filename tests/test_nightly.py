@@ -534,12 +534,12 @@ def test_date_run_reports_uncalibrated():
     old_lock = nightly.pipelinelock.TICK_LOCK
     old_tick, old_cal = nightly.tick, nightly.calibrated
 
-    async def fake_tick(dry_run, only_date=""):
+    async def fake_tick(dry_run, only_date="", mode="all"):
         return None
 
     nightly.pipelinelock.TICK_LOCK = tmp / "pipeline.tick.lock"
     nightly.tick = fake_tick
-    args = argparse.Namespace(date="2026-11-06", dry_run=False)
+    args = argparse.Namespace(date="2026-11-06", dry_run=False, mode="all")
     try:
         nightly.calibrated = lambda day: False
         rc = nightly._run_once(args)
@@ -547,7 +547,7 @@ def test_date_run_reports_uncalibrated():
         nightly.calibrated = lambda day: True
         check("已校准返回 0", nightly._run_once(args) == 0)
 
-        async def failing_tick(dry_run, only_date=""):
+        async def failing_tick(dry_run, only_date="", mode="all"):
             return 1
 
         nightly.tick = failing_tick
@@ -558,6 +558,14 @@ def test_date_run_reports_uncalibrated():
         nightly.calibrated = lambda day: False
         args.dry_run = True
         check("dry-run 不报失败", nightly._run_once(args) == 0)
+
+        # 只校准模式: 校准成功就返回 0, 不要求"已提交"
+        args.dry_run = False
+        args.mode = "calibrate"
+        nightly.calibrated = lambda day: True
+        check("calibrate 模式校准成功返回 0", nightly._run_once(args) == 0)
+        nightly.calibrated = lambda day: False
+        check("calibrate 模式未校准返回 4", nightly._run_once(args) == 4)
     finally:
         nightly.pipelinelock.TICK_LOCK = old_lock
         nightly.tick, nightly.calibrated = old_tick, old_cal

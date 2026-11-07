@@ -83,18 +83,37 @@
       </div>
 
       <div class="card">
-        <h2>校准与提交</h2>
+        <h2>校准（把回放对到直播的时刻）</h2>
         <div class="kv">
           <span class="k">数据日</span><span id="cal-date">—</span>
-          <span class="k">对齐状态</span><span id="cal-state">—</span>
-          <span class="k">校准中</span><span id="cal-running">否</span>
+          <span class="k">校准状态</span><span id="cal-state">—</span>
+          <span class="k">进度</span><span id="cal-progress">—</span>
         </div>
+        <table class="blocks">
+          <thead>
+            <tr><th>场次</th><th>分P 对齐</th><th>状态</th></tr>
+          </thead>
+          <tbody id="cal-rows"></tbody>
+        </table>
         <div class="btns">
-          <button id="btn-calibrate" class="primary">校准并提交</button>
+          <button id="btn-calibrate" class="primary">开始校准</button>
           <button id="btn-cal-refresh" class="ghost">刷新状态</button>
         </div>
         <div id="cal-output" class="dm" style="max-height:150px" hidden></div>
-        <div class="hint">提前结束采集后用这个：发现赛程 → 逐分P 对齐 → 分发 → 提交 → 按开关推送。</div>
+        <div class="hint">只算 offset，不提交、不推送。校准完再点下面的「发布」才会出去。</div>
+      </div>
+
+      <div class="card">
+        <h2>发布（分发 + 提交 + 推送）</h2>
+        <div class="kv">
+          <span class="k">待发布日</span><span id="pub-date">—</span>
+          <span class="k">能否发布</span><span id="pub-ready">—</span>
+        </div>
+        <div class="btns">
+          <button id="btn-publish" class="primary">发布</button>
+        </div>
+        <div id="pub-output" class="dm" style="max-height:150px" hidden></div>
+        <div class="hint">把已校准的结果写进 data/ 并提交；未校准的日期不会发布（推送闸门）。</div>
       </div>
 
       <div class="card">
@@ -107,11 +126,10 @@
         <div class="sub" id="push-summary"></div>
         <table class="blocks">
           <thead>
-            <tr><th>时段</th><th>弹幕数</th><th>状态</th><th>推送</th></tr>
+            <tr><th>时段</th><th>弹幕数</th><th>校准</th><th>推送</th><th>提交</th></tr>
           </thead>
           <tbody id="push-blocks"></tbody>
         </table>
-        <div class="sub" id="push-calibration"></div>
         <div id="push-commits" class="commits"></div>
         <div class="btns">
           <button id="btn-push-now">立即推送</button>

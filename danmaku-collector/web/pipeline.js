@@ -1,5 +1,11 @@
-/* 发布进程开关 + 校准提交卡片。
-   依赖 app.js 的 $ / api / toast（同页经典脚本，全局可见）。 */
+/* 发布进程开关 + 校准 + 发布。
+   依赖 app.js 的 $ / api / toast（同页经典脚本，全局可见）。
+
+   校准与发布是**两个独立动作**, 不共用一个按钮:
+     校准 = 发现赛程 + 逐分P 对齐, 只写本地层, 可以反复重算;
+     发布 = 分发到 data/ + 提交 + 按开关推送, 过推送闸门。
+   混在一起时用户点完不知道"算完了没有"和"提交了没有"。
+ */
 'use strict';
 
 function fmtAge(sec) {
@@ -51,61 +57,79 @@ async function pipeAction(action) {
   }
 }
 
-function renderCalState(sch) {
-  const lists = (sch && sch.lists) || {};
-  const align = (sch && sch.align) || {};
-  $('cal-date').textContent = (sch && sch.date) || '—';
-  const parts = [];
-  Object.keys(lists).sort().forEach((matchDate) => {
-    (lists[matchDate] || []).forEach((it) => {
-      const pages = it.pages && typeof it.pages === 'object'
-        ? Object.keys(it.pages).length : 0;
-      const total = it.total_pages || 0;
-      let text = (it.title || '未命名') + '：';
-      if (!it.bv) {
-        text += '无回放';
-      } else if (pages) {
-        text += '已对齐 ' + pages + '/' + (total || '?') + 'P';
-      } else {
-        const rec = findAlign(align, matchDate, it.bv);
-        text += rec && rec.align_failed ? '对齐失败' : '未对齐';
-      }
-      parts.push(text);
-    });
-  });
-  $('cal-state').textContent = parts.length ? parts.join(' · ') : '还没有场次';
+/* ---------------- 校准卡片 ---------------- */
+
+function calBadge(state) {
+  if (state === '已校准') { return 'ok'; }
+  if (state === '未校准') { return 'wait'; }
+  return 'live';                       // 无场次: 还没发现到比赛
 }
 
-function findAlign(align, date, bv) {
-  // 精确 key 是 `{日期}|{会话}|{BV}`(会话名要到 /api/days 之后才定, 这里不知道),
-  // 所以按 "日期前缀 + BV 后缀" 扫, 取分P 最多的那条 —— 与播放端
-  // server._pick_exact_align_rec 同一判据。
-  //
-  // 旧实现先试 `date|bv` 与写死的 `date|7734200|bv`(两个都不是真实 key 形状),
-  // 再"遍历取第一条 bv 命中" —— 同一 BV 在别的日期还留着失败标记时, 会把这一场
-  // 显示成「对齐失败」; 多条残留时也可能先撞上分P 更少的那条。
-  //
-  // 先按比赛日找, 找不到再放宽到任意日期: align 的 key 前缀是**数据目录日**,
-  // 而 lists 的键是**比赛日**, 凌晨场次两者差一天(旧布局就是这样)。
-  const pick = (prefix) => {
-    let best = null;
-    let bestN = -1;
-    Object.keys(align).forEach((k) => {
-      if (prefix && !k.startsWith(prefix + '|')) { return; }
-      if (!k.endsWith('|' + bv)) { return; }
-      const v = align[k];
-      if (!v || typeof v !== 'object') { return; }
-      const n = v.pages && typeof v.pages === 'object' ? Object.keys(v.pages).length : 0;
-      if (n > bestN) { best = v; bestN = n; }
+function renderCalibration(j) {
+  const info = j || {};
+  $('cal-date').textContent = info.date || '—';
+  $('cal-state').textContent = info.state || '—';
+  const n = info.aligned || 0;
+  const t = info.total || 0;
+  $('cal-progress').textContent = t
+    ? (n + '/' + t + ' 个分P 已对齐')
+    : (info.items && info.items.length ? '还没有分P 对齐' : '—');
+
+  const tbody = $('cal-rows');
+  tbody.innerHTML = '';
+  const items = info.items || [];
+  if (!items.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.className = 'empty';
+    td.textContent = '这一天还没有场次（先「刷新赛程」或等夜间巡检发现）';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  } else {
+    items.forEach((it) => {
+      const tr = document.createElement('tr');
+      const title = document.createElement('td');
+      title.textContent = it.title || '未命名';
+      if (!it.bv) { title.title = '这条场次还没有回放 BV'; }
+      const pages = document.createElement('td');
+      pages.className = 'num';
+      pages.textContent = it.total ? (it.aligned + '/' + it.total + 'P') : '—';
+      const state = document.createElement('td');
+      const badge = document.createElement('span');
+      let text = '未校准';
+      if (!it.bv) { text = '无回放'; }
+      else if (it.aligned) { text = '已校准'; }
+      else if (it.failed) { text = '对齐失败'; }
+      badge.className = 'badge ' + (it.bv ? (it.aligned ? 'ok' : 'wait') : 'live');
+      badge.textContent = text;
+      state.appendChild(badge);
+      tr.appendChild(title);
+      tr.appendChild(pages);
+      tr.appendChild(state);
+      tbody.appendChild(tr);
     });
-    return best;
-  };
-  return pick(date) || pick('');
+  }
+
+  const btn = $('btn-calibrate');
+  const busy = !!info.calibrating;
+  btn.disabled = busy;
+  btn.textContent = busy ? '校准中…' : '开始校准';
 }
 
 async function loadCalibration() {
-  try { renderCalState(await api('/api/schedule')); }
-  catch (e) { $('cal-state').textContent = e.message; }
+  try {
+    const j = await api('/api/calibration');
+    renderCalibration(j);
+    // 「发布」按钮的可用性跟着校准状态走: 没校准就不该点发布。
+    const ready = (j.aligned || 0) > 0;
+    $('pub-date').textContent = j.date || '—';
+    $('pub-ready').textContent = ready ? '可以发布' : '未校准，发布会被闸门拦下';
+    $('btn-publish').disabled = !ready || !!j.publishing;
+    $('btn-publish').textContent = j.publishing ? '发布中…' : '发布';
+  } catch (e) {
+    $('cal-state').textContent = e.message;
+  }
 }
 
 async function calibrateNow() {
@@ -114,21 +138,42 @@ async function calibrateNow() {
   btn.disabled = true;
   btn.textContent = '校准中…';
   box.hidden = false;
-  box.textContent = '正在发现赛程、逐分P 对齐、分发并提交…（可能需要几分钟）';
+  box.textContent = '正在发现赛程、逐分P 对齐…（不提交、不推送）';
   try {
     const j = await api('/api/calibrate', { method: 'POST' });
     box.textContent = (j.lines || []).join('\n') || j.output || '完成';
-    toast('校准与提交已完成');
-    await loadCalibration();
-    if (typeof loadPush === 'function') { await loadPush(); }
+    toast('校准完成（结果在本地，尚未提交）');
   } catch (e) {
     box.textContent = (e.message || '校准失败') +
       (e.detail ? ('\n\n' + e.detail) : '');
     toast(e.message, false);
   } finally {
     btn.disabled = false;
-    btn.textContent = '校准并提交';
+    btn.textContent = '开始校准';
     await loadCalibration();
+    if (typeof loadPush === 'function') { await loadPush(); }
+  }
+}
+
+async function publishNow() {
+  const btn = $('btn-publish');
+  const box = $('pub-output');
+  btn.disabled = true;
+  btn.textContent = '发布中…';
+  box.hidden = false;
+  box.textContent = '正在分发、提交、按开关推送…';
+  try {
+    const j = await api('/api/publish', { method: 'POST' });
+    box.textContent = (j.lines || []).join('\n') || j.output || '完成';
+    toast('发布完成');
+  } catch (e) {
+    box.textContent = (e.message || '发布失败') +
+      (e.detail ? ('\n\n' + e.detail) : '');
+    toast(e.message, false);
+  } finally {
+    btn.textContent = '发布';
+    await loadCalibration();
+    if (typeof loadPush === 'function') { await loadPush(); }
   }
 }
 
@@ -137,6 +182,7 @@ function bindPipeline() {
   $('btn-pipe-stop').addEventListener('click', () => pipeAction('stop'));
   $('btn-calibrate').addEventListener('click', calibrateNow);
   $('btn-cal-refresh').addEventListener('click', loadCalibration);
+  $('btn-publish').addEventListener('click', publishNow);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

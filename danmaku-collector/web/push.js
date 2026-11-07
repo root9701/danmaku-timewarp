@@ -19,7 +19,7 @@ function badgeClass(state) {
   return 'wait';
 }
 
-function renderBlocks(blocks, multipleRooms) {
+function renderBlocks(blocks, multipleRooms, cal) {
   const tbody = $('push-blocks');
   tbody.innerHTML = '';
   // 空片(0 条且已推送)通常是收尾时补的 40 字节占位, 不占一行;
@@ -29,13 +29,23 @@ function renderBlocks(blocks, multipleRooms) {
   if (!shown.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.className = 'empty';
     td.textContent = '还没有数据块';
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
   }
+  // 校准状态是**按天**的(对齐按场次/分P 算), 不是按小时块 —— 所以整列取同一天
+  // 的值。这一列回答"能不能播", 推送列回答"数据有没有出去", 两件事互不同步。
+  const calText = cal && cal.state ? cal.state : '—';
+  const calCls = cal && cal.state === '已校准' ? 'ok'
+    : (cal && cal.state === '未校准' ? 'wait' : 'live');
+  const calTitle = cal && cal.items && cal.items.length
+    ? cal.items.map((i) => (i.title || '未命名') + ' '
+        + (i.aligned ? ('已对齐 ' + i.aligned + '/' + i.total + 'P') : '未对齐'))
+        .join('\n')
+    : '';
   shown.forEach((b) => {
     const tr = document.createElement('tr');
     if (b.active) { tr.className = 'active'; }
@@ -50,6 +60,12 @@ function renderBlocks(blocks, multipleRooms) {
       sc.textContent = ' +' + b.sc_count + ' SC';
       count.appendChild(sc);
     }
+    const calTd = document.createElement('td');
+    const calBadge = document.createElement('span');
+    calBadge.className = 'badge ' + calCls;
+    calBadge.textContent = calText;
+    calBadge.title = calTitle;
+    calTd.appendChild(calBadge);
     const state = document.createElement('td');
     const badge = document.createElement('span');
     badge.className = 'badge ' + badgeClass(b.state);
@@ -61,6 +77,7 @@ function renderBlocks(blocks, multipleRooms) {
     push.title = b.name || '';
     tr.appendChild(time);
     tr.appendChild(count);
+    tr.appendChild(calTd);
     tr.appendChild(state);
     tr.appendChild(push);
     tbody.appendChild(tr);
@@ -91,20 +108,6 @@ function renderCommits(commits) {
     row.appendChild(text);
     box.appendChild(row);
   });
-}
-
-function renderCalibration(cal) {
-  const box = $('push-calibration');
-  if (!cal) { box.textContent = ''; return; }
-  if (cal.ok && cal.items && cal.items.length) {
-    box.textContent = '校准：' + cal.items.map((i) => {
-      const n = i.aligned || 0;
-      const t = i.total || 0;
-      return (i.title || '未命名') + ' ' + (n ? ('已对齐 ' + n + '/' + t + 'P') : '未对齐');
-    }).join(' · ');
-  } else {
-    box.textContent = '校准：' + (cal.message || '还没有对齐记录');
-  }
 }
 
 function renderPush(j) {
@@ -144,8 +147,7 @@ function renderPush(j) {
   }
 
   const multipleRooms = (j.scope && j.scope.rooms && j.scope.rooms.length > 1);
-  renderBlocks(j.blocks || [], multipleRooms);
-  renderCalibration(j.calibration);
+  renderBlocks(j.blocks || [], multipleRooms, j.calibration);
   renderCommits(pending);
 
   const btn = $('btn-push-now');

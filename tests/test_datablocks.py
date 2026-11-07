@@ -101,10 +101,54 @@ def test_parse() -> None:
     check("跨零点格式", datablocks.fmt_min(1410 + 60) == "00:30")
 
 
+def test_calibration_state() -> None:
+    """校准状态必须与推送状态分开: 数据可以"已推送"却"未校准"。
+
+    这是 2026-11-07 用户反馈的核心: 数据块表只有推送状态(已推送/待推送…),
+    用户看到"已推送"就以为能播, 其实那天根本没对齐 —— 拉下来是一堆没有
+    offset 的弹幕, 播放器不知道该贴到第几秒。
+    """
+    print("\n[校准状态] 与推送状态分开算")
+    with tempfile.TemporaryDirectory(prefix="dmk_blocks_") as td:
+        repo = make_repo(Path(td))
+        # 已推送(在 HEAD 与 origin 都有), 但没有任何 align.json -> 未校准
+        cal = datablocks.calibration(repo, "2026-11-04")
+        check("没有场次时 state=无场次", cal["state"] == "无场次", str(cal))
+        check("没有场次时 items 为空", cal["items"] == [], str(cal["items"]))
+
+        # 写入 align.json: 一场有 BV + 1 个分P -> 已校准
+        align = repo / "data" / "2026-11-04" / "align.json"
+        align.write_text(json.dumps({
+            "lists": {"2026-11-04": [
+                {"title": "TES vs IG", "bv": "BV1X", "total_pages": 3,
+                 "pages": {"1": {"offset_sec": 1.0}}}]},
+            "align": {}}, ensure_ascii=False), encoding="utf-8")
+        cal = datablocks.calibration(repo, "2026-11-04")
+        check("有分P 对齐时 state=已校准", cal["state"] == "已校准", str(cal))
+        check("进度 1/3", cal["aligned"] == 1 and cal["total"] == 3, str(cal))
+
+        # 只有 BV 没有分P -> 未校准(闸门判据一致)
+        align.write_text(json.dumps({
+            "lists": {"2026-11-04": [
+                {"title": "TES vs IG", "bv": "BV1X", "total_pages": 3,
+                 "pages": {}}]},
+            "align": {}}, ensure_ascii=False), encoding="utf-8")
+        cal = datablocks.calibration(repo, "2026-11-04")
+        check("只有 BV 没有分P -> 未校准", cal["state"] == "未校准", str(cal))
+
+        # 没有 BV -> 未校准
+        align.write_text(json.dumps({
+            "lists": {"2026-11-04": [{"title": "TES vs IG", "bv": ""}]},
+            "align": {}}, ensure_ascii=False), encoding="utf-8")
+        cal = datablocks.calibration(repo, "2026-11-04")
+        check("没有 BV -> 未校准", cal["state"] == "未校准", str(cal))
+
+
 def main() -> int:
     print("datablocks 回归")
     test_parse()
     test_states()
+    test_calibration_state()
     print()
     if FAILED:
         print(f"FAIL: {len(FAILED)} 项未过")

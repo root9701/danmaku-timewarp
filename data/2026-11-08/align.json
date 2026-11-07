@@ -10,9 +10,9 @@
     },
     "2026-11-08|7734200|BV1ua4W6XEJd": {
       "auto": {
-        "confidence": 7.062,
+        "confidence": 6.867,
         "method": "audiofp",
-        "ts": "2026-11-08T07:04:31"
+        "ts": "2026-11-08T07:29:09"
       },
       "bv": "BV1ua4W6XEJd",
       "date": "2026-11-08",
@@ -21,7 +21,7 @@
       "pages": {
         "1": {
           "candidates": 1,
-          "confidence": 7.062,
+          "confidence": 6.867,
           "duration": 3237,
           "matched_seconds": 1440.0,
           "method": "audiofp",
@@ -29,7 +29,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-08T07:04:31",
+          "ts": "2026-11-08T07:29:09",
           "votes": 8
         }
       },
@@ -44,7 +44,7 @@
         "offset_sec": 46.503,
         "pages": {
           "1": {
-            "confidence": 7.062,
+            "confidence": 6.867,
             "offset_sec": 46.503,
             "part": "第一局"
           }

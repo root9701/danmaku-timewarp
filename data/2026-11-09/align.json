@@ -1,0 +1,57 @@
+{
+  "align": {
+    "2026-11-09|7734200": {
+      "bvs": [
+        "BV1TgWp6MEHJ"
+      ],
+      "date": "2026-11-09",
+      "file": "7734200",
+      "offset_sec": 49.305
+    },
+    "2026-11-09|7734200|BV1TgWp6MEHJ": {
+      "auto": {
+        "confidence": 11.466,
+        "method": "audiofp",
+        "ts": "2026-11-09T07:37:13"
+      },
+      "bv": "BV1TgWp6MEHJ",
+      "date": "2026-11-09",
+      "file": "7734200",
+      "offset_sec": 49.305,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 11.466,
+          "duration": 3061,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 49.305,
+          "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-09T07:37:13",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月9日 BLG vs T1",
+      "total_pages": 2
+    }
+  },
+  "lists": {
+    "2026-11-09": [
+      {
+        "bv": "BV1TgWp6MEHJ",
+        "offset_sec": 49.305,
+        "pages": {
+          "1": {
+            "confidence": 11.466,
+            "offset_sec": 49.305,
+            "part": "第一局"
+          }
+        },
+        "title": "BLG vs T1",
+        "total_pages": 2
+      }
+    ]
+  }
+}

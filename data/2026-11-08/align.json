@@ -1,18 +1,20 @@
 {
   "align": {
     "2026-11-08|7734200": {
+      "bv": "BV1ua4W6XEJd",
       "bvs": [
         "BV1ua4W6XEJd"
       ],
       "date": "2026-11-08",
       "file": "7734200",
-      "offset_sec": 46.503
+      "offset_sec": 46.503,
+      "title": "IG vs GEN"
     },
     "2026-11-08|7734200|BV1ua4W6XEJd": {
       "auto": {
         "confidence": 6.146,
         "method": "audiofp",
-        "ts": "2026-11-08T09:06:14"
+        "ts": "2026-11-08T22:35:48"
       },
       "bv": "BV1ua4W6XEJd",
       "date": "2026-11-08",
@@ -29,7 +31,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-08T09:06:14",
+          "ts": "2026-11-08T22:35:48",
           "votes": 8
         },
         "2": {
@@ -42,7 +44,7 @@
           "part": "第二局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-08T09:06:14",
+          "ts": "2026-11-08T22:35:48",
           "votes": 8
         },
         "3": {
@@ -55,12 +57,25 @@
           "part": "第三局",
           "picked_by": "多段投票 7/8 段一致(多段一致、7 张强票、强票+同向)",
           "total_segments": 8,
-          "ts": "2026-11-08T09:06:14",
+          "ts": "2026-11-08T22:35:48",
           "votes": 7
+        },
+        "5": {
+          "candidates": 1,
+          "confidence": 3.07,
+          "duration": 134,
+          "matched_seconds": 133.2,
+          "method": "audiofp",
+          "offset_sec": 8201.649,
+          "part": "TOP",
+          "picked_by": "多段投票 3/8 段一致(多段一致)",
+          "total_segments": 8,
+          "ts": "2026-11-08T22:35:48",
+          "votes": 3
         }
       },
       "title": "【2026全球总决赛】11月8日 IG vs GEN",
-      "total_pages": 4
+      "total_pages": 6
     }
   },
   "lists": {
@@ -83,11 +98,16 @@
             "confidence": 9.922,
             "offset_sec": 6657.662,
             "part": "第三局"
+          },
+          "5": {
+            "confidence": 3.07,
+            "offset_sec": 8201.649,
+            "part": "TOP"
           }
         },
         "start_ms": 1794088800000,
         "title": "IG vs GEN",
-        "total_pages": 4
+        "total_pages": 6
       }
     ]
   }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-07T23:29:14Z",
+  "generated_at": "2026-11-08T00:32:27Z",
   "latest": "2026-11-08",
   "days": {
     "2026-10-26": {
@@ -683,6 +683,7 @@
     "2026-11-08": {
       "files": [
         "data/2026-11-08/7734200/7734200_s0600.jsonl.gz",
+        "data/2026-11-08/7734200/7734200_s0700.jsonl.gz",
         "data/2026-11-08/7734200/manifest.json",
         "data/2026-11-08/align.json"
       ],
@@ -693,20 +694,25 @@
           "sha256": "2de9b81038d214b90ed9a0c3eb8de5fef098cd5d56767c1c9befcbad53725749"
         },
         {
+          "name": "data/2026-11-08/7734200/7734200_s0700.jsonl.gz",
+          "bytes": 1537736,
+          "sha256": "8c817aa21760b1fac3f41ee0cf0ee00c44b49782a0cc00fbc3b347207632ba91"
+        },
+        {
           "name": "data/2026-11-08/7734200/manifest.json",
-          "bytes": 340,
-          "sha256": "936bd19265737ad1b7d152f40758a9adf6e1bbd4c94919f36e5360d8505b3267"
+          "bytes": 372,
+          "sha256": "14d53306a516c05869a41326a2407f21ad00b9c7569ab53115b5b7a723ad9431"
         },
         {
           "name": "data/2026-11-08/align.json",
-          "bytes": 1405,
-          "sha256": "c3bc8ff0eeea4053a0d0e263bf67f1b32aed8fa787473e8c33e6aa6c2861c77f"
+          "bytes": 2002,
+          "sha256": "ff21438fe89384b62c9e333fa74c688aa65b11f6f78584acc36e271619f27056"
         }
       ],
       "sessions": [
         "data/2026-11-08/7734200"
       ],
-      "bytes": 1450981
+      "bytes": 2989346
     }
   }
 }

@@ -10,9 +10,9 @@
     },
     "2026-11-08|7734200|BV1ua4W6XEJd": {
       "auto": {
-        "confidence": 6.867,
+        "confidence": 6.146,
         "method": "audiofp",
-        "ts": "2026-11-08T07:29:09"
+        "ts": "2026-11-08T08:32:22"
       },
       "bv": "BV1ua4W6XEJd",
       "date": "2026-11-08",
@@ -21,20 +21,33 @@
       "pages": {
         "1": {
           "candidates": 1,
-          "confidence": 6.867,
+          "confidence": 6.146,
           "duration": 3237,
           "matched_seconds": 1440.0,
           "method": "audiofp",
           "offset_sec": 46.503,
           "part": "第一局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-08T08:32:22",
+          "votes": 8
+        },
+        "2": {
+          "candidates": 1,
+          "confidence": 6.813,
+          "duration": 2791,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 3537.657,
+          "part": "第二局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-08T07:29:09",
+          "ts": "2026-11-08T08:32:22",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月8日 IG vs GEN",
-      "total_pages": 2
+      "total_pages": 3
     }
   },
   "lists": {
@@ -44,13 +57,18 @@
         "offset_sec": 46.503,
         "pages": {
           "1": {
-            "confidence": 6.867,
+            "confidence": 6.146,
             "offset_sec": 46.503,
             "part": "第一局"
+          },
+          "2": {
+            "confidence": 6.813,
+            "offset_sec": 3537.657,
+            "part": "第二局"
           }
         },
         "title": "IG vs GEN",
-        "total_pages": 2
+        "total_pages": 3
       }
     ]
   }

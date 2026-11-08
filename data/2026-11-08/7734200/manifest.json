@@ -4,11 +4,12 @@
   "match_date": "2026-11-08",
   "is_test": false,
   "start_ms": 1794088803199,
-  "end_ms": 1794092401471,
-  "dm_count": 62494,
-  "sc_count": 35,
+  "end_ms": 1794096001298,
+  "dm_count": 126989,
+  "sc_count": 78,
   "files": [
-    "7734200_s0600.jsonl.gz"
+    "7734200_s0600.jsonl.gz",
+    "7734200_s0700.jsonl.gz"
   ],
   "afp": null,
   "meta": null,

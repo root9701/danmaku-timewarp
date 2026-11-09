@@ -233,19 +233,33 @@
       for (var j = 0; j < dm.length; j++) { dm[j].rel = dm[j].ts - b0; }
       return;
     }
+    // 一条弹幕**只归一段**。为什么必须这样:
+    // 各分P 的墙钟窗口可能互相重叠 —— TOP/TOP5 这类"精彩集锦"分P 的音频是从
+    // 正片剪出来的, 算出来的位置会整段落在某一局里面(实测 2026-11-09 的 P7 完全
+    // 落在 P4 的 177 秒区间内, 11-04/11-05/11-06/11-08 同样如此)。
+    //
+    // 旧实现是"每段都扫一遍全部弹幕、命中就 push", 于是重叠区的弹幕:
+    //   ① 被 push 两次(同一对象引用两次, 屏幕上同一句会飘两遍);
+    //   ② rel 被**后一段**覆盖(循环顺序按 w0 升序, 集锦段在后面)。
+    // 结果是正片那一局中间空出 177 秒, 弹幕却全跑到了那个本不该存在的 TOP 块里。
+    //
+    // 现在改成"先到先得": segs 已按 w0 升序, 一条弹幕命中第一个包含它的段就停。
+    // 先开始的分P(正片)持有该时刻, 后开始的集锦块拿不到已被认领的弹幕。
     var kept = [];
-    for (var si = 0; si < segs.length; si++) {
-      var s = segs[si];
-      // 未对齐的分P(locatable=false)没有可信的墙钟区间, 它的弹幕直接丢弃 ——
-      // 硬塞一个猜出来的位置比丢掉更糟: 会把别的分P 的弹幕错位到它那里。
-      if (!s.locatable || s.w0 == null) { continue; }
-      for (var i = 0; i < dm.length; i++) {
-        var ts = dm[i].ts;
-        if (ts >= s.w0 && ts < s.w1) {
-          dm[i].rel = s.s0 + (ts - s.w0);
-          kept.push(dm[i]);
-        }
+    for (var i = 0; i < dm.length; i++) {
+      var ts = dm[i].ts;
+      var owner = null;
+      for (var si = 0; si < segs.length; si++) {
+        var s = segs[si];
+        // 未对齐的分P(locatable=false)没有可信的墙钟区间, 不参与认领 ——
+        // 硬塞一个猜出来的位置比丢掉更糟: 会把别的分P 的弹幕错位到它那里。
+        if (!s.locatable || s.w0 == null) { continue; }
+        if (ts >= s.w0 && ts < s.w1) { owner = s; break; }
       }
+      // 落在局间休息(没有任何分P 覆盖)的弹幕丢弃, 不压缩到相邻分P。
+      if (!owner) { continue; }
+      dm[i].rel = owner.s0 + (ts - owner.w0);
+      kept.push(dm[i]);
     }
     // 按 rel 升序(同一时刻保持原 ts 相对顺序, 稳定排序)
     kept.sort(function (a, b) { return a.rel - b.rel || a.ts - b.ts; });

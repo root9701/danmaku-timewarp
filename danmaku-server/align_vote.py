@@ -104,9 +104,19 @@ def cluster_score(c):
 
 
 def _reasons(n_vote, n_strong, n_seg, need, max_conf, min_conf, very_strong_conf):
-    """采纳理由。任一条成立即采信, 理由写进 picked_by 供排查。"""
+    """采纳理由。任一条成立即采信, 理由写进 picked_by 供排查。
+
+    「多段一致」这一条**不能只看票数**: need = ceil(n_seg/3) 在 8 段时只有 3 票,
+    而 TOP/TOP5 这类"精彩集锦"分P 的音频是从别的时段剪出来的, 在直播里本来
+    就没有连续对应位置 —— 它靠零星巧合也能凑到 3~4 票(实测 2026-11-04 P7、
+    11-05 P6、11-06 P6、11-08 P5、11-09 P7 全是 3~4/8 票、conf 2.2~3.1)。
+    这些假位置一旦落进某一局的区间里, 会把那一局的弹幕整段抢走。
+
+    真分P 的实测分布是 7~8/8 票、conf ≥ 3.8, 与假位置没有重叠。所以这里要求
+    「票数够」**且**「至少有一张强票」, 把纯靠票数凑上来的弱匹配挡在外面。
+    """
     reasons = []
-    if n_vote >= need:
+    if n_vote >= need and n_strong >= 1:
         reasons.append("多段一致")
     if n_strong >= 2:
         reasons.append("%d 张强票" % n_strong)

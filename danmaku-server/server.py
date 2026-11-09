@@ -3342,6 +3342,32 @@ def _schedule_window_for_bv(date: str, bv: str):
     return None, "赛程列表里没有该 BV"
 
 
+def _contained_pages(page_results: dict) -> list:
+    """落点被另一个**更长**分P 完全包含的分P -> [(页, 包含它的页)]。
+
+    为什么需要: TOP/TOP5 这类"精彩集锦"的音频是从正片剪出来的, 对齐时会在
+    正片区间内找到自洽位置(实测 2026-11-09 P7 完全落在 P4 的 177 秒里,
+    11-04/11-05/11-06/11-08 同样是 100% 重叠)。这类落点一旦写进 align.json,
+    播放端会把那一局的弹幕整段划给集锦块, 正片中间空出一大段。
+
+    判据用"完全包含"而不是"有重叠": 相邻分P 之间常有 1 秒左右的重叠
+    (源视频本身重复了几秒画面), 那种是正常的, 不能剔。
+    """
+    out = []
+    for pg, r in page_results.items():
+        lo = r["offset_sec"]
+        hi = lo + (r.get("duration") or 0)
+        for pg2, r2 in page_results.items():
+            if pg2 == pg or (r2.get("duration") or 0) <= (r.get("duration") or 0):
+                continue
+            lo2 = r2["offset_sec"]
+            hi2 = lo2 + (r2.get("duration") or 0)
+            if lo2 <= lo and hi <= hi2:
+                out.append((pg, pg2))
+                break
+    return out
+
+
 async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                          local_audio=None, record_failures: bool = True) -> dict:
     """自动对齐全流程(读 afp -> 逐分P 回放指纹 -> 互相关 -> 写 matches)。
@@ -3541,6 +3567,21 @@ async def run_autocalign(date: str, file: str, bv: str, page: int, session,
                 "method": "audiofp",
                 "ts": now_iso,
             }
+        # 结构性剔除: 落点被另一个**更长**分P 完全包含的分P 不可能是独立片段。
+        # 为什么需要: TOP/TOP5 这类"精彩集锦"的音频是从正片剪出来的, 对齐时会在
+        # 正片区间内找到自洽位置(实测 2026-11-09 P7 完全落在 P4 的 177 秒里,
+        # 11-04/11-05/11-06/11-08 同样是 100% 重叠)。写进 align.json 后, 播放端
+        # 会把那一局的弹幕整段划给集锦块, 正片中间空出一大段。
+        for pg, pg2 in _contained_pages(page_results):
+            pages_map.pop(str(pg), None)
+            page_errors[pg] = ("落点(offset=%.3fs)被 P%d 完全包含, 判定为集锦/剪辑片段"
+                               "而非独立分P" % (page_results[pg]["offset_sec"], pg2))
+            print(f"[autocalign] {date}/{file} P{pg}({page_results[pg]['part']}) 剔除: "
+                  f"落点被 P{pg2} 完全包含", flush=True)
+            # page_results 也要同步, 否则下面的"顶层 offset 取第一分P"会引用到已剔除的页。
+            page_results.pop(pg, None)
+        if not page_results:
+            raise ApiError("所有分P 的落点都被别的分P 完全包含, 无可信对齐结果")
         # 只把"最终仍然没有 offset"的页记进 page_errors: 有旧值且只是暂时取不到
         # 音频的页继续用旧值, 不写失败标记(否则前端会以为那局没有对齐结果)。
         # record_failures=False 时完全不写(夜间流水线用, 避免把临时失败带进分发层)。

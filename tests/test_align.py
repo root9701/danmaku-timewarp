@@ -654,6 +654,83 @@ def test_session_window_intersects_schedule() -> None:
           f"宽度 {sess_width:.1f} 小时")
 
 
+def test_weak_votes_need_strong_vote() -> None:
+    """「票数够」不能单独成立: 集锦分P 靠零星巧合也能凑到 3~4 票。
+
+    踩过的坑: need = ceil(n_seg/3) 在 8 段时只有 3 票, 于是 TOP/TOP5 这类
+    "精彩集锦"(音频从正片剪出来, 直播里本来没有连续对应位置) 靠 3/8 票就被采纳,
+    算出的假落点整段落在某一局里, 把那一局的弹幕抢走。
+    实测 2026-11-04 P7、11-06 P6、11-09 P7 都是 3/8 票、conf 2.2~2.5 被采纳。
+    """
+    import align_vote
+
+    n_seg, need = 8, 3
+    min_conf, hop = 2.0, 0.4
+    hop_scale = max(0.4, min(1.0, 0.2 / max(hop, 1e-6)))
+    strong = max(6.0, min_conf * 3) * hop_scale
+    very_strong = 7.0 * hop_scale
+
+    # 弱票(conf 低于强票门槛)且只有 3 票 -> 不得采纳
+    r = align_vote._reasons(3, 0, n_seg, need, 2.5, min_conf, very_strong)
+    check("3/8 票且无强票 -> 不采纳", r == [], str(r))
+
+    # 同样 3 票, 但其中一张是强票 -> 可以采纳
+    r2 = align_vote._reasons(3, 1, n_seg, need, strong + 0.1, min_conf, very_strong)
+    check("3/8 票但有强票 -> 采纳", len(r2) > 0, str(r2))
+
+    # 真分P 的实测形态: 8/8 票 + 多张强票 -> 照常采纳
+    r3 = align_vote._reasons(8, 6, n_seg, need, strong + 2, min_conf, very_strong)
+    check("8/8 票 + 6 张强票 -> 采纳", "全票一致" in r3, str(r3))
+
+
+def test_contained_page_rejected() -> None:
+    """落点被更长分P 完全包含的分P 必须剔除(集锦/剪辑片段)。
+
+    实测 2026-11-09: P7(TOP) offset=12208.1 dur=177 完全落在 P4(第四局)
+    offset=9969.3 dur=3097 之内 -> 播放端把 P4 那 177 秒的弹幕全划给了 TOP 块,
+    正片中间空出一大段。11-04/11-05/11-06/11-08 是同样形状。
+
+    判据必须用"完全包含"而非"有重叠": 相邻分P 之间常有约 1 秒重叠
+    (源视频重复了几秒画面), 那种是正常的。
+    """
+    # 复刻 server.py 里那段判定逻辑(纯函数部分)
+    def contained(pages):
+        out = []
+        for pg, r in pages.items():
+            lo, hi = r["offset_sec"], r["offset_sec"] + (r["duration"] or 0)
+            for pg2, r2 in pages.items():
+                if pg2 == pg or (r2["duration"] or 0) <= (r["duration"] or 0):
+                    continue
+                lo2 = r2["offset_sec"]
+                hi2 = lo2 + (r2["duration"] or 0)
+                if lo2 <= lo and hi <= hi2:
+                    out.append(pg)
+                    break
+        return out
+
+    # 真实形态: 集锦完全落在一局之内 -> 剔除
+    pages = {
+        "4": {"offset_sec": 9969.312, "duration": 3097},
+        "7": {"offset_sec": 12208.104, "duration": 177},
+    }
+    check("完全包含的集锦被剔除", contained(pages) == ["7"], str(contained(pages)))
+
+    # 相邻分P 约 1 秒重叠 -> 都不能剔
+    pages2 = {
+        "4": {"offset_sec": 9969.312, "duration": 3097},
+        "5": {"offset_sec": 13065.312, "duration": 815},
+    }
+    check("1 秒重叠不算包含", contained(pages2) == [], str(contained(pages2)))
+
+    # 正常独立分P -> 一个都不剔
+    pages3 = {
+        "1": {"offset_sec": 49.305, "duration": 3061},
+        "2": {"offset_sec": 3364.161, "duration": 2881},
+        "3": {"offset_sec": 6454.221, "duration": 3312},
+    }
+    check("正常分P 全保留", contained(pages3) == [], str(contained(pages3)))
+
+
 def main() -> int:
     print("对齐算法回归")
     for fn in (test_align_recovers_offset,
@@ -671,7 +748,9 @@ def main() -> int:
                test_mp4_fallback_headless,
                test_ffmpeg_headers_option,
                test_session_window_guards_replay,
-               test_session_window_intersects_schedule):
+               test_session_window_intersects_schedule,
+               test_weak_votes_need_strong_vote,
+               test_contained_page_rejected):
         print(f"\n[{fn.__name__}]")
         fn()
     print(f"\n{'FAIL' if FAILED else 'OK'}: {len(FAILED)} 项失败")

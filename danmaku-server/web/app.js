@@ -1475,6 +1475,13 @@
   var FONT = 'bold 20px "Microsoft YaHei", "PingFang SC", sans-serif';
   var TRACK_H = 28;
   var MAX_ONSCREEN = 160;
+  // 同一帧里出生的弹幕, 入场 x 按序号额外右移这么多像素(见 emitDm 的说明)。
+  // 取 24px 的依据: 相邻帧的间距是 v*dt ≈ 3px, 而 24px 让同帧两条差约 0.14s 入场,
+  // 既打散竖列, 又不会让最后一条"排到屏幕外很远"。
+  var SPAWN_STAGGER = 24;
+  // 错开最多算到本帧第几条。必须设上限: 跳转时一帧可能投出几十条, 不夹住就会
+  // 把最后一条推到屏幕外几十秒才入场的位置, 表现为"弹幕不见了"。
+  var STAGGER_CAP = 8;
 
   /* ---------------- 屏蔽词 ----------------
    * 判定是「整条丢弃」: 命中后既不上屏, 也不进右侧列表 —— 与「弹幕数量」的抽稀
@@ -1662,6 +1669,8 @@
   var W = 0, H = 0, dpr = 1;
   var tracks = [];
   var active = [];
+  // 本帧已投出的弹幕条数, 用于错开同帧入场 x(见 emitDm)。每帧在 pump 前清零。
+  var spawnSeq = 0;
 
   function resetTracks() {
     var n = Math.max(1, Math.floor((H * settings.area) / TRACK_H));
@@ -1690,6 +1699,19 @@
     return lo;
   }
 
+  // 每帧最多投出几条弹幕(还要再乘以播放倍速, 见 pump)。
+  // 为什么必须限: 弹幕匀速左移, 两条同时入场且速度相同时, 它们的相对位置
+  // 永远不变 —— 同帧投出 N 条就是从入场到出屏一直叠成 N 条竖线。
+  // 2026-11-09 夺冠瞬间(同毫秒 14 条)在截图上就是这个形状。
+  // 为什么是 2: 实测本仓数据平均 19 条/秒、峰值 33 条/秒, 60fps 下 0.32 条/帧,
+  // 2 条/帧有约 6 倍余量, 密集段也追得上。
+  var PER_FRAME = 2;
+  // 积压超过这么多条就不再慢慢补投, 直接跳到最新位置。
+  // 为什么需要: 拖动进度条/切分P 时会有成百上千条同时"到期", 逐帧补投会让
+  // 弹幕迟到十几秒(屏幕上飘的全是几分钟前的弹幕)。这不是正常播放, 该丢就丢。
+  // 240 条 ≈ 12 秒的正常流量, 正常播放到不了, 只有跳转才会。
+  var SNAP_BACKLOG = 240;
+
   function pump() {
     var nowMs = getV() * 1000;
     var n = upperBound(state.danmaku, nowMs);
@@ -1698,9 +1720,24 @@
       resetTracks();
       state.idx = n;
     }
-    var budget = 60;
+    // 跳转(时间轴回退或大跨度前进): 积压过多说明不是自然播放, 直接对齐。
+    if (n - state.idx > SNAP_BACKLOG) {
+      state.idx = n;
+      return;
+    }
+    // spawnSeq 按帧重置: emitDm 用它错开同帧入场 x, 必须"每帧从 0 数起"。
+    spawnSeq = 0;
+    // 预算按**倍速**放大: 到期判定用的是视频时间(getV), 3 倍速下每个真实帧
+    // 覆盖 3 倍视频时间, 到期条数也涨 3 倍。固定 2 条在 3x@低帧率下不够,
+    // 会持续积压直到撞 SNAP_BACKLOG 被整批丢弃(实测 3x@15fps 丢弃 117 次)。
+    // 放大后"每单位视频时间投多少条"恒定, 与帧率、倍速都无关。
+    var budget = PER_FRAME * Math.max(1, effectiveRate());
+    budget = Math.floor(budget);
     while (state.idx < n && budget-- > 0) { emitDm(state.danmaku[state.idx++]); }
-    if (state.idx < n) { state.idx = n; }
+    // 这里**不能**写 `if (state.idx < n) state.idx = n;`:
+    // 那是旧实现"一帧投不完就全丢掉"的写法, 与限速互斥 —— 加了限速还保留它,
+    // 等于每帧只投 2 条、其余全丢, 密集段会丢掉绝大部分弹幕。
+    // 剩下的留到下一帧继续投, 由上面的 SNAP_BACKLOG 兜住跳转场景。
   }
 
   function makeSprite(text) {
@@ -1741,11 +1778,27 @@
     appendChat(d, false);
     if (d.ty === 'sc') { showSc(d); return; }
     if (!state.dmOn) { return; }
+    // 上屏上限先判, **再**占轨道。顺序不能反:
+    // 旧代码先写 tracks[slot] 再判 active 上限, 超限的那条成为"幽灵" ——
+    // 它占着轨道却永远不进 active, 既不移动也永不出屏, 于是那条轨道
+    // 从此再也分配不出去(判据是 last.x + last.w < W-24, 而它 x 恒为 W+4)。
+    // 实测 2026-11-09 第四局泄漏 11 条, 密集段可用轨道被逐条吃掉。
+    if (active.length >= MAX_ONSCREEN) { return; }
     var sp = makeSprite(d.t);
     // 速度倍率: 基准速度与画布宽度挂钩(宽屏跑得快, 保持"穿过屏幕的时间"接近),
     // 再乘用户的 speed 设置。调慢可以让密集时段的弹幕看得清。
     var baseV = Math.max(140, W / 9) * settings.speed;
-    var it = { sp: sp, w: sp.dw, x: W + 4, y: 0, v: baseV };
+    // 入场 x 按"本帧第几条"错开:
+    // 同一帧出生的弹幕 x 与速度都相同, 位移也就每帧完全相同, 于是它们
+    // **全程保持 x 一致**, 叠成一条贯穿整屏的刚性竖列(夺冠瞬间同毫秒十几条时
+    // 最明显, 见 2026-11-09 09:36 的截图)。错开入场 x 即可打散, 而它们各自
+    // 仍按同一速度匀速左移, 观感与 B站 的斜向瀑布一致。
+    // 用 spawnSeq 而不是取 active.length: 后者含上一帧的存量, 会让每帧的
+    // 第一条都被推出去一截, 越播越偏。
+    var it = { sp: sp, w: sp.dw,
+               x: W + 4 + Math.min(spawnSeq, STAGGER_CAP) * SPAWN_STAGGER,
+               y: 0, v: baseV };
+    spawnSeq++;
     var slot = -1;
     for (var i = 0; i < tracks.length; i++) {
       var last = tracks[i];
@@ -1754,7 +1807,6 @@
     if (slot < 0) { return; }
     tracks[slot] = it;
     it.y = slot * TRACK_H + TRACK_H / 2 + 2;
-    if (active.length >= MAX_ONSCREEN) { return; }
     active.push(it);
   }
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "app_version": "1.4.2",
-  "generated_at": "2026-11-09T01:57:14Z",
+  "generated_at": "2026-11-09T02:39:22Z",
   "latest": "2026-11-09",
   "days": {
     "2026-10-26": {
@@ -734,13 +734,26 @@
     },
     "2026-11-09": {
       "files": [
+        "data/2026-11-09/7734200/7734200.afp.jsonl.gz",
+        "data/2026-11-09/7734200/7734200.meta.json",
         "data/2026-11-09/7734200/7734200_s0600.jsonl.gz",
         "data/2026-11-09/7734200/7734200_s0700.jsonl.gz",
         "data/2026-11-09/7734200/7734200_s0800.jsonl.gz",
+        "data/2026-11-09/7734200/7734200_s0900.jsonl.gz",
         "data/2026-11-09/7734200/manifest.json",
         "data/2026-11-09/align.json"
       ],
       "file_sizes": [
+        {
+          "name": "data/2026-11-09/7734200/7734200.afp.jsonl.gz",
+          "bytes": 835343,
+          "sha256": "98ee84b38d303938d0eb1324556e260749d58eda0b3eb466e111ecc4274448e8"
+        },
+        {
+          "name": "data/2026-11-09/7734200/7734200.meta.json",
+          "bytes": 181893,
+          "sha256": "8e9534f35e433cc1d2003100e861c52688fb0b2fd4b5cf6a6b6e6b970a37f986"
+        },
         {
           "name": "data/2026-11-09/7734200/7734200_s0600.jsonl.gz",
           "bytes": 1204829,
@@ -757,20 +770,25 @@
           "sha256": "9f2f08055160aba282f34bc6c240c02893faf34d00a9fb0d8ef8466368bd524d"
         },
         {
+          "name": "data/2026-11-09/7734200/7734200_s0900.jsonl.gz",
+          "bytes": 1321729,
+          "sha256": "64da4b677696a6b59b3e602a9fe3a7bd88a215156615f9f4be94024abe8951d2"
+        },
+        {
           "name": "data/2026-11-09/7734200/manifest.json",
-          "bytes": 404,
-          "sha256": "4f7a57b1019a54c1c40a4e6845bc3674a000792d5abf7a54568e0f4088f1eb17"
+          "bytes": 524,
+          "sha256": "83c2ec6ee01a990a689a3bf413e4409d0e1fedcb9746cbf4773de38fd6e6626e"
         },
         {
           "name": "data/2026-11-09/align.json",
-          "bytes": 3235,
-          "sha256": "d035e91487c1e2af997eb7117b8d696f3f9c42713e6cef5df8cfc9a69214e2bb"
+          "bytes": 3838,
+          "sha256": "d356e9d8480cb9aaa38e2f578cb1d45cd11ad1a3aebe40e33468ecb52cf57f6a"
         }
       ],
       "sessions": [
         "data/2026-11-09/7734200"
       ],
-      "bytes": 4004117
+      "bytes": 6343805
     }
   }
 }

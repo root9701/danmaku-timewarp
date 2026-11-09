@@ -10,9 +10,9 @@
     },
     "2026-11-09|7734200|BV1TgWp6MEHJ": {
       "auto": {
-        "confidence": 10.085,
+        "confidence": 9.508,
         "method": "audiofp",
-        "ts": "2026-11-09T09:51:13"
+        "ts": "2026-11-09T10:39:15"
       },
       "bv": "BV1TgWp6MEHJ",
       "date": "2026-11-09",
@@ -21,15 +21,15 @@
       "pages": {
         "1": {
           "candidates": 1,
-          "confidence": 10.085,
+          "confidence": 9.508,
           "duration": 3061,
           "matched_seconds": 1440.0,
           "method": "audiofp",
           "offset_sec": 49.305,
           "part": "第一局",
-          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T09:51:13",
+          "ts": "2026-11-09T10:39:15",
           "votes": 8
         },
         "2": {
@@ -40,27 +40,27 @@
           "method": "audiofp",
           "offset_sec": 3364.161,
           "part": "第二局",
-          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T09:51:13",
+          "ts": "2026-11-09T10:39:15",
           "votes": 8
         },
         "3": {
           "candidates": 1,
-          "confidence": 4.577,
+          "confidence": 4.202,
           "duration": 3312,
           "matched_seconds": 1440.0,
           "method": "audiofp",
           "offset_sec": 6454.221,
           "part": "第三局",
-          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T09:51:13",
+          "ts": "2026-11-09T10:39:15",
           "votes": 8
         },
         "4": {
           "candidates": 1,
-          "confidence": 9.205,
+          "confidence": 8.403,
           "duration": 3097,
           "matched_seconds": 1440.0,
           "method": "audiofp",
@@ -68,12 +68,25 @@
           "part": "第四局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T09:51:13",
+          "ts": "2026-11-09T10:39:15",
+          "votes": 8
+        },
+        "5": {
+          "candidates": 1,
+          "confidence": 11.059,
+          "duration": 815,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 13065.312,
+          "part": "赛后采访",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-09T10:39:15",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月9日 BLG vs T1",
-      "total_pages": 5
+      "total_pages": 6
     }
   },
   "lists": {
@@ -83,7 +96,7 @@
         "offset_sec": 49.305,
         "pages": {
           "1": {
-            "confidence": 10.085,
+            "confidence": 9.508,
             "offset_sec": 49.305,
             "part": "第一局"
           },
@@ -93,19 +106,24 @@
             "part": "第二局"
           },
           "3": {
-            "confidence": 4.577,
+            "confidence": 4.202,
             "offset_sec": 6454.221,
             "part": "第三局"
           },
           "4": {
-            "confidence": 9.205,
+            "confidence": 8.403,
             "offset_sec": 9969.312,
             "part": "第四局"
+          },
+          "5": {
+            "confidence": 11.059,
+            "offset_sec": 13065.312,
+            "part": "赛后采访"
           }
         },
         "start_ms": 1794175200000,
         "title": "BLG vs T1",
-        "total_pages": 5
+        "total_pages": 6
       }
     ]
   }

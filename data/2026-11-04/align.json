@@ -59,19 +59,6 @@
           "total_segments": 8,
           "ts": "2026-11-07T08:01:46",
           "votes": 8
-        },
-        "7": {
-          "candidates": 1,
-          "confidence": 2.242,
-          "duration": 166,
-          "matched_seconds": 164.4,
-          "method": "audiofp",
-          "offset_sec": 1924.115,
-          "part": "TOP5",
-          "picked_by": "多段投票 3/8 段一致(多段一致)",
-          "total_segments": 8,
-          "ts": "2026-11-07T08:01:46",
-          "votes": 3
         }
       },
       "title": "【2026全球总决赛】11月4日 TES vs IG",
@@ -98,11 +85,6 @@
             "confidence": 3.98,
             "offset_sec": 7539.594,
             "part": "第三局"
-          },
-          "7": {
-            "confidence": 2.242,
-            "offset_sec": 1924.115,
-            "part": "TOP5"
           }
         },
         "start_ms": 1793746800000,

@@ -59,19 +59,6 @@
           "total_segments": 8,
           "ts": "2026-11-08T22:35:48",
           "votes": 7
-        },
-        "5": {
-          "candidates": 1,
-          "confidence": 3.07,
-          "duration": 134,
-          "matched_seconds": 133.2,
-          "method": "audiofp",
-          "offset_sec": 8201.649,
-          "part": "TOP",
-          "picked_by": "多段投票 3/8 段一致(多段一致)",
-          "total_segments": 8,
-          "ts": "2026-11-08T22:35:48",
-          "votes": 3
         }
       },
       "title": "【2026全球总决赛】11月8日 IG vs GEN",
@@ -98,11 +85,6 @@
             "confidence": 9.922,
             "offset_sec": 6657.662,
             "part": "第三局"
-          },
-          "5": {
-            "confidence": 3.07,
-            "offset_sec": 8201.649,
-            "part": "TOP"
           }
         },
         "start_ms": 1794088800000,

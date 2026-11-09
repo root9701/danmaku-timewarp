@@ -85,19 +85,6 @@
           "total_segments": 8,
           "ts": "2026-11-09T13:40:00",
           "votes": 8
-        },
-        "7": {
-          "candidates": 1,
-          "confidence": 2.516,
-          "duration": 177,
-          "matched_seconds": 175.2,
-          "method": "audiofp",
-          "offset_sec": 12208.104,
-          "part": "TOP",
-          "picked_by": "多段投票 3/8 段一致(多段一致)",
-          "total_segments": 8,
-          "ts": "2026-11-09T13:40:00",
-          "votes": 3
         }
       },
       "title": "【2026全球总决赛】11月9日 BLG vs T1",
@@ -134,11 +121,6 @@
             "confidence": 11.059,
             "offset_sec": 13065.312,
             "part": "赛后采访"
-          },
-          "7": {
-            "confidence": 2.516,
-            "offset_sec": 12208.104,
-            "part": "TOP"
           }
         },
         "start_ms": 1794175200000,

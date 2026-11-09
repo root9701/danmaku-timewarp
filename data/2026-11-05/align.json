@@ -57,19 +57,6 @@
           "total_segments": 8,
           "ts": "2026-11-07T08:01:48",
           "votes": 7
-        },
-        "6": {
-          "candidates": 1,
-          "confidence": 3.092,
-          "duration": 171,
-          "matched_seconds": 225.6,
-          "method": "audiofp",
-          "offset_sec": 7653.866,
-          "part": "TOP5",
-          "picked_by": "多段投票 4/8 段一致(多段一致)",
-          "total_segments": 8,
-          "ts": "2026-11-07T08:01:48",
-          "votes": 4
         }
       },
       "title": "【2026全球总决赛】11月5日 GEN vs LYON",
@@ -96,11 +83,6 @@
             "confidence": 4.345,
             "offset_sec": 6282.909,
             "part": "第三局"
-          },
-          "6": {
-            "confidence": 3.092,
-            "offset_sec": 7653.866,
-            "part": "TOP5"
           }
         },
         "start_ms": 1793829600000,

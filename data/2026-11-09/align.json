@@ -12,7 +12,7 @@
       "auto": {
         "confidence": 10.085,
         "method": "audiofp",
-        "ts": "2026-11-09T08:37:53"
+        "ts": "2026-11-09T09:38:36"
       },
       "bv": "BV1TgWp6MEHJ",
       "date": "2026-11-09",
@@ -29,7 +29,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T08:37:53",
+          "ts": "2026-11-09T09:38:36",
           "votes": 8
         },
         "2": {
@@ -42,12 +42,25 @@
           "part": "第二局",
           "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-09T08:37:53",
+          "ts": "2026-11-09T09:38:36",
+          "votes": 8
+        },
+        "3": {
+          "candidates": 1,
+          "confidence": 4.577,
+          "duration": 3312,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 6454.221,
+          "part": "第三局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-09T09:38:36",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月9日 BLG vs T1",
-      "total_pages": 3
+      "total_pages": 4
     }
   },
   "lists": {
@@ -65,10 +78,15 @@
             "confidence": 4.993,
             "offset_sec": 3364.161,
             "part": "第二局"
+          },
+          "3": {
+            "confidence": 4.577,
+            "offset_sec": 6454.221,
+            "part": "第三局"
           }
         },
         "title": "BLG vs T1",
-        "total_pages": 3
+        "total_pages": 4
       }
     ]
   }

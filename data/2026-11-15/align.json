@@ -1,0 +1,57 @@
+{
+  "align": {
+    "2026-11-15|7734200": {
+      "bvs": [
+        "BV15es76gEgL"
+      ],
+      "date": "2026-11-15",
+      "file": "7734200",
+      "offset_sec": 35.984
+    },
+    "2026-11-15|7734200|BV15es76gEgL": {
+      "auto": {
+        "confidence": 7.451,
+        "method": "audiofp",
+        "ts": "2026-11-15T04:34:24"
+      },
+      "bv": "BV15es76gEgL",
+      "date": "2026-11-15",
+      "file": "7734200",
+      "offset_sec": 35.984,
+      "pages": {
+        "1": {
+          "candidates": 1,
+          "confidence": 7.451,
+          "duration": 2330,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 35.984,
+          "part": "赛前评论",
+          "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-15T04:34:24",
+          "votes": 8
+        }
+      },
+      "title": "【2026全球总决赛】11月15日 GEN vs BLG",
+      "total_pages": 1
+    }
+  },
+  "lists": {
+    "2026-11-15": [
+      {
+        "bv": "BV15es76gEgL",
+        "offset_sec": 35.984,
+        "pages": {
+          "1": {
+            "confidence": 7.451,
+            "offset_sec": 35.984,
+            "part": "赛前评论"
+          }
+        },
+        "title": "GEN vs BLG",
+        "total_pages": 1
+      }
+    ]
+  }
+}

@@ -10,9 +10,9 @@
     },
     "2026-11-15|7734200|BV15es76gEgL": {
       "auto": {
-        "confidence": 7.669,
+        "confidence": 7.07,
         "method": "audiofp",
-        "ts": "2026-11-15T06:35:52"
+        "ts": "2026-11-15T07:38:56"
       },
       "bv": "BV15es76gEgL",
       "date": "2026-11-15",
@@ -21,7 +21,7 @@
       "pages": {
         "1": {
           "candidates": 1,
-          "confidence": 7.669,
+          "confidence": 7.07,
           "duration": 3601,
           "matched_seconds": 1440.0,
           "method": "audiofp",
@@ -29,25 +29,38 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-15T06:35:52",
+          "ts": "2026-11-15T07:38:56",
           "votes": 8
         },
         "2": {
           "candidates": 1,
-          "confidence": 7.992,
+          "confidence": 6.44,
           "duration": 4516,
-          "matched_seconds": 1440.0,
+          "matched_seconds": 1260.0,
           "method": "audiofp",
           "offset_sec": 6411.149,
           "part": "第二局",
-          "picked_by": "多段投票 8/8 段一致(多段一致、7 张强票、强票+同向、全票一致)",
+          "picked_by": "多段投票 7/8 段一致(多段一致、7 张强票、强票+同向)",
           "total_segments": 8,
-          "ts": "2026-11-15T06:35:52",
-          "votes": 8
+          "ts": "2026-11-15T07:38:56",
+          "votes": 7
         },
         "3": {
           "candidates": 1,
-          "confidence": 6.589,
+          "confidence": 6.074,
+          "duration": 3631,
+          "matched_seconds": 1260.0,
+          "method": "audiofp",
+          "offset_sec": 11139.99,
+          "part": "第三局",
+          "picked_by": "多段投票 7/8 段一致(多段一致、6 张强票、强票+同向)",
+          "total_segments": 8,
+          "ts": "2026-11-15T07:38:56",
+          "votes": 7
+        },
+        "4": {
+          "candidates": 1,
+          "confidence": 6.576,
           "duration": 2330,
           "matched_seconds": 1440.0,
           "method": "audiofp",
@@ -55,12 +68,12 @@
           "part": "赛前评论",
           "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-15T06:35:52",
+          "ts": "2026-11-15T07:38:56",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月15日 GEN vs BLG",
-      "total_pages": 3
+      "total_pages": 4
     }
   },
   "lists": {
@@ -70,23 +83,28 @@
         "offset_sec": 2365.149,
         "pages": {
           "1": {
-            "confidence": 7.669,
+            "confidence": 7.07,
             "offset_sec": 2365.149,
             "part": "第一局"
           },
           "2": {
-            "confidence": 7.992,
+            "confidence": 6.44,
             "offset_sec": 6411.149,
             "part": "第二局"
           },
           "3": {
-            "confidence": 6.589,
+            "confidence": 6.074,
+            "offset_sec": 11139.99,
+            "part": "第三局"
+          },
+          "4": {
+            "confidence": 6.576,
             "offset_sec": 35.984,
             "part": "赛前评论"
           }
         },
         "title": "GEN vs BLG",
-        "total_pages": 3
+        "total_pages": 4
       }
     ]
   }

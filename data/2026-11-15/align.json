@@ -12,7 +12,7 @@
       "auto": {
         "confidence": 7.07,
         "method": "audiofp",
-        "ts": "2026-11-15T07:38:56"
+        "ts": "2026-11-15T08:31:44"
       },
       "bv": "BV15es76gEgL",
       "date": "2026-11-15",
@@ -29,7 +29,7 @@
           "part": "第一局",
           "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-15T07:38:56",
+          "ts": "2026-11-15T08:31:44",
           "votes": 8
         },
         "2": {
@@ -42,7 +42,7 @@
           "part": "第二局",
           "picked_by": "多段投票 7/8 段一致(多段一致、7 张强票、强票+同向)",
           "total_segments": 8,
-          "ts": "2026-11-15T07:38:56",
+          "ts": "2026-11-15T08:31:44",
           "votes": 7
         },
         "3": {
@@ -55,10 +55,23 @@
           "part": "第三局",
           "picked_by": "多段投票 7/8 段一致(多段一致、6 张强票、强票+同向)",
           "total_segments": 8,
-          "ts": "2026-11-15T07:38:56",
+          "ts": "2026-11-15T08:31:44",
           "votes": 7
         },
         "4": {
+          "candidates": 1,
+          "confidence": 6.262,
+          "duration": 3621,
+          "matched_seconds": 1440.0,
+          "method": "audiofp",
+          "offset_sec": 14919.987,
+          "part": "第四局",
+          "picked_by": "多段投票 8/8 段一致(多段一致、8 张强票、强票+同向、全票一致)",
+          "total_segments": 8,
+          "ts": "2026-11-15T08:31:44",
+          "votes": 8
+        },
+        "5": {
           "candidates": 1,
           "confidence": 6.576,
           "duration": 2330,
@@ -68,12 +81,12 @@
           "part": "赛前评论",
           "picked_by": "多段投票 8/8 段一致(多段一致、6 张强票、强票+同向、全票一致)",
           "total_segments": 8,
-          "ts": "2026-11-15T07:38:56",
+          "ts": "2026-11-15T08:31:44",
           "votes": 8
         }
       },
       "title": "【2026全球总决赛】11月15日 GEN vs BLG",
-      "total_pages": 4
+      "total_pages": 5
     }
   },
   "lists": {
@@ -98,13 +111,19 @@
             "part": "第三局"
           },
           "4": {
+            "confidence": 6.262,
+            "offset_sec": 14919.987,
+            "part": "第四局"
+          },
+          "5": {
             "confidence": 6.576,
             "offset_sec": 35.984,
             "part": "赛前评论"
           }
         },
+        "start_ms": 1794682800000,
         "title": "GEN vs BLG",
-        "total_pages": 4
+        "total_pages": 5
       }
     ]
   }
